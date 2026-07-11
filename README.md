@@ -23,6 +23,7 @@ npm run format
 npm run typecheck
 npm test
 npm run build
+npm run test:exports
 ```
 
 Consumers pin immutable GitHub tags:
@@ -31,5 +32,9 @@ Consumers pin immutable GitHub tags:
 "@marckraw/execution-host-protocol": "github:marckraw/execution-host-protocol#v0.1.0"
 ```
 
-Releases use Changesets and immutable `vX.Y.Z` Git tags. npm publishing is not
-configured; Git tags are the supported distribution channel.
+Releases use Changesets and immutable `vX.Y.Z` Git tags. The Release workflow
+opens version PRs and publishes public npm releases with provenance after a
+version PR is merged. A repository administrator must add an npm automation or
+granular access token as the GitHub Actions secret `NPM_TOKEN`; agents must
+never request, create, print, or store that credential. Until the first npm
+release succeeds, consumers remain pinned to immutable Git tags.
