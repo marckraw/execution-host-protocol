@@ -11,6 +11,7 @@ import {
   encodeExecutionEventEnvelope,
   encodeExecutionStartRequest,
   type ExecutionHostCommandEnvelope,
+  type ExecutionConversationItemPatch,
   type ExecutionStartRequest,
 } from "../src/index.js";
 import {
@@ -92,8 +93,6 @@ describe("recorded daemon event contract", () => {
   });
 
   it.each([
-    ["id", 42],
-    ["kind", "future-kind"],
     ["state", 42],
     ["createdAt", 42],
     ["updatedAt", 42],
@@ -157,6 +156,57 @@ describe("recorded daemon event contract", () => {
       });
     },
   );
+
+  it("ignores immutable item fields while retaining mutable siblings", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      JSON.stringify({
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 1,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.patch",
+            itemId: "item-1",
+            patch: {
+              id: "replacement-item",
+              kind: "tool-call",
+              text: "valid sibling",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(decoded).toEqual({
+      ok: true,
+      value: {
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 1,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.patch",
+            itemId: "item-1",
+            patch: { text: "valid sibling" },
+          },
+        },
+      },
+    });
+  });
+
+  it("excludes item identity fields from the public patch type", () => {
+    const mutablePatch: ExecutionConversationItemPatch = { text: "updated" };
+    // @ts-expect-error Item ids are immutable after conversation.item.add.
+    const idPatch: ExecutionConversationItemPatch = { id: "replacement" };
+    // @ts-expect-error Item kinds are immutable after conversation.item.add.
+    const kindPatch: ExecutionConversationItemPatch = { kind: "tool-call" };
+
+    expect(mutablePatch).toEqual({ text: "updated" });
+    void idPatch;
+    void kindPatch;
+  });
 });
 
 describe("exhaustive contract fixtures", () => {

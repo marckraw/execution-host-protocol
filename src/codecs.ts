@@ -39,9 +39,26 @@ const ITEM_KINDS = new Set([
   "input-request",
   "note",
 ]);
+const CONVERSATION_ITEM_FIELD_VALIDATORS = {
+  id: isNonEmptyString,
+  kind: (value: unknown) => typeof value === "string" && ITEM_KINDS.has(value),
+  state: isItemState,
+  createdAt: (value: unknown) => typeof value === "string",
+  updatedAt: (value: unknown) => typeof value === "string",
+  providerMeta: isProviderMeta,
+  actor: (value: unknown) => value === "user" || value === "assistant",
+  text: (value: unknown) => typeof value === "string",
+  toolName: isNullableString,
+  inputText: (value: unknown) => typeof value === "string",
+  relatedItemId: isNullableString,
+  outputText: (value: unknown) => typeof value === "string",
+  description: (value: unknown) => typeof value === "string",
+  prompt: (value: unknown) => typeof value === "string",
+  level: isNoteLevel,
+} satisfies Record<string, (value: unknown) => boolean>;
+type ConversationItemField = keyof typeof CONVERSATION_ITEM_FIELD_VALIDATORS;
+
 const PATCH_FIELDS = [
-  "id",
-  "kind",
   "state",
   "createdAt",
   "updatedAt",
@@ -55,29 +72,9 @@ const PATCH_FIELDS = [
   "description",
   "prompt",
   "level",
-] as const;
+] as const satisfies readonly ConversationItemField[];
 type PatchField = (typeof PATCH_FIELDS)[number];
 const PATCH_FIELD_SET = new Set<string>(PATCH_FIELDS);
-const CONVERSATION_ITEM_FIELD_VALIDATORS: Record<
-  PatchField,
-  (value: unknown) => boolean
-> = {
-  id: isNonEmptyString,
-  kind: (value) => typeof value === "string" && ITEM_KINDS.has(value),
-  state: isItemState,
-  createdAt: (value) => typeof value === "string",
-  updatedAt: (value) => typeof value === "string",
-  providerMeta: isProviderMeta,
-  actor: (value) => value === "user" || value === "assistant",
-  text: (value) => typeof value === "string",
-  toolName: isNullableString,
-  inputText: (value) => typeof value === "string",
-  relatedItemId: isNullableString,
-  outputText: (value) => typeof value === "string",
-  description: (value) => typeof value === "string",
-  prompt: (value) => typeof value === "string",
-  level: isNoteLevel,
-};
 
 export function encodeExecutionEventEnvelope(
   envelope: ExecutionHostEventEnvelope,

@@ -1,5 +1,11 @@
 # @marckraw/execution-host-protocol
 
+## 0.2.4
+
+### Patch Changes
+
+- Keep conversation item identifiers and kinds immutable when decoding item patches.
+
 ## 0.2.3
 
 ### Patch Changes

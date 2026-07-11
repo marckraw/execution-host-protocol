@@ -161,7 +161,11 @@ export type ExecutionConversationItem =
       text: string;
     });
 
-export type ExecutionConversationItemPatch = Partial<ExecutionConversationItem>;
+type MutableConversationItemPatch<
+  Item extends ExecutionConversationItem = ExecutionConversationItem,
+> = Item extends unknown ? Partial<Omit<Item, "id" | "kind">> : never;
+
+export type ExecutionConversationItemPatch = MutableConversationItemPatch;
 
 export type ExecutionSessionDelta =
   | {
