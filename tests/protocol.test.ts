@@ -85,6 +85,73 @@ describe("recorded daemon event contract", () => {
       ),
     ).toEqual({ ok: false, reason: "invalid-envelope" });
   });
+
+  it.each([
+    ["id", 42],
+    ["kind", "future-kind"],
+    ["state", 42],
+    ["createdAt", 42],
+    ["updatedAt", 42],
+    ["providerMeta", { providerId: 42 }],
+    ["actor", "system"],
+    ["text", 42],
+    ["toolName", 42],
+    ["inputText", 42],
+    ["relatedItemId", 42],
+    ["outputText", 42],
+    ["description", 42],
+    ["prompt", 42],
+    ["level", "debug"],
+  ])(
+    "drops an invalid %s patch value while retaining valid siblings",
+    (field, invalidValue) => {
+      const validSibling = field === "updatedAt" ? "description" : "updatedAt";
+      const validValue =
+        validSibling === "updatedAt" ? "2026-07-11T20:00:00.000Z" : "valid";
+      const decoded = decodeExecutionEventEnvelope(
+        JSON.stringify({
+          protocolVersion: 1,
+          sessionId: "session-1",
+          seq: 1,
+          event: {
+            kind: "delta",
+            delta: {
+              kind: "conversation.item.patch",
+              itemId: "item-1",
+              patch: {
+                [field]: invalidValue,
+                [validSibling]: validValue,
+                futureField: true,
+              },
+            },
+          },
+        }),
+      );
+
+      expect(decoded).toEqual({
+        ok: true,
+        value: {
+          protocolVersion: 1,
+          sessionId: "session-1",
+          seq: 1,
+          event: {
+            kind: "delta",
+            delta: {
+              kind: "conversation.item.patch",
+              itemId: "item-1",
+              patch: { [validSibling]: validValue },
+            },
+          },
+        },
+        warnings: [
+          {
+            reason: "dropped-invalid-field",
+            path: `event.delta.patch.${field}`,
+          },
+        ],
+      });
+    },
+  );
 });
 
 describe("capability negotiation", () => {

@@ -1,5 +1,11 @@
 # @marckraw/execution-host-protocol
 
+## 0.2.3
+
+### Patch Changes
+
+- Validate every known conversation item patch field and report dropped invalid values without interrupting the event stream.
+
 ## 0.2.2
 
 ### Patch Changes

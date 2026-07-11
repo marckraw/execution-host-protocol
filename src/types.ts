@@ -266,5 +266,14 @@ export type ExecutionDecodeFailureReason =
   | "unknown-kind"
   | "invalid-payload";
 
+export interface ExecutionDecodeWarning {
+  reason: "dropped-invalid-field";
+  path: string;
+}
+
 export type ExecutionDecodeResult<T> =
-  { ok: true; value: T } | { ok: false; reason: ExecutionDecodeFailureReason };
+  | { ok: true; value: T; warnings?: ExecutionDecodeWarning[] }
+  | {
+      ok: false;
+      reason: ExecutionDecodeFailureReason;
+    };

@@ -8,15 +8,19 @@ import {
   type ExecutionCallbackConfig,
   type ExecutionContextWindow,
   type ExecutionConversationItem,
+  type ExecutionConversationItemBase,
   type ExecutionConversationItemPatch,
+  type ExecutionConversationItemState,
   type ExecutionDecodeFailureReason,
   type ExecutionDecodeResult,
+  type ExecutionDecodeWarning,
   type ExecutionHostCommand,
   type ExecutionHostCommandEnvelope,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
   type ExecutionMetadataAttributes,
   type ExecutionProtocolDescriptor,
+  type ExecutionProviderMeta,
   type ExecutionSendMessageOptions,
   type ExecutionSessionDelta,
   type ExecutionSessionMetadata,
@@ -35,7 +39,7 @@ const ITEM_KINDS = new Set([
   "input-request",
   "note",
 ]);
-const PATCH_FIELDS = new Set([
+const PATCH_FIELDS = [
   "id",
   "kind",
   "state",
@@ -51,7 +55,29 @@ const PATCH_FIELDS = new Set([
   "description",
   "prompt",
   "level",
-]);
+] as const;
+type PatchField = (typeof PATCH_FIELDS)[number];
+const PATCH_FIELD_SET = new Set<string>(PATCH_FIELDS);
+const CONVERSATION_ITEM_FIELD_VALIDATORS: Record<
+  PatchField,
+  (value: unknown) => boolean
+> = {
+  id: isNonEmptyString,
+  kind: (value) => typeof value === "string" && ITEM_KINDS.has(value),
+  state: isItemState,
+  createdAt: (value) => typeof value === "string",
+  updatedAt: (value) => typeof value === "string",
+  providerMeta: isProviderMeta,
+  actor: (value) => value === "user" || value === "assistant",
+  text: (value) => typeof value === "string",
+  toolName: isNullableString,
+  inputText: (value) => typeof value === "string",
+  relatedItemId: isNullableString,
+  outputText: (value) => typeof value === "string",
+  description: (value) => typeof value === "string",
+  prompt: (value) => typeof value === "string",
+  level: isNoteLevel,
+};
 
 export function encodeExecutionEventEnvelope(
   envelope: ExecutionHostEventEnvelope,
@@ -101,12 +127,15 @@ export function decodeExecutionEventEnvelope(
   }
   const event = decodeEvent(rawEvent);
   if (!event.ok) return event;
-  return success({
-    protocolVersion: EXECUTION_PROTOCOL_VERSION,
-    sessionId,
-    seq,
-    event: event.value,
-  });
+  return success(
+    {
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sessionId,
+      seq,
+      event: event.value,
+    },
+    event.warnings,
+  );
 }
 
 export function decodeExecutionCommandEnvelope(
@@ -161,7 +190,9 @@ function decodeEvent(raw: unknown): ExecutionDecodeResult<ExecutionHostEvent> {
   switch (raw.kind) {
     case "delta": {
       const delta = decodeDelta(raw.delta);
-      return delta.ok ? success({ kind: "delta", delta: delta.value }) : delta;
+      return delta.ok
+        ? success({ kind: "delta", delta: delta.value }, delta.warnings)
+        : delta;
     }
     case "status": {
       const status = decodeStatus(raw.status);
@@ -257,14 +288,28 @@ function decodeDelta(
       if (!isNonEmptyString(raw.itemId) || !isRecord(raw.patch)) {
         return failure("invalid-payload");
       }
-      const patch = Object.fromEntries(
-        Object.entries(raw.patch).filter(([key]) => PATCH_FIELDS.has(key)),
-      ) as ExecutionConversationItemPatch;
-      return success({
-        kind: "conversation.item.patch",
-        itemId: raw.itemId,
-        patch,
-      });
+      const patch: Record<string, unknown> = {};
+      const warnings: ExecutionDecodeWarning[] = [];
+      for (const [key, value] of Object.entries(raw.patch)) {
+        if (!PATCH_FIELD_SET.has(key)) continue;
+        const field = key as PatchField;
+        if (CONVERSATION_ITEM_FIELD_VALIDATORS[field](value)) {
+          patch[field] = value;
+        } else {
+          warnings.push({
+            reason: "dropped-invalid-field",
+            path: `event.delta.patch.${field}`,
+          });
+        }
+      }
+      return success(
+        {
+          kind: "conversation.item.patch",
+          itemId: raw.itemId,
+          patch: patch as ExecutionConversationItemPatch,
+        },
+        warnings,
+      );
     }
     default:
       return failure("unknown-kind");
@@ -276,83 +321,92 @@ function decodeConversationItem(
 ): ExecutionDecodeResult<ExecutionConversationItem> {
   if (
     !isRecord(raw) ||
-    !isNonEmptyString(raw.id) ||
-    typeof raw.kind !== "string" ||
-    !ITEM_KINDS.has(raw.kind) ||
-    !isItemState(raw.state) ||
-    typeof raw.createdAt !== "string" ||
-    typeof raw.updatedAt !== "string" ||
-    !isProviderMeta(raw.providerMeta)
+    !CONVERSATION_ITEM_FIELD_VALIDATORS.id(raw.id) ||
+    !CONVERSATION_ITEM_FIELD_VALIDATORS.kind(raw.kind) ||
+    !CONVERSATION_ITEM_FIELD_VALIDATORS.state(raw.state) ||
+    !CONVERSATION_ITEM_FIELD_VALIDATORS.createdAt(raw.createdAt) ||
+    !CONVERSATION_ITEM_FIELD_VALIDATORS.updatedAt(raw.updatedAt) ||
+    !CONVERSATION_ITEM_FIELD_VALIDATORS.providerMeta(raw.providerMeta)
   ) {
     return failure("invalid-payload");
   }
-  const base = {
-    id: raw.id,
-    state: raw.state,
-    createdAt: raw.createdAt,
-    updatedAt: raw.updatedAt,
-    providerMeta: raw.providerMeta,
+  const base: ExecutionConversationItemBase = {
+    id: raw.id as string,
+    kind: raw.kind as string,
+    state: raw.state as ExecutionConversationItemState,
+    createdAt: raw.createdAt as string,
+    updatedAt: raw.updatedAt as string,
+    providerMeta: raw.providerMeta as ExecutionProviderMeta,
   };
   switch (raw.kind) {
     case "message":
-      return (raw.actor === "user" || raw.actor === "assistant") &&
-        typeof raw.text === "string"
+      return CONVERSATION_ITEM_FIELD_VALIDATORS.actor(raw.actor) &&
+        CONVERSATION_ITEM_FIELD_VALIDATORS.text(raw.text)
         ? success({
             ...base,
             kind: "message",
-            actor: raw.actor,
-            text: raw.text,
+            actor: raw.actor as "user" | "assistant",
+            text: raw.text as string,
           })
         : failure("invalid-payload");
     case "thinking":
-      return raw.actor === "assistant" && typeof raw.text === "string"
+      return raw.actor === "assistant" &&
+        CONVERSATION_ITEM_FIELD_VALIDATORS.text(raw.text)
         ? success({
             ...base,
             kind: "thinking",
             actor: "assistant",
-            text: raw.text,
+            text: raw.text as string,
           })
         : failure("invalid-payload");
     case "tool-call":
-      return typeof raw.toolName === "string" &&
-        typeof raw.inputText === "string"
+      return raw.toolName !== null &&
+        CONVERSATION_ITEM_FIELD_VALIDATORS.toolName(raw.toolName) &&
+        CONVERSATION_ITEM_FIELD_VALIDATORS.inputText(raw.inputText)
         ? success({
             ...base,
             kind: "tool-call",
-            toolName: raw.toolName,
-            inputText: raw.inputText,
+            toolName: raw.toolName as string,
+            inputText: raw.inputText as string,
           })
         : failure("invalid-payload");
     case "tool-result":
-      return isNullableString(raw.toolName) &&
-        isNullableString(raw.relatedItemId) &&
-        typeof raw.outputText === "string"
+      return CONVERSATION_ITEM_FIELD_VALIDATORS.toolName(raw.toolName) &&
+        CONVERSATION_ITEM_FIELD_VALIDATORS.relatedItemId(raw.relatedItemId) &&
+        CONVERSATION_ITEM_FIELD_VALIDATORS.outputText(raw.outputText)
         ? success({
             ...base,
             kind: "tool-result",
-            toolName: raw.toolName,
-            relatedItemId: raw.relatedItemId,
-            outputText: raw.outputText,
+            toolName: raw.toolName as string | null,
+            relatedItemId: raw.relatedItemId as string | null,
+            outputText: raw.outputText as string,
           })
         : failure("invalid-payload");
     case "approval-request":
-      return typeof raw.description === "string"
+      return CONVERSATION_ITEM_FIELD_VALIDATORS.description(raw.description)
         ? success({
             ...base,
             kind: "approval-request",
-            description: raw.description,
+            description: raw.description as string,
           })
         : failure("invalid-payload");
     case "input-request":
-      return typeof raw.prompt === "string"
-        ? success({ ...base, kind: "input-request", prompt: raw.prompt })
+      return CONVERSATION_ITEM_FIELD_VALIDATORS.prompt(raw.prompt)
+        ? success({
+            ...base,
+            kind: "input-request",
+            prompt: raw.prompt as string,
+          })
         : failure("invalid-payload");
     case "note":
-      return (raw.level === "info" ||
-        raw.level === "warning" ||
-        raw.level === "error") &&
-        typeof raw.text === "string"
-        ? success({ ...base, kind: "note", level: raw.level, text: raw.text })
+      return CONVERSATION_ITEM_FIELD_VALIDATORS.level(raw.level) &&
+        CONVERSATION_ITEM_FIELD_VALIDATORS.text(raw.text)
+        ? success({
+            ...base,
+            kind: "note",
+            level: raw.level as "info" | "warning" | "error",
+            text: raw.text as string,
+          })
         : failure("invalid-payload");
     default:
       return failure("unknown-kind");
@@ -693,6 +747,9 @@ function isItemState(
 ): value is "streaming" | "complete" | "error" {
   return value === "streaming" || value === "complete" || value === "error";
 }
+function isNoteLevel(value: unknown): boolean {
+  return value === "info" || value === "warning" || value === "error";
+}
 function isProviderMeta(
   value: unknown,
 ): value is ExecutionConversationItem["providerMeta"] {
@@ -709,8 +766,11 @@ function optionalProperty<Key extends string, Value>(
 ): {} | Record<Key, Value> {
   return value === undefined ? {} : ({ [key]: value } as Record<Key, Value>);
 }
-function success<T>(value: T): ExecutionDecodeResult<T> {
-  return { ok: true, value };
+function success<T>(
+  value: T,
+  warnings?: ExecutionDecodeWarning[],
+): ExecutionDecodeResult<T> {
+  return warnings?.length ? { ok: true, value, warnings } : { ok: true, value };
 }
 function failure(
   reason: ExecutionDecodeFailureReason,
