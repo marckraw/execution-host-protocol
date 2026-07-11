@@ -1,0 +1,51 @@
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":1,"event":{"kind":"status","status":"running"}}
+id: 1
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":2,"event":{"kind":"attention","attention":"none"}}
+id: 2
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":3,"event":{"kind":"delta","delta":{"kind":"conversation.item.add","item":{"id":"1fa52932-a5c6-41f1-9649-caad60d8c6b7","kind":"message","state":"complete","createdAt":"2026-07-10T19:46:43.246Z","updatedAt":"2026-07-10T19:46:43.246Z","providerMeta":{"providerId":"claude","providerItemId":null,"providerEventType":"user"},"actor":"user","text":"Reply with exactly this text and nothing else: EMERGENCE PIPE OK"}}}}
+id: 3
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":4,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 4
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":5,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 5
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":6,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 6
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":7,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 7
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":8,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 8
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":9,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 9
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":10,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 10
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":11,"event":{"kind":"continuation-token","token":"c055b993-fcb2-4771-b579-4ff44ab9ae30"}}
+id: 11
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":12,"event":{"kind":"delta","delta":{"kind":"conversation.item.add","item":{"id":"5e270fdf-d0f1-4df3-b133-e8df1bfcf3d7","kind":"message","state":"streaming","createdAt":"2026-07-10T19:46:55.529Z","updatedAt":"2026-07-10T19:46:55.529Z","providerMeta":{"providerId":"claude","providerItemId":null,"providerEventType":"assistant"},"actor":"assistant","text":"EMERGENCE P"}}}}
+id: 12
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":13,"event":{"kind":"activity","activity":"streaming"}}
+id: 13
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":14,"event":{"kind":"delta","delta":{"kind":"conversation.item.patch","itemId":"5e270fdf-d0f1-4df3-b133-e8df1bfcf3d7","patch":{"text":"EMERGENCE PIPE OK","updatedAt":"2026-07-10T19:46:56.584Z"}}}}
+id: 14
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":15,"event":{"kind":"status","status":"completed"}}
+id: 15
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":16,"event":{"kind":"attention","attention":"finished"}}
+id: 16
+
+data: {"protocolVersion":1,"sessionId":"em3-fixture-001","seq":17,"event":{"kind":"activity","activity":null}}
+id: 17
+
