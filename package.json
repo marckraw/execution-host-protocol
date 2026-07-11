@@ -1,6 +1,6 @@
 {
   "name": "@marckraw/execution-host-protocol",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Versioned execution-host wire contract for agent runtimes and clients",
   "license": "MIT",
   "type": "module",
@@ -20,7 +20,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts --out-dir dist --clean",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && node scripts/finalize-cjs.mjs",
     "test": "vitest run",
     "test:exports": "npm run build && node scripts/check-package-exports.mjs",
     "typecheck": "tsc --noEmit",
@@ -35,7 +35,6 @@
     "@changesets/cli": "^2.31.0",
     "@types/node": "^24.0.0",
     "prettier": "^3.8.2",
-    "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   },

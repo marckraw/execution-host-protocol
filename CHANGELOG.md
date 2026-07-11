@@ -1,5 +1,11 @@
 # @marckraw/execution-host-protocol
 
+## 0.2.2
+
+### Patch Changes
+
+- Build dual Node exports with the TypeScript compiler so git dependencies can run prepare under Bun without installing package-local development tools.
+
 ## 0.2.1
 
 ### Patch Changes
