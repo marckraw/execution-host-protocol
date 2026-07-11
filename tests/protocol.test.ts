@@ -13,6 +13,11 @@ import {
   type ExecutionHostCommandEnvelope,
   type ExecutionStartRequest,
 } from "../src/index.js";
+import {
+  commandFixtures,
+  conversationItemFixtures,
+  eventFixtures,
+} from "./fixtures/contract-fixtures.js";
 
 const rawSse = readFileSync(
   join(import.meta.dirname, "fixtures/raw-sse-claude-session.txt"),
@@ -152,6 +157,115 @@ describe("recorded daemon event contract", () => {
       });
     },
   );
+});
+
+describe("exhaustive contract fixtures", () => {
+  it.each(Object.entries(conversationItemFixtures))(
+    "round-trips the %s conversation item decoder",
+    (_kind, fixture) => {
+      const envelope = {
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        sessionId: "fixture-session",
+        seq: 1,
+        event: {
+          kind: "delta" as const,
+          delta: {
+            kind: "conversation.item.add" as const,
+            item: fixture.value,
+          },
+        },
+      };
+      expect(
+        decodeExecutionEventEnvelope(encodeExecutionEventEnvelope(envelope)),
+      ).toEqual({ ok: true, value: envelope });
+      expect(["recorded", "hand-authored"]).toContain(fixture.source);
+    },
+  );
+
+  it.each(Object.entries(eventFixtures))(
+    "round-trips the %s event decoder",
+    (_kind, envelope) => {
+      expect(
+        decodeExecutionEventEnvelope(encodeExecutionEventEnvelope(envelope)),
+      ).toEqual({ ok: true, value: envelope });
+    },
+  );
+
+  it.each(Object.entries(commandFixtures))(
+    "round-trips the %s command decoder",
+    (_kind, envelope) => {
+      expect(
+        decodeExecutionCommandEnvelope(
+          encodeExecutionCommandEnvelope(envelope),
+        ),
+      ).toEqual({ ok: true, value: envelope });
+    },
+  );
+
+  it("classifies malformed and future event kinds without throwing", () => {
+    expect(decodeExecutionEventEnvelope("{")).toEqual({
+      ok: false,
+      reason: "malformed-json",
+    });
+    expect(
+      decodeExecutionEventEnvelope(
+        JSON.stringify({
+          protocolVersion: 1,
+          sessionId: "session-1",
+          seq: 1,
+          event: { kind: "future-event" },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "unknown-kind" });
+  });
+
+  it("rejects bad sequence numbers and invalid conversation item states", () => {
+    expect(
+      decodeExecutionEventEnvelope(
+        JSON.stringify({ ...eventFixtures.heartbeat, seq: 0 }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-envelope" });
+    expect(
+      decodeExecutionEventEnvelope(
+        JSON.stringify({
+          ...eventFixtures.delta,
+          event: {
+            kind: "delta",
+            delta: {
+              kind: "conversation.item.add",
+              item: {
+                ...conversationItemFixtures.message.value,
+                state: "future-state",
+              },
+            },
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+  });
+
+  it("rejects invalid known command, start, and descriptor fields", () => {
+    expect(
+      decodeExecutionCommandEnvelope(
+        JSON.stringify({
+          ...commandFixtures.approve,
+          command: { kind: "approve", providerApprovalId: 42 },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+    expect(
+      decodeExecutionStartRequest(
+        JSON.stringify({
+          protocolVersion: 1,
+          providerId: "codex",
+          config: { initialMessage: "missing session id" },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-envelope" });
+    expect(
+      decodeExecutionProtocolDescriptor({ version: 1, capabilities: [42] }),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+  });
 });
 
 describe("capability negotiation", () => {
