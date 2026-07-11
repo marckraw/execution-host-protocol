@@ -5,6 +5,7 @@ import {
   EXECUTION_PROTOCOL_VERSION,
   decodeExecutionCommandEnvelope,
   decodeExecutionEventEnvelope,
+  decodeExecutionProtocolDescriptor,
   decodeExecutionStartRequest,
   encodeExecutionCommandEnvelope,
   encodeExecutionEventEnvelope,
@@ -83,6 +84,24 @@ describe("recorded daemon event contract", () => {
         }),
       ),
     ).toEqual({ ok: false, reason: "invalid-envelope" });
+  });
+});
+
+describe("capability negotiation", () => {
+  it("accepts additive unknown capability ids without rejecting the descriptor", () => {
+    expect(
+      decodeExecutionProtocolDescriptor({
+        version: 1,
+        capabilities: ["events.replay", "future.capability"],
+        futureField: true,
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        version: 1,
+        capabilities: ["events.replay", "future.capability"],
+      },
+    });
   });
 });
 

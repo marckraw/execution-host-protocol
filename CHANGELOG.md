@@ -1,5 +1,11 @@
 # @marckraw/execution-host-protocol
 
+## 0.2.0
+
+### Minor Changes
+
+- Add an extensible execution-protocol capability descriptor for additive health negotiation.
+
 ## 0.1.1
 
 ### Patch Changes

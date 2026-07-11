@@ -16,6 +16,7 @@ import {
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
   type ExecutionMetadataAttributes,
+  type ExecutionProtocolDescriptor,
   type ExecutionSendMessageOptions,
   type ExecutionSessionDelta,
   type ExecutionSessionMetadata,
@@ -68,6 +69,25 @@ export function encodeExecutionStartRequest(
   request: ExecutionStartRequest,
 ): string {
   return JSON.stringify(request);
+}
+
+export function decodeExecutionProtocolDescriptor(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionProtocolDescriptor> {
+  if (!isRecord(raw)) return failure("invalid-envelope");
+  if (raw.version !== EXECUTION_PROTOCOL_VERSION) {
+    return failure("unsupported-protocol-version");
+  }
+  if (
+    !Array.isArray(raw.capabilities) ||
+    !raw.capabilities.every(isNonEmptyString)
+  ) {
+    return failure("invalid-payload");
+  }
+  return success({
+    version: EXECUTION_PROTOCOL_VERSION,
+    capabilities: [...new Set(raw.capabilities)],
+  });
 }
 
 export function decodeExecutionEventEnvelope(

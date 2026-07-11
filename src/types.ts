@@ -1,5 +1,23 @@
 export const EXECUTION_PROTOCOL_VERSION = 1 as const;
 
+export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
+  "commands.approval",
+  "events.replay",
+  "sessions.metadata",
+  "workspaces.materialize",
+  "callbacks.status",
+  "automation.create-pr",
+] as const;
+export type KnownExecutionProtocolCapability =
+  (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
+export type ExecutionProtocolCapability =
+  KnownExecutionProtocolCapability | (string & {});
+
+export interface ExecutionProtocolDescriptor {
+  version: typeof EXECUTION_PROTOCOL_VERSION;
+  capabilities: ExecutionProtocolCapability[];
+}
+
 export const EXECUTION_SESSION_STATUSES = [
   "idle",
   "running",
