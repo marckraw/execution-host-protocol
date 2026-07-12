@@ -26,15 +26,49 @@ npm run build
 npm run test:exports
 ```
 
-Consumers pin immutable GitHub tags:
+## Consuming
 
-```json
-"@marckraw/execution-host-protocol": "github:marckraw/execution-host-protocol#v0.1.0"
+Once published, consumers install from npm with a normal semver range:
+
+```bash
+npm install @mrck-labs/execution-host-protocol
 ```
 
-Releases use Changesets and immutable `vX.Y.Z` Git tags. The Release workflow
-opens version PRs and publishes public npm releases with provenance after a
-version PR is merged. A repository administrator must add an npm automation or
-granular access token as the GitHub Actions secret `NPM_TOKEN`; agents must
-never request, create, print, or store that credential. Until the first npm
-release succeeds, consumers remain pinned to immutable Git tags.
+Before the first npm release the package was consumed via immutable GitHub tags
+(`github:marckraw/execution-host-protocol#vX.Y.Z`, under the old `@marckraw`
+scope); npm under `@mrck-labs` is now the canonical channel.
+
+The package ships both ESM (`import`) and CommonJS (`require`) builds, so it
+loads from Electron main processes and Node/Bun runtimes alike.
+
+## Releasing
+
+Releases use [Changesets](https://github.com/changesets/changesets). The flow:
+
+1. Branch from `main`, make your change.
+2. Add a changeset describing it: `npm run changeset` (commit the generated
+   `.changeset/*.md`). PRs that change published behavior must include one.
+3. Open a PR and merge it into `main`.
+4. The **Release** workflow (`.github/workflows/release.yml`) runs on `main`.
+   Changesets opens/updates a **"Version Packages"** PR that bumps the version
+   and rewrites the changelog.
+5. Merge the Version PR. With `NPM_TOKEN` present, the workflow publishes the
+   new version to npm with provenance and tags `vX.Y.Z`. Without the token it
+   only manages the Version PR (no publish), so the pipeline is safe to run
+   before npm is enabled.
+
+Package semver tracks library releases; `EXECUTION_PROTOCOL_VERSION` tracks wire
+compatibility — the two are deliberately independent.
+
+### One-time human setup (repository administrator)
+
+Agents never request, create, print, or store the npm credential.
+
+- **npm scope** — ensure the `@mrck-labs` org/scope exists and your npm account
+  can publish to it (this is a scoped public package).
+- **GitHub Actions permissions** — Settings → Actions → General → Workflow
+  permissions → enable _Read and write permissions_ and _Allow GitHub Actions to
+  create and approve pull requests_ (required for Changesets to open the Version
+  PR).
+- **`NPM_TOKEN` secret** — create an npm Granular Access Token with publish
+  rights to `@mrck-labs/*` and add it as the Actions secret `NPM_TOKEN`.

@@ -1,8 +1,16 @@
 {
-  "name": "@marckraw/execution-host-protocol",
+  "name": "@mrck-labs/execution-host-protocol",
   "version": "0.2.4",
   "description": "Versioned execution-host wire contract for agent runtimes and clients",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marckraw/execution-host-protocol.git"
+  },
+  "homepage": "https://github.com/marckraw/execution-host-protocol#readme",
+  "bugs": {
+    "url": "https://github.com/marckraw/execution-host-protocol/issues"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
