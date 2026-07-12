@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.3.0
+
+### Minor Changes
+
+- a427e2f: Add a typed, additive inline-image attachment payload and capability for execution start and send-message envelopes while preserving the legacy opaque attachment field.
+
 ## 0.2.5
 
 ### Patch Changes
