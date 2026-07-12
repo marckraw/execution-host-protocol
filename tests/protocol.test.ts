@@ -344,6 +344,15 @@ describe("command contract", () => {
       kind: "send-message",
       text: "hello",
       attachments: [{ path: "image.png" }],
+      inlineAttachments: [
+        {
+          kind: "image",
+          name: "diagram.png",
+          mimeType: "image/png",
+          sizeBytes: 3,
+          dataBase64: "AQID",
+        },
+      ],
       options: {
         deliveryMode: "follow-up",
         metadata: { source: { surface: "emergence" } },
@@ -355,6 +364,29 @@ describe("command contract", () => {
     expect(
       decodeExecutionCommandEnvelope(encodeExecutionCommandEnvelope(envelope)),
     ).toEqual({ ok: true, value: envelope });
+  });
+
+  it("rejects malformed inline image attachments", () => {
+    expect(
+      decodeExecutionCommandEnvelope(
+        JSON.stringify({
+          ...envelope,
+          command: {
+            kind: "send-message",
+            text: "hello",
+            inlineAttachments: [
+              {
+                kind: "image",
+                name: "diagram.png",
+                mimeType: "image/png",
+                sizeBytes: "3",
+                dataBase64: "AQID",
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
   });
 
   it("ignores unknown fields and rejects invalid known fields", () => {
@@ -385,6 +417,15 @@ describe("start request contract", () => {
       effort: null,
       continuationToken: null,
       automationMode: false,
+      inlineAttachments: [
+        {
+          kind: "image",
+          name: "diagram.png",
+          mimeType: "image/png",
+          sizeBytes: 3,
+          dataBase64: "AQID",
+        },
+      ],
     },
     metadata: { source: { surface: "slack", id: "event-1" } },
     workspace: { repository: "owner/repo", ref: "main" },

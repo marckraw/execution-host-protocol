@@ -18,6 +18,7 @@ import {
   type ExecutionHostCommandEnvelope,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
+  type ExecutionInlineImageAttachment,
   type ExecutionMetadataAttributes,
   type ExecutionProtocolDescriptor,
   type ExecutionProviderMeta,
@@ -432,6 +433,10 @@ function decodeCommand(
   if (typeof raw.text !== "string") return failure("invalid-payload");
   if (raw.attachments !== undefined && !Array.isArray(raw.attachments))
     return failure("invalid-payload");
+  const inlineAttachments = decodeOptionalInlineImageAttachments(
+    raw.inlineAttachments,
+  );
+  if (!inlineAttachments.ok) return inlineAttachments;
   if (raw.skillSelections !== undefined && !Array.isArray(raw.skillSelections))
     return failure("invalid-payload");
   const options = decodeOptionalSendOptions(raw.options);
@@ -440,6 +445,7 @@ function decodeCommand(
     kind: "send-message",
     text: raw.text,
     ...optionalProperty("attachments", raw.attachments),
+    ...optionalProperty("inlineAttachments", inlineAttachments.value),
     ...optionalProperty("skillSelections", raw.skillSelections),
     ...optionalProperty("options", options.value),
   });
@@ -502,6 +508,10 @@ function decodeStartConfig(
     typeof raw.automationMode !== "boolean"
   )
     return failure("invalid-payload");
+  const inlineAttachments = decodeOptionalInlineImageAttachments(
+    raw.inlineAttachments,
+  );
+  if (!inlineAttachments.ok) return inlineAttachments;
   return success({
     sessionId: raw.sessionId,
     ...optionalProperty("workingDirectory", raw.workingDirectory),
@@ -510,7 +520,38 @@ function decodeStartConfig(
     effort: raw.effort,
     continuationToken: raw.continuationToken,
     ...optionalProperty("automationMode", raw.automationMode),
+    ...optionalProperty("inlineAttachments", inlineAttachments.value),
   });
+}
+
+function decodeOptionalInlineImageAttachments(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionInlineImageAttachment[] | undefined> {
+  if (raw === undefined) return success(undefined);
+  if (!Array.isArray(raw)) return failure("invalid-payload");
+
+  const attachments: ExecutionInlineImageAttachment[] = [];
+  for (const item of raw) {
+    if (
+      !isRecord(item) ||
+      item.kind !== "image" ||
+      !isNonEmptyString(item.name) ||
+      !isNonEmptyString(item.mimeType) ||
+      !Number.isSafeInteger(item.sizeBytes) ||
+      (item.sizeBytes as number) < 0 ||
+      !isNonEmptyString(item.dataBase64)
+    ) {
+      return failure("invalid-payload");
+    }
+    attachments.push({
+      kind: "image",
+      name: item.name,
+      mimeType: item.mimeType,
+      sizeBytes: item.sizeBytes as number,
+      dataBase64: item.dataBase64,
+    });
+  }
+  return success(attachments);
 }
 
 function decodeOptionalMetadata(

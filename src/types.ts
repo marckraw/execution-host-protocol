@@ -7,6 +7,7 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "workspaces.materialize",
   "callbacks.status",
   "automation.create-pr",
+  "attachments.inline-image",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -210,11 +211,25 @@ export interface ExecutionSendMessageOptions {
   metadata?: ExecutionSessionMetadata | null;
 }
 
+/**
+ * Small image transported inline with a start or command envelope. The daemon
+ * owns byte decoding, limits, staging, and cleanup. The legacy `attachments`
+ * command field remains opaque for compatibility with existing consumers.
+ */
+export interface ExecutionInlineImageAttachment {
+  kind: "image";
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  dataBase64: string;
+}
+
 export type ExecutionHostCommand =
   | {
       kind: "send-message";
       text: string;
       attachments?: unknown[];
+      inlineAttachments?: ExecutionInlineImageAttachment[];
       skillSelections?: unknown[];
       options?: ExecutionSendMessageOptions;
     }
@@ -236,6 +251,7 @@ export interface ExecutionStartConfig {
   effort: string | null;
   continuationToken: string | null;
   automationMode?: boolean;
+  inlineAttachments?: ExecutionInlineImageAttachment[];
 }
 
 export interface ExecutionWorkspaceSource {
