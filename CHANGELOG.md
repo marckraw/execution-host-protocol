@@ -1,4 +1,4 @@
-# @marckraw/execution-host-protocol
+# @mrck-labs/execution-host-protocol
 
 ## 0.2.4
 

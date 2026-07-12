@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
-const packageName = "@marckraw/execution-host-protocol";
+const packageName = "@mrck-labs/execution-host-protocol";
 const require = createRequire(import.meta.url);
 
 const commonJs = require(packageName);

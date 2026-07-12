@@ -31,14 +31,12 @@ npm run test:exports
 Once published, consumers install from npm with a normal semver range:
 
 ```bash
-npm install @marckraw/execution-host-protocol
+npm install @mrck-labs/execution-host-protocol
 ```
 
-Until the first npm release lands, consumers pin an immutable GitHub tag:
-
-```json
-"@marckraw/execution-host-protocol": "github:marckraw/execution-host-protocol#v0.2.4"
-```
+Before the first npm release the package was consumed via immutable GitHub tags
+(`github:marckraw/execution-host-protocol#vX.Y.Z`, under the old `@marckraw`
+scope); npm under `@mrck-labs` is now the canonical channel.
 
 The package ships both ESM (`import`) and CommonJS (`require`) builds, so it
 loads from Electron main processes and Node/Bun runtimes alike.
@@ -66,11 +64,11 @@ compatibility — the two are deliberately independent.
 
 Agents never request, create, print, or store the npm credential.
 
-- **npm scope** — ensure the `@marckraw` scope exists and your npm account owns
-  it (this is a scoped public package).
+- **npm scope** — ensure the `@mrck-labs` org/scope exists and your npm account
+  can publish to it (this is a scoped public package).
 - **GitHub Actions permissions** — Settings → Actions → General → Workflow
   permissions → enable _Read and write permissions_ and _Allow GitHub Actions to
   create and approve pull requests_ (required for Changesets to open the Version
   PR).
 - **`NPM_TOKEN` secret** — create an npm Granular Access Token with publish
-  rights to `@marckraw/*` and add it as the Actions secret `NPM_TOKEN`.
+  rights to `@mrck-labs/*` and add it as the Actions secret `NPM_TOKEN`.
