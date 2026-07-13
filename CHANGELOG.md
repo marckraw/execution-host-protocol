@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.5.0
+
+### Minor Changes
+
+- 2f58fca: Add the optional provider permission configuration to Session start requests while retaining the legacy automation flag.
+
 ## 0.4.0
 
 ### Minor Changes
