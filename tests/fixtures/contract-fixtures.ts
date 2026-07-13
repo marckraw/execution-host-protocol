@@ -32,6 +32,14 @@ export const conversationItemFixtures = {
       providerMeta,
       actor: "assistant",
       text: "EMERGENCE PIPE OK",
+      attachments: [
+        {
+          id: "attachment-1",
+          name: "screen.png",
+          mimeType: "image/png",
+          sizeBytes: 1024,
+        },
+      ],
     },
   },
   thinking: {

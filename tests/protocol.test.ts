@@ -202,10 +202,56 @@ describe("recorded daemon event contract", () => {
     const idPatch: ExecutionConversationItemPatch = { id: "replacement" };
     // @ts-expect-error Item kinds are immutable after conversation.item.add.
     const kindPatch: ExecutionConversationItemPatch = { kind: "tool-call" };
+    const attachmentsPatch: ExecutionConversationItemPatch = {
+      // @ts-expect-error Attachment identity is immutable after item creation.
+      attachments: [],
+    };
 
     expect(mutablePatch).toEqual({ text: "updated" });
     void idPatch;
     void kindPatch;
+    void attachmentsPatch;
+  });
+
+  it("keeps valid attachment metadata and drops malformed optional entries", () => {
+    const envelope = {
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sessionId: "session-1",
+      seq: 1,
+      event: {
+        kind: "delta",
+        delta: {
+          kind: "conversation.item.add",
+          item: {
+            ...conversationItemFixtures.message.value,
+            attachments: [
+              conversationItemFixtures.message.value.attachments[0],
+              { id: "bad", name: "broken.png", mimeType: "image/png" },
+            ],
+          },
+        },
+      },
+    };
+
+    expect(decodeExecutionEventEnvelope(JSON.stringify(envelope))).toEqual({
+      ok: true,
+      value: {
+        ...envelope,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.add",
+            item: conversationItemFixtures.message.value,
+          },
+        },
+      },
+      warnings: [
+        {
+          reason: "dropped-invalid-field",
+          path: "event.delta.item.attachments.1",
+        },
+      ],
+    });
   });
 });
 

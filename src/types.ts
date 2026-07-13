@@ -126,11 +126,20 @@ export interface ExecutionConversationItemBase {
   providerMeta: ExecutionProviderMeta;
 }
 
+/** Persisted attachment metadata. Bytes are fetched from the owning host. */
+export interface ExecutionConversationAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export type ExecutionConversationItem =
   | (ExecutionConversationItemBase & {
       kind: "message";
       actor: "user" | "assistant";
       text: string;
+      attachments?: ExecutionConversationAttachment[];
     })
   | (ExecutionConversationItemBase & {
       kind: "thinking";
@@ -164,7 +173,9 @@ export type ExecutionConversationItem =
 
 type MutableConversationItemPatch<
   Item extends ExecutionConversationItem = ExecutionConversationItem,
-> = Item extends unknown ? Partial<Omit<Item, "id" | "kind">> : never;
+> = Item extends unknown
+  ? Partial<Omit<Item, "id" | "kind" | "attachments">>
+  : never;
 
 export type ExecutionConversationItemPatch = MutableConversationItemPatch;
 

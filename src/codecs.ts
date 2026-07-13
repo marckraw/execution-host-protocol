@@ -8,6 +8,7 @@ import {
   type ExecutionCallbackConfig,
   type ExecutionContextWindow,
   type ExecutionConversationItem,
+  type ExecutionConversationAttachment,
   type ExecutionConversationItemBase,
   type ExecutionConversationItemPatch,
   type ExecutionConversationItemState,
@@ -279,7 +280,10 @@ function decodeDelta(
     case "conversation.item.add": {
       const item = decodeConversationItem(raw.item);
       return item.ok
-        ? success({ kind: "conversation.item.add", item: item.value })
+        ? success(
+            { kind: "conversation.item.add", item: item.value },
+            item.warnings,
+          )
         : item;
     }
     case "conversation.item.patch": {
@@ -337,16 +341,25 @@ function decodeConversationItem(
     providerMeta: raw.providerMeta as ExecutionProviderMeta,
   };
   switch (raw.kind) {
-    case "message":
-      return CONVERSATION_ITEM_FIELD_VALIDATORS.actor(raw.actor) &&
-        CONVERSATION_ITEM_FIELD_VALIDATORS.text(raw.text)
-        ? success({
-            ...base,
-            kind: "message",
-            actor: raw.actor as "user" | "assistant",
-            text: raw.text as string,
-          })
-        : failure("invalid-payload");
+    case "message": {
+      if (
+        !CONVERSATION_ITEM_FIELD_VALIDATORS.actor(raw.actor) ||
+        !CONVERSATION_ITEM_FIELD_VALIDATORS.text(raw.text)
+      ) {
+        return failure("invalid-payload");
+      }
+      const attachments = decodeConversationAttachments(raw.attachments);
+      return success(
+        {
+          ...base,
+          kind: "message",
+          actor: raw.actor as "user" | "assistant",
+          text: raw.text as string,
+          ...optionalProperty("attachments", attachments.value),
+        },
+        attachments.warnings,
+      );
+    }
     case "thinking":
       return raw.actor === "assistant" &&
         CONVERSATION_ITEM_FIELD_VALIDATORS.text(raw.text)
@@ -409,6 +422,51 @@ function decodeConversationItem(
     default:
       return failure("unknown-kind");
   }
+}
+
+function decodeConversationAttachments(raw: unknown): {
+  value: ExecutionConversationAttachment[] | undefined;
+  warnings: ExecutionDecodeWarning[];
+} {
+  if (raw === undefined) return { value: undefined, warnings: [] };
+  if (!Array.isArray(raw)) {
+    return {
+      value: undefined,
+      warnings: [
+        {
+          reason: "dropped-invalid-field",
+          path: "event.delta.item.attachments",
+        },
+      ],
+    };
+  }
+
+  const value: ExecutionConversationAttachment[] = [];
+  const warnings: ExecutionDecodeWarning[] = [];
+  for (const [index, attachment] of raw.entries()) {
+    if (
+      isRecord(attachment) &&
+      isNonEmptyString(attachment.id) &&
+      isNonEmptyString(attachment.name) &&
+      isNonEmptyString(attachment.mimeType) &&
+      typeof attachment.sizeBytes === "number" &&
+      Number.isInteger(attachment.sizeBytes) &&
+      attachment.sizeBytes >= 0
+    ) {
+      value.push({
+        id: attachment.id,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+      });
+    } else {
+      warnings.push({
+        reason: "dropped-invalid-field",
+        path: `event.delta.item.attachments.${index}`,
+      });
+    }
+  }
+  return { value, warnings };
 }
 
 function decodeCommand(
