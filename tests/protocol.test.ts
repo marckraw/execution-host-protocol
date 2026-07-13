@@ -462,6 +462,7 @@ describe("start request contract", () => {
       model: null,
       effort: null,
       continuationToken: null,
+      permissionConfig: { preset: "yolo" },
       automationMode: false,
       inlineAttachments: [
         {
@@ -486,5 +487,33 @@ describe("start request contract", () => {
     expect(
       decodeExecutionStartRequest(encodeExecutionStartRequest(request)),
     ).toEqual({ ok: true, value: request });
+  });
+
+  it("rejects malformed permission policies without weakening legacy requests", () => {
+    expect(
+      decodeExecutionStartRequest(
+        JSON.stringify({
+          ...request,
+          config: {
+            ...request.config,
+            permissionConfig: {
+              preset: "custom",
+              codex: {
+                approvalPolicy: "always",
+                sandbox: "danger-full-access",
+              },
+            },
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+
+    const legacy = {
+      ...request,
+      config: { ...request.config, permissionConfig: undefined },
+    };
+    expect(
+      decodeExecutionStartRequest(encodeExecutionStartRequest(legacy)),
+    ).toEqual({ ok: true, value: legacy });
   });
 });

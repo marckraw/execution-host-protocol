@@ -21,6 +21,7 @@ import {
   type ExecutionHostEventEnvelope,
   type ExecutionInlineImageAttachment,
   type ExecutionMetadataAttributes,
+  type ExecutionPermissionConfig,
   type ExecutionProtocolDescriptor,
   type ExecutionProviderMeta,
   type ExecutionSendMessageOptions,
@@ -566,6 +567,8 @@ function decodeStartConfig(
     typeof raw.automationMode !== "boolean"
   )
     return failure("invalid-payload");
+  const permissionConfig = decodeOptionalPermissionConfig(raw.permissionConfig);
+  if (!permissionConfig.ok) return permissionConfig;
   const inlineAttachments = decodeOptionalInlineImageAttachments(
     raw.inlineAttachments,
   );
@@ -577,8 +580,65 @@ function decodeStartConfig(
     model: raw.model,
     effort: raw.effort,
     continuationToken: raw.continuationToken,
+    ...optionalProperty("permissionConfig", permissionConfig.value),
     ...optionalProperty("automationMode", raw.automationMode),
     ...optionalProperty("inlineAttachments", inlineAttachments.value),
+  });
+}
+
+const PERMISSION_PRESETS = new Set(["ask", "yolo", "custom"]);
+const CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
+const CODEX_SANDBOX_MODES = new Set([
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+]);
+const CLAUDE_PERMISSION_MODES = new Set([
+  "default",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+  "plan",
+  "bypassPermissions",
+]);
+
+function decodeOptionalPermissionConfig(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionStartConfig["permissionConfig"]> {
+  if (raw === undefined) return success(undefined);
+  if (!isRecord(raw) || !PERMISSION_PRESETS.has(String(raw.preset)))
+    return failure("invalid-payload");
+
+  let codex: ExecutionPermissionConfig["codex"] = undefined;
+  if (raw.codex !== undefined) {
+    if (
+      !isRecord(raw.codex) ||
+      !CODEX_APPROVAL_POLICIES.has(String(raw.codex.approvalPolicy)) ||
+      !CODEX_SANDBOX_MODES.has(String(raw.codex.sandbox))
+    )
+      return failure("invalid-payload");
+    codex = {
+      approvalPolicy: raw.codex.approvalPolicy,
+      sandbox: raw.codex.sandbox,
+    } as ExecutionPermissionConfig["codex"];
+  }
+
+  let claudeCode: ExecutionPermissionConfig["claudeCode"] = undefined;
+  if (raw.claudeCode !== undefined) {
+    if (
+      !isRecord(raw.claudeCode) ||
+      !CLAUDE_PERMISSION_MODES.has(String(raw.claudeCode.permissionMode))
+    )
+      return failure("invalid-payload");
+    claudeCode = {
+      permissionMode: raw.claudeCode.permissionMode,
+    } as ExecutionPermissionConfig["claudeCode"];
+  }
+
+  return success({
+    preset: raw.preset as "ask" | "yolo" | "custom",
+    ...optionalProperty("codex", codex),
+    ...optionalProperty("claudeCode", claudeCode),
   });
 }
 

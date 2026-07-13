@@ -235,6 +235,25 @@ export interface ExecutionInlineImageAttachment {
   dataBase64: string;
 }
 
+export type ExecutionPermissionPreset = "ask" | "yolo" | "custom";
+export type ExecutionCodexApprovalPolicy = "untrusted" | "on-request" | "never";
+export type ExecutionCodexSandboxMode =
+  "read-only" | "workspace-write" | "danger-full-access";
+export type ExecutionClaudePermissionMode =
+  "default" | "acceptEdits" | "auto" | "dontAsk" | "plan" | "bypassPermissions";
+
+/** Provider permission policy selected for a Session. */
+export interface ExecutionPermissionConfig {
+  preset: ExecutionPermissionPreset;
+  codex?: {
+    approvalPolicy: ExecutionCodexApprovalPolicy;
+    sandbox: ExecutionCodexSandboxMode;
+  };
+  claudeCode?: {
+    permissionMode: ExecutionClaudePermissionMode;
+  };
+}
+
 export type ExecutionHostCommand =
   | {
       kind: "send-message";
@@ -261,6 +280,8 @@ export interface ExecutionStartConfig {
   model: string | null;
   effort: string | null;
   continuationToken: string | null;
+  permissionConfig?: ExecutionPermissionConfig;
+  /** @deprecated Use permissionConfig. Retained for existing clients. */
   automationMode?: boolean;
   inlineAttachments?: ExecutionInlineImageAttachment[];
 }
