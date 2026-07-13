@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.4.0
+
+### Minor Changes
+
+- 0965781: Add persisted attachment metadata to conversation message items.
+
 ## 0.3.0
 
 ### Minor Changes
