@@ -1,5 +1,13 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.6.0
+
+### Minor Changes
+
+- 4f3d2c9: Add universal turn lifecycle deltas, per-turn file-change metadata, and the
+  `turns.fileChanges` capability. Add native steer and interrupt commands with
+  optional provider turn preconditions.
+
 ## 0.5.0
 
 ### Minor Changes
