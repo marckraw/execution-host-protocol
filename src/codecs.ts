@@ -20,6 +20,7 @@ import {
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
   type ExecutionInlineImageAttachment,
+  type ExecutionMessageDelivery,
   type ExecutionMetadataAttributes,
   type ExecutionPermissionConfig,
   type ExecutionProtocolDescriptor,
@@ -60,6 +61,7 @@ const CONVERSATION_ITEM_FIELD_VALIDATORS = {
   description: (value: unknown) => typeof value === "string",
   prompt: (value: unknown) => typeof value === "string",
   level: isNoteLevel,
+  delivery: isMessageDelivery,
 } satisfies Record<string, (value: unknown) => boolean>;
 type ConversationItemField = keyof typeof CONVERSATION_ITEM_FIELD_VALIDATORS;
 
@@ -77,6 +79,7 @@ const PATCH_FIELDS = [
   "description",
   "prompt",
   "level",
+  "delivery",
 ] as const satisfies readonly ConversationItemField[];
 type PatchField = (typeof PATCH_FIELDS)[number];
 const PATCH_FIELD_SET = new Set<string>(PATCH_FIELDS);
@@ -447,6 +450,7 @@ function decodeConversationItem(
         return failure("invalid-payload");
       }
       const attachments = decodeConversationAttachments(raw.attachments);
+      const delivery = decodeOptionalMessageDelivery(raw.delivery);
       return success(
         {
           ...base,
@@ -454,8 +458,9 @@ function decodeConversationItem(
           actor: raw.actor as "user" | "assistant",
           text: raw.text as string,
           ...optionalProperty("attachments", attachments.value),
+          ...optionalProperty("delivery", delivery.value),
         },
-        attachments.warnings,
+        [...attachments.warnings, ...delivery.warnings],
       );
     }
     case "thinking":
@@ -565,6 +570,23 @@ function decodeConversationAttachments(raw: unknown): {
     }
   }
   return { value, warnings };
+}
+
+function decodeOptionalMessageDelivery(raw: unknown): {
+  value: ExecutionMessageDelivery | undefined;
+  warnings: ExecutionDecodeWarning[];
+} {
+  if (raw === undefined) return { value: undefined, warnings: [] };
+  if (isMessageDelivery(raw)) return { value: raw, warnings: [] };
+  return {
+    value: undefined,
+    warnings: [
+      {
+        reason: "dropped-invalid-field",
+        path: "event.delta.item.delivery",
+      },
+    ],
+  };
 }
 
 function decodeCommand(
@@ -1028,6 +1050,14 @@ function isItemState(
 }
 function isNoteLevel(value: unknown): boolean {
   return value === "info" || value === "warning" || value === "error";
+}
+function isMessageDelivery(value: unknown): value is ExecutionMessageDelivery {
+  return (
+    value === "queued" ||
+    value === "delivered" ||
+    value === "undelivered" ||
+    value === "steered"
+  );
 }
 function isProviderMeta(
   value: unknown,

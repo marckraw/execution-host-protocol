@@ -135,12 +135,16 @@ export interface ExecutionConversationAttachment {
   sizeBytes: number;
 }
 
+export type ExecutionMessageDelivery =
+  "queued" | "delivered" | "undelivered" | "steered";
+
 export type ExecutionConversationItem =
   | (ExecutionConversationItemBase & {
       kind: "message";
       actor: "user" | "assistant";
       text: string;
       attachments?: ExecutionConversationAttachment[];
+      delivery?: ExecutionMessageDelivery;
     })
   | (ExecutionConversationItemBase & {
       kind: "thinking";

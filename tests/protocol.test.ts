@@ -197,7 +197,10 @@ describe("recorded daemon event contract", () => {
   });
 
   it("excludes item identity fields from the public patch type", () => {
-    const mutablePatch: ExecutionConversationItemPatch = { text: "updated" };
+    const mutablePatch: ExecutionConversationItemPatch = {
+      text: "updated",
+      delivery: "delivered",
+    };
     // @ts-expect-error Item ids are immutable after conversation.item.add.
     const idPatch: ExecutionConversationItemPatch = { id: "replacement" };
     // @ts-expect-error Item kinds are immutable after conversation.item.add.
@@ -207,10 +210,56 @@ describe("recorded daemon event contract", () => {
       attachments: [],
     };
 
-    expect(mutablePatch).toEqual({ text: "updated" });
+    expect(mutablePatch).toEqual({
+      text: "updated",
+      delivery: "delivered",
+    });
     void idPatch;
     void kindPatch;
     void attachmentsPatch;
+  });
+
+  it("keeps valid message delivery state and drops invalid optional values", () => {
+    const envelope = {
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sessionId: "session-1",
+      seq: 1,
+      event: {
+        kind: "delta",
+        delta: {
+          kind: "conversation.item.add",
+          item: {
+            ...conversationItemFixtures.message.value,
+            actor: "user",
+            delivery: "queued",
+          },
+        },
+      },
+    };
+
+    expect(decodeExecutionEventEnvelope(JSON.stringify(envelope))).toEqual({
+      ok: true,
+      value: envelope,
+    });
+
+    const invalid = structuredClone(envelope);
+    invalid.event.delta.item.delivery = "lost";
+    const decoded = decodeExecutionEventEnvelope(JSON.stringify(invalid));
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) return;
+    expect(decoded.value.event).toMatchObject({
+      kind: "delta",
+      delta: {
+        kind: "conversation.item.add",
+        item: expect.not.objectContaining({ delivery: expect.anything() }),
+      },
+    });
+    expect(decoded.warnings).toEqual([
+      {
+        reason: "dropped-invalid-field",
+        path: "event.delta.item.delivery",
+      },
+    ]);
   });
 
   it("keeps valid attachment metadata and drops malformed optional entries", () => {
