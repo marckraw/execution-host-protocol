@@ -3,4 +3,5 @@
 ---
 
 Add universal turn lifecycle deltas, per-turn file-change metadata, and the
-`turns.fileChanges` capability.
+`turns.fileChanges` capability. Add native steer and interrupt commands with
+optional provider turn preconditions.

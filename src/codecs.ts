@@ -585,6 +585,32 @@ function decodeCommand(
       ...optionalProperty("providerApprovalId", raw.providerApprovalId),
     });
   }
+  if (raw.kind === "steer") {
+    if (
+      typeof raw.text !== "string" ||
+      (raw.expectedProviderTurnId !== undefined &&
+        typeof raw.expectedProviderTurnId !== "string")
+    ) {
+      return failure("invalid-payload");
+    }
+    return success({
+      kind: "steer",
+      text: raw.text,
+      ...optionalProperty("expectedProviderTurnId", raw.expectedProviderTurnId),
+    });
+  }
+  if (raw.kind === "interrupt") {
+    if (
+      raw.expectedProviderTurnId !== undefined &&
+      typeof raw.expectedProviderTurnId !== "string"
+    ) {
+      return failure("invalid-payload");
+    }
+    return success({
+      kind: "interrupt",
+      ...optionalProperty("expectedProviderTurnId", raw.expectedProviderTurnId),
+    });
+  }
   if (raw.kind !== "send-message") return failure("unknown-kind");
   if (typeof raw.text !== "string") return failure("invalid-payload");
   if (raw.attachments !== undefined && !Array.isArray(raw.attachments))

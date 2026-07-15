@@ -189,4 +189,13 @@ export const commandFixtures = {
     providerApprovalId: "approval-1",
   }),
   stop: commandEnvelope({ kind: "stop" }),
+  steer: commandEnvelope({
+    kind: "steer",
+    text: "Prioritize the migration",
+    expectedProviderTurnId: "turn-1",
+  }),
+  interrupt: commandEnvelope({
+    kind: "interrupt",
+    expectedProviderTurnId: "turn-1",
+  }),
 } satisfies Record<ExecutionHostCommand["kind"], ExecutionHostCommandEnvelope>;

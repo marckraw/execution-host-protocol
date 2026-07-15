@@ -305,6 +305,12 @@ export type ExecutionHostCommand =
     }
   | { kind: "approve"; providerApprovalId?: string }
   | { kind: "deny"; providerApprovalId?: string }
+  | {
+      kind: "steer";
+      text: string;
+      expectedProviderTurnId?: string;
+    }
+  | { kind: "interrupt"; expectedProviderTurnId?: string }
   | { kind: "stop" };
 
 export interface ExecutionHostCommandEnvelope {
