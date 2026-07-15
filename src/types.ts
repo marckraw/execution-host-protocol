@@ -8,6 +8,7 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "callbacks.status",
   "automation.create-pr",
   "attachments.inline-image",
+  "turns.fileChanges",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -179,6 +180,34 @@ type MutableConversationItemPatch<
 
 export type ExecutionConversationItemPatch = MutableConversationItemPatch;
 
+export type ExecutionTurnStatus = "running" | "completed" | "errored";
+export type ExecutionTurnFileChangeStatus = "added" | "modified" | "deleted";
+
+export interface ExecutionTurn {
+  id: string;
+  sessionId: string;
+  sequence: number;
+  startedAt: string;
+  endedAt: string | null;
+  status: ExecutionTurnStatus;
+  summary: string | null;
+}
+
+export interface ExecutionTurnFileChange {
+  id: string;
+  sessionId: string;
+  turnId: string;
+  filePath: string;
+  oldPath: null;
+  status: ExecutionTurnFileChangeStatus;
+  additions: number;
+  deletions: number;
+  diff: string;
+  truncated: boolean;
+  binary: boolean;
+  createdAt: string;
+}
+
 export type ExecutionSessionDelta =
   | {
       kind: "session.patch";
@@ -196,6 +225,17 @@ export type ExecutionSessionDelta =
       kind: "conversation.item.patch";
       itemId: string;
       patch: ExecutionConversationItemPatch;
+    }
+  | { kind: "turn.add"; turn: ExecutionTurn }
+  | {
+      kind: "turn.patch";
+      turnId: string;
+      patch: Partial<Pick<ExecutionTurn, "endedAt" | "status" | "summary">>;
+    }
+  | {
+      kind: "turn.fileChanges.add";
+      turnId: string;
+      fileChanges: ExecutionTurnFileChange[];
     };
 
 export type ExecutionHostEvent =

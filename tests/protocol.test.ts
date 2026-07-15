@@ -253,6 +253,62 @@ describe("recorded daemon event contract", () => {
       ],
     });
   });
+
+  it("decodes additive turn lifecycle and file-change deltas", () => {
+    const turn = {
+      id: "turn-1",
+      sessionId: "session-1",
+      sequence: 1,
+      startedAt: "2026-07-15T19:00:00.000Z",
+      endedAt: null,
+      status: "running",
+      summary: null,
+    } as const;
+    const fileChange = {
+      id: "change-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      filePath: "src/index.ts",
+      oldPath: null,
+      status: "modified",
+      additions: 2,
+      deletions: 1,
+      diff: "@@ -1 +1,2 @@",
+      truncated: false,
+      binary: false,
+      createdAt: "2026-07-15T19:01:00.000Z",
+    } as const;
+    const deltas = [
+      { kind: "turn.add", turn },
+      {
+        kind: "turn.patch",
+        turnId: "turn-1",
+        patch: {
+          endedAt: "2026-07-15T19:01:00.000Z",
+          status: "completed",
+          summary: "Updated the entry point",
+        },
+      },
+      {
+        kind: "turn.fileChanges.add",
+        turnId: "turn-1",
+        fileChanges: [fileChange],
+      },
+    ];
+
+    for (const [index, delta] of deltas.entries()) {
+      expect(
+        decodeExecutionEventEnvelope(
+          JSON.stringify({
+            protocolVersion: 1,
+            sessionId: "session-1",
+            seq: index + 1,
+            event: { kind: "delta", delta },
+          }),
+        ),
+      ).toMatchObject({ ok: true, value: { event: { delta } } });
+    }
+  });
 });
 
 describe("exhaustive contract fixtures", () => {

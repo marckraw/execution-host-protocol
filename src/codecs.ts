@@ -28,6 +28,8 @@ import {
   type ExecutionSessionDelta,
   type ExecutionSessionMetadata,
   type ExecutionSessionStatus,
+  type ExecutionTurn,
+  type ExecutionTurnFileChange,
   type ExecutionStartConfig,
   type ExecutionStartRequest,
   type ExecutionWorkspaceSource,
@@ -314,9 +316,104 @@ function decodeDelta(
         warnings,
       );
     }
+    case "turn.add": {
+      const turn = decodeTurn(raw.turn);
+      return turn
+        ? success({ kind: "turn.add", turn })
+        : failure("invalid-payload");
+    }
+    case "turn.patch": {
+      if (!isNonEmptyString(raw.turnId) || !isRecord(raw.patch)) {
+        return failure("invalid-payload");
+      }
+      const patch: Extract<
+        ExecutionSessionDelta,
+        { kind: "turn.patch" }
+      >["patch"] = {};
+      if (raw.patch.endedAt !== undefined) {
+        if (raw.patch.endedAt !== null && typeof raw.patch.endedAt !== "string")
+          return failure("invalid-payload");
+        patch.endedAt = raw.patch.endedAt;
+      }
+      if (raw.patch.status !== undefined) {
+        if (!isTurnStatus(raw.patch.status)) return failure("invalid-payload");
+        patch.status = raw.patch.status;
+      }
+      if (raw.patch.summary !== undefined) {
+        if (raw.patch.summary !== null && typeof raw.patch.summary !== "string")
+          return failure("invalid-payload");
+        patch.summary = raw.patch.summary;
+      }
+      return success({ kind: "turn.patch", turnId: raw.turnId, patch });
+    }
+    case "turn.fileChanges.add": {
+      if (!isNonEmptyString(raw.turnId) || !Array.isArray(raw.fileChanges)) {
+        return failure("invalid-payload");
+      }
+      const fileChanges = raw.fileChanges.map(decodeTurnFileChange);
+      return fileChanges.every(
+        (change): change is ExecutionTurnFileChange => change !== null,
+      )
+        ? success({
+            kind: "turn.fileChanges.add",
+            turnId: raw.turnId,
+            fileChanges,
+          })
+        : failure("invalid-payload");
+    }
     default:
       return failure("unknown-kind");
   }
+}
+
+function decodeTurn(raw: unknown): ExecutionTurn | null {
+  if (
+    !isRecord(raw) ||
+    !isNonEmptyString(raw.id) ||
+    !isNonEmptyString(raw.sessionId) ||
+    !Number.isInteger(raw.sequence) ||
+    (raw.sequence as number) < 1 ||
+    typeof raw.startedAt !== "string" ||
+    (raw.endedAt !== null && typeof raw.endedAt !== "string") ||
+    !isTurnStatus(raw.status) ||
+    (raw.summary !== null && typeof raw.summary !== "string")
+  ) {
+    return null;
+  }
+  return raw as unknown as ExecutionTurn;
+}
+
+function decodeTurnFileChange(raw: unknown): ExecutionTurnFileChange | null {
+  if (
+    !isRecord(raw) ||
+    !isNonEmptyString(raw.id) ||
+    !isNonEmptyString(raw.sessionId) ||
+    !isNonEmptyString(raw.turnId) ||
+    !isNonEmptyString(raw.filePath) ||
+    raw.oldPath !== null ||
+    !isTurnFileChangeStatus(raw.status) ||
+    !Number.isInteger(raw.additions) ||
+    (raw.additions as number) < 0 ||
+    !Number.isInteger(raw.deletions) ||
+    (raw.deletions as number) < 0 ||
+    typeof raw.diff !== "string" ||
+    typeof raw.truncated !== "boolean" ||
+    typeof raw.binary !== "boolean" ||
+    typeof raw.createdAt !== "string"
+  ) {
+    return null;
+  }
+  return raw as unknown as ExecutionTurnFileChange;
+}
+
+function isTurnStatus(value: unknown): value is ExecutionTurn["status"] {
+  return value === "running" || value === "completed" || value === "errored";
+}
+
+function isTurnFileChangeStatus(
+  value: unknown,
+): value is ExecutionTurnFileChange["status"] {
+  return value === "added" || value === "modified" || value === "deleted";
 }
 
 function decodeConversationItem(
