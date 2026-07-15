@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.6.1
+
+### Patch Changes
+
+- 438d43f: Add optional queued, delivered, undelivered, and steered delivery state to message conversation items.
+
 ## 0.6.0
 
 ### Minor Changes
