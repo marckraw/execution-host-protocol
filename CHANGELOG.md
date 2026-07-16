@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.7.0
+
+### Minor Changes
+
+- dfec78d: Add a cancel-queued command and cancelled message-delivery state for queued follow-up cancellation.
+
 ## 0.6.2
 
 ### Patch Changes
