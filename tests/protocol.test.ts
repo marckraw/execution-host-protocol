@@ -262,6 +262,30 @@ describe("recorded daemon event contract", () => {
     ]);
   });
 
+  it("keeps the additive cancelled message delivery state", () => {
+    const envelope = {
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sessionId: "session-1",
+      seq: 1,
+      event: {
+        kind: "delta",
+        delta: {
+          kind: "conversation.item.add",
+          item: {
+            ...conversationItemFixtures.message.value,
+            actor: "user",
+            delivery: "cancelled",
+          },
+        },
+      },
+    };
+
+    expect(decodeExecutionEventEnvelope(JSON.stringify(envelope))).toEqual({
+      ok: true,
+      value: envelope,
+    });
+  });
+
   it("keeps valid attachment metadata and drops malformed optional entries", () => {
     const envelope = {
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
@@ -610,6 +634,18 @@ describe("command contract", () => {
         JSON.stringify({
           ...envelope,
           command: { kind: "send-message", text: 42 },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+  });
+
+  it("rejects a cancel-queued command without an item identity", () => {
+    expect(
+      decodeExecutionCommandEnvelope(
+        JSON.stringify({
+          protocolVersion: EXECUTION_PROTOCOL_VERSION,
+          sessionId: "session-1",
+          command: { kind: "cancel-queued", itemId: "" },
         }),
       ),
     ).toEqual({ ok: false, reason: "invalid-payload" });

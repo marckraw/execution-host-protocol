@@ -137,7 +137,7 @@ export interface ExecutionConversationAttachment {
 }
 
 export type ExecutionMessageDelivery =
-  "queued" | "delivered" | "undelivered" | "steered";
+  "queued" | "delivered" | "undelivered" | "steered" | "cancelled";
 
 export type ExecutionConversationItem =
   | (ExecutionConversationItemBase & {
@@ -317,6 +317,7 @@ export type ExecutionHostCommand =
       expectedProviderTurnId?: string;
     }
   | { kind: "interrupt"; expectedProviderTurnId?: string }
+  | { kind: "cancel-queued"; itemId: string }
   | { kind: "stop" };
 
 export interface ExecutionHostCommandEnvelope {

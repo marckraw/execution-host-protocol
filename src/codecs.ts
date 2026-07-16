@@ -649,6 +649,10 @@ function decodeCommand(
       ...optionalProperty("expectedProviderTurnId", raw.expectedProviderTurnId),
     });
   }
+  if (raw.kind === "cancel-queued") {
+    if (!isNonEmptyString(raw.itemId)) return failure("invalid-payload");
+    return success({ kind: "cancel-queued", itemId: raw.itemId });
+  }
   if (raw.kind !== "send-message") return failure("unknown-kind");
   if (typeof raw.text !== "string") return failure("invalid-payload");
   if (raw.attachments !== undefined && !Array.isArray(raw.attachments))
@@ -1072,7 +1076,8 @@ function isMessageDelivery(value: unknown): value is ExecutionMessageDelivery {
     value === "queued" ||
     value === "delivered" ||
     value === "undelivered" ||
-    value === "steered"
+    value === "steered" ||
+    value === "cancelled"
   );
 }
 function isProviderMeta(

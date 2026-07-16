@@ -198,4 +198,8 @@ export const commandFixtures = {
     kind: "interrupt",
     expectedProviderTurnId: "turn-1",
   }),
+  "cancel-queued": commandEnvelope({
+    kind: "cancel-queued",
+    itemId: "queued-message-1",
+  }),
 } satisfies Record<ExecutionHostCommand["kind"], ExecutionHostCommandEnvelope>;
