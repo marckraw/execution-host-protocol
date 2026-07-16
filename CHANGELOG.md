@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.8.0
+
+### Minor Changes
+
+- 0afe2d9: Add structured interaction request and response shapes, typed answer delivery, and capability identifiers for structured interactions and queued-message cancellation.
+
 ## 0.7.0
 
 ### Minor Changes
