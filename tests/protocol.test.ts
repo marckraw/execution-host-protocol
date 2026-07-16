@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   EXECUTION_PROTOCOL_VERSION,
+  EXECUTION_PROTOCOL_CAPABILITY_IDS,
   decodeExecutionCommandEnvelope,
   decodeExecutionEventEnvelope,
   decodeExecutionProtocolDescriptor,
@@ -507,6 +508,150 @@ describe("capability negotiation", () => {
         version: 1,
         capabilities: ["events.replay", "future.capability"],
       },
+    });
+  });
+
+  it("exports the structured-interaction and queued-cancellation capability ids", () => {
+    expect(EXECUTION_PROTOCOL_CAPABILITY_IDS).toContain(
+      "interactions.structured",
+    );
+    expect(EXECUTION_PROTOCOL_CAPABILITY_IDS).toContain(
+      "commands.cancelQueued",
+    );
+  });
+});
+
+describe("structured interactions", () => {
+  it("round-trips choice requests and responses", () => {
+    const event = {
+      ...eventFixtures.delta,
+      event: {
+        kind: "delta" as const,
+        delta: {
+          kind: "conversation.item.add" as const,
+          item: conversationItemFixtures["input-request"].value,
+        },
+      },
+    };
+    expect(decodeExecutionEventEnvelope(JSON.stringify(event))).toEqual({
+      ok: true,
+      value: event,
+    });
+    expect(
+      decodeExecutionCommandEnvelope(
+        JSON.stringify(commandFixtures["send-message"]),
+      ),
+    ).toEqual({ ok: true, value: commandFixtures["send-message"] });
+  });
+
+  it("decodes plan, text, form, and URL request shapes", () => {
+    const requests = [
+      { kind: "text", prompt: "Explain the constraint" },
+      {
+        kind: "plan",
+        plan: "1. Inspect\n2. Change",
+        allowedPrompts: ["Proceed"],
+      },
+      {
+        kind: "form",
+        title: "Deploy",
+        message: "Configure the target",
+        fields: [
+          { id: "replicas", label: "Replicas", type: "number", required: true },
+        ],
+      },
+      {
+        kind: "url",
+        title: "Authorize",
+        message: "Open the provider",
+        url: "https://example.test/authorize",
+      },
+    ];
+    for (const request of requests) {
+      const item = {
+        ...conversationItemFixtures["input-request"].value,
+        request,
+      };
+      const decoded = decodeExecutionEventEnvelope(
+        JSON.stringify({
+          ...eventFixtures.delta,
+          event: {
+            kind: "delta",
+            delta: { kind: "conversation.item.add", item },
+          },
+        }),
+      );
+      expect(decoded).toMatchObject({ ok: true });
+      if (decoded.ok) {
+        expect(
+          decoded.value.event.kind === "delta" &&
+            decoded.value.event.delta.kind === "conversation.item.add"
+            ? decoded.value.event.delta.item
+            : null,
+        ).toMatchObject({ request });
+      }
+    }
+  });
+
+  it("drops unknown or malformed request payloads without losing the prompt", () => {
+    for (const request of [
+      { kind: "future", payload: true },
+      { kind: "choice", questions: [{ id: "missing-fields" }] },
+    ]) {
+      const decoded = decodeExecutionEventEnvelope(
+        JSON.stringify({
+          ...eventFixtures.delta,
+          event: {
+            kind: "delta",
+            delta: {
+              kind: "conversation.item.add",
+              item: {
+                ...conversationItemFixtures["input-request"].value,
+                request,
+              },
+            },
+          },
+        }),
+      );
+      expect(decoded).toMatchObject({
+        ok: true,
+        warnings: [
+          {
+            reason: "dropped-invalid-field",
+            path: "event.delta.item.request",
+          },
+        ],
+      });
+      if (decoded.ok && decoded.value.event.kind === "delta") {
+        expect(decoded.value.event.delta).toMatchObject({
+          item: { kind: "input-request", prompt: "Choose a target" },
+        });
+        expect(
+          "item" in decoded.value.event.delta
+            ? decoded.value.event.delta.item
+            : {},
+        ).not.toHaveProperty("request");
+      }
+    }
+  });
+
+  it("rejects malformed structured responses", () => {
+    const malformed = {
+      ...commandFixtures["send-message"],
+      command: {
+        ...commandFixtures["send-message"].command,
+        options: {
+          deliveryMode: "answer",
+          interactionResponse: {
+            kind: "choice",
+            answers: [{ questionId: "target", values: "Local" }],
+          },
+        },
+      },
+    };
+    expect(decodeExecutionCommandEnvelope(JSON.stringify(malformed))).toEqual({
+      ok: false,
+      reason: "invalid-payload",
     });
   });
 });

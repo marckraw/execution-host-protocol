@@ -20,6 +20,10 @@ import {
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
   type ExecutionInlineImageAttachment,
+  type ExecutionInteractionFormField,
+  type ExecutionInteractionQuestion,
+  type ExecutionInteractionRequest,
+  type ExecutionInteractionResponse,
   type ExecutionMessageDelivery,
   type ExecutionMetadataAttributes,
   type ExecutionPermissionConfig,
@@ -521,13 +525,19 @@ function decodeConversationItem(
           })
         : failure("invalid-payload");
     case "input-request":
-      return CONVERSATION_ITEM_FIELD_VALIDATORS.prompt(raw.prompt)
-        ? success({
-            ...base,
-            kind: "input-request",
-            prompt: raw.prompt as string,
-          })
-        : failure("invalid-payload");
+      if (!CONVERSATION_ITEM_FIELD_VALIDATORS.prompt(raw.prompt)) {
+        return failure("invalid-payload");
+      }
+      const request = decodeOptionalInteractionRequest(raw.request);
+      return success(
+        {
+          ...base,
+          kind: "input-request",
+          prompt: raw.prompt as string,
+          ...optionalProperty("request", request.value),
+        },
+        request.warnings,
+      );
     case "note":
       return CONVERSATION_ITEM_FIELD_VALIDATORS.level(raw.level) &&
         CONVERSATION_ITEM_FIELD_VALIDATORS.text(raw.text)
@@ -682,6 +692,10 @@ function decodeOptionalSendOptions(
   if (!isRecord(raw)) return failure("invalid-payload");
   const metadata = decodeOptionalMetadata(raw.metadata);
   if (!metadata.ok) return metadata;
+  const interactionResponse = decodeOptionalInteractionResponse(
+    raw.interactionResponse,
+  );
+  if (!interactionResponse.ok) return interactionResponse;
   if (raw.deliveryMode !== undefined && typeof raw.deliveryMode !== "string")
     return failure("invalid-payload");
   if (
@@ -700,9 +714,227 @@ function decodeOptionalSendOptions(
       "expectedProviderTurnId",
       raw.expectedProviderTurnId as string | null | undefined,
     ),
-    ...optionalProperty("interactionResponse", raw.interactionResponse),
+    ...optionalProperty("interactionResponse", interactionResponse.value),
     ...optionalProperty("metadata", metadata.value),
   });
+}
+
+function decodeOptionalInteractionRequest(raw: unknown): {
+  value: ExecutionInteractionRequest | undefined;
+  warnings: ExecutionDecodeWarning[];
+} {
+  if (raw === undefined) return { value: undefined, warnings: [] };
+  const value = decodeInteractionRequest(raw);
+  return value
+    ? { value, warnings: [] }
+    : {
+        value: undefined,
+        warnings: [
+          {
+            reason: "dropped-invalid-field",
+            path: "event.delta.item.request",
+          },
+        ],
+      };
+}
+
+function decodeInteractionRequest(
+  raw: unknown,
+): ExecutionInteractionRequest | null {
+  if (!isRecord(raw) || !isNonEmptyString(raw.kind)) return null;
+  if (raw.kind === "text") {
+    return isNonEmptyString(raw.prompt)
+      ? { kind: "text", prompt: raw.prompt }
+      : null;
+  }
+  if (raw.kind === "choice") {
+    const questions = decodeInteractionQuestions(raw.questions);
+    return questions ? { kind: "choice", questions } : null;
+  }
+  if (raw.kind === "plan") {
+    if (!isNonEmptyString(raw.plan)) return null;
+    if (!isOptionalString(raw.planPath)) return null;
+    if (
+      raw.allowedPrompts !== undefined &&
+      (!Array.isArray(raw.allowedPrompts) ||
+        !raw.allowedPrompts.every(isNonEmptyString))
+    ) {
+      return null;
+    }
+    return {
+      kind: "plan",
+      plan: raw.plan,
+      ...optionalProperty("planPath", raw.planPath as string | undefined),
+      ...optionalProperty(
+        "allowedPrompts",
+        raw.allowedPrompts as string[] | undefined,
+      ),
+    };
+  }
+  if (raw.kind === "form") {
+    const fields = decodeInteractionFormFields(raw.fields);
+    return isNonEmptyString(raw.title) &&
+      typeof raw.message === "string" &&
+      fields
+      ? { kind: "form", title: raw.title, message: raw.message, fields }
+      : null;
+  }
+  if (raw.kind === "url") {
+    return isNonEmptyString(raw.title) &&
+      typeof raw.message === "string" &&
+      isHttpUrl(raw.url)
+      ? { kind: "url", title: raw.title, message: raw.message, url: raw.url }
+      : null;
+  }
+  return null;
+}
+
+function decodeInteractionQuestions(
+  raw: unknown,
+): ExecutionInteractionQuestion[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const questions: ExecutionInteractionQuestion[] = [];
+  for (const question of raw) {
+    if (
+      !isRecord(question) ||
+      !isNonEmptyString(question.id) ||
+      !isNonEmptyString(question.question) ||
+      !isNonEmptyString(question.header) ||
+      typeof question.multiSelect !== "boolean" ||
+      !Array.isArray(question.options)
+    ) {
+      return null;
+    }
+    const options = question.options.flatMap((option) => {
+      if (!isRecord(option) || !isNonEmptyString(option.label)) return [];
+      if (
+        !isOptionalString(option.description) ||
+        !isOptionalString(option.preview)
+      ) {
+        return [];
+      }
+      return [
+        {
+          label: option.label,
+          ...optionalProperty(
+            "description",
+            option.description as string | undefined,
+          ),
+          ...optionalProperty("preview", option.preview as string | undefined),
+        },
+      ];
+    });
+    if (options.length !== question.options.length) return null;
+    questions.push({
+      id: question.id,
+      question: question.question,
+      header: question.header,
+      options,
+      multiSelect: question.multiSelect,
+    });
+  }
+  return questions;
+}
+
+function decodeInteractionFormFields(
+  raw: unknown,
+): ExecutionInteractionFormField[] | null {
+  if (!Array.isArray(raw)) return null;
+  const fields: ExecutionInteractionFormField[] = [];
+  for (const field of raw) {
+    if (
+      !isRecord(field) ||
+      !isNonEmptyString(field.id) ||
+      !isNonEmptyString(field.label) ||
+      (field.type !== "string" &&
+        field.type !== "number" &&
+        field.type !== "boolean") ||
+      typeof field.required !== "boolean" ||
+      !isOptionalString(field.description) ||
+      (field.defaultValue !== undefined &&
+        typeof field.defaultValue !== "string" &&
+        typeof field.defaultValue !== "number" &&
+        typeof field.defaultValue !== "boolean") ||
+      (field.multiline !== undefined && typeof field.multiline !== "boolean")
+    ) {
+      return null;
+    }
+    fields.push({
+      id: field.id,
+      label: field.label,
+      type: field.type,
+      required: field.required,
+      ...optionalProperty(
+        "description",
+        field.description as string | undefined,
+      ),
+      ...optionalProperty(
+        "defaultValue",
+        field.defaultValue as string | number | boolean | undefined,
+      ),
+      ...optionalProperty("multiline", field.multiline as boolean | undefined),
+    });
+  }
+  return fields;
+}
+
+function decodeOptionalInteractionResponse(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionInteractionResponse | undefined> {
+  if (raw === undefined) return success(undefined);
+  if (!isRecord(raw) || !isNonEmptyString(raw.kind)) {
+    return failure("invalid-payload");
+  }
+  if (raw.kind === "choice") {
+    if (!Array.isArray(raw.answers)) return failure("invalid-payload");
+    const answers = raw.answers.flatMap((answer) =>
+      isRecord(answer) &&
+      isNonEmptyString(answer.questionId) &&
+      Array.isArray(answer.values) &&
+      answer.values.every((value) => typeof value === "string")
+        ? [{ questionId: answer.questionId, values: answer.values as string[] }]
+        : [],
+    );
+    return answers.length === raw.answers.length
+      ? success({ kind: "choice", answers })
+      : failure("invalid-payload");
+  }
+  if (raw.kind === "plan") {
+    if (raw.decision !== "approve" && raw.decision !== "reject") {
+      return failure("invalid-payload");
+    }
+    if (!isOptionalString(raw.message)) return failure("invalid-payload");
+    return success({
+      kind: "plan",
+      decision: raw.decision,
+      ...optionalProperty("message", raw.message as string | undefined),
+    });
+  }
+  if (raw.kind === "form") {
+    if (
+      (raw.action !== "accept" && raw.action !== "decline") ||
+      !isRecord(raw.values) ||
+      !Object.values(raw.values).every(
+        (value) =>
+          typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean",
+      )
+    ) {
+      return failure("invalid-payload");
+    }
+    return success({
+      kind: "form",
+      action: raw.action,
+      values: raw.values as Record<string, string | number | boolean>,
+    });
+  }
+  if (raw.kind === "url") {
+    return raw.action === "accept" || raw.action === "decline"
+      ? success({ kind: "url", action: raw.action })
+      : failure("invalid-payload");
+  }
+  return failure("invalid-payload");
 }
 
 function decodeStartConfig(
@@ -1059,6 +1291,9 @@ function isNullableString(value: unknown): value is string | null {
 }
 function isOptionalNullableString(value: unknown): boolean {
   return value === undefined || isNullableString(value);
+}
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
 }
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;

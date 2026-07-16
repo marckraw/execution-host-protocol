@@ -8,6 +8,8 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "callbacks.status",
   "automation.create-pr",
   "attachments.inline-image",
+  "commands.cancelQueued",
+  "interactions.structured",
   "turns.fileChanges",
   "turns.fileChanges.combined",
 ] as const;
@@ -139,6 +141,63 @@ export interface ExecutionConversationAttachment {
 export type ExecutionMessageDelivery =
   "queued" | "delivered" | "undelivered" | "steered" | "cancelled";
 
+export interface ExecutionInteractionChoiceOption {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+export interface ExecutionInteractionQuestion {
+  id: string;
+  question: string;
+  header: string;
+  options: ExecutionInteractionChoiceOption[];
+  multiSelect: boolean;
+}
+
+export type ExecutionInteractionFormFieldType = "string" | "number" | "boolean";
+
+export interface ExecutionInteractionFormField {
+  id: string;
+  label: string;
+  description?: string;
+  type: ExecutionInteractionFormFieldType;
+  required: boolean;
+  defaultValue?: string | number | boolean;
+  multiline?: boolean;
+}
+
+/** Structured human input requested by a provider. Unknown future kinds are dropped by tolerant readers. */
+export type ExecutionInteractionRequest =
+  | { kind: "text"; prompt: string }
+  | { kind: "choice"; questions: ExecutionInteractionQuestion[] }
+  | {
+      kind: "plan";
+      plan: string;
+      planPath?: string;
+      allowedPrompts?: string[];
+    }
+  | {
+      kind: "form";
+      title: string;
+      message: string;
+      fields: ExecutionInteractionFormField[];
+    }
+  | { kind: "url"; title: string; message: string; url: string };
+
+export type ExecutionInteractionResponse =
+  | {
+      kind: "choice";
+      answers: Array<{ questionId: string; values: string[] }>;
+    }
+  | { kind: "plan"; decision: "approve" | "reject"; message?: string }
+  | {
+      kind: "form";
+      action: "accept" | "decline";
+      values: Record<string, string | number | boolean>;
+    }
+  | { kind: "url"; action: "accept" | "decline" };
+
 export type ExecutionConversationItem =
   | (ExecutionConversationItemBase & {
       kind: "message";
@@ -170,6 +229,7 @@ export type ExecutionConversationItem =
   | (ExecutionConversationItemBase & {
       kind: "input-request";
       prompt: string;
+      request?: ExecutionInteractionRequest;
     })
   | (ExecutionConversationItemBase & {
       kind: "note";
@@ -264,7 +324,7 @@ export interface ExecutionSendMessageOptions {
   deliveryMode?: string;
   queuedInputId?: string | null;
   expectedProviderTurnId?: string | null;
-  interactionResponse?: unknown;
+  interactionResponse?: ExecutionInteractionResponse;
   metadata?: ExecutionSessionMetadata | null;
 }
 

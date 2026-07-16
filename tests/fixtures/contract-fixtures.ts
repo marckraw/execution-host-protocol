@@ -104,6 +104,21 @@ export const conversationItemFixtures = {
       updatedAt: timestamp,
       providerMeta,
       prompt: "Choose a target",
+      request: {
+        kind: "choice",
+        questions: [
+          {
+            id: "target",
+            question: "Which target?",
+            header: "Target",
+            options: [
+              { label: "Local", description: "Run on this Mac." },
+              { label: "Remote" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
     },
   },
   note: {
@@ -178,7 +193,14 @@ export const commandFixtures = {
   "send-message": commandEnvelope({
     kind: "send-message",
     text: "continue",
-    options: { deliveryMode: "follow-up" },
+    options: {
+      deliveryMode: "answer",
+      queuedInputId: "input-1",
+      interactionResponse: {
+        kind: "choice",
+        answers: [{ questionId: "target", values: ["Local"] }],
+      },
+    },
   }),
   approve: commandEnvelope({
     kind: "approve",
