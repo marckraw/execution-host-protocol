@@ -276,6 +276,12 @@ function decodeDelta(
         }
         patch.continuationToken = raw.patch.continuationToken;
       }
+      if (raw.patch.prUrl !== undefined) {
+        if (raw.patch.prUrl !== null && !isHttpUrl(raw.patch.prUrl)) {
+          return failure("invalid-payload");
+        }
+        patch.prUrl = raw.patch.prUrl;
+      }
       if (raw.patch.updatedAt !== undefined) {
         if (typeof raw.patch.updatedAt !== "string")
           return failure("invalid-payload");
@@ -366,6 +372,16 @@ function decodeDelta(
     }
     default:
       return failure("unknown-kind");
+  }
+}
+
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
   }
 }
 

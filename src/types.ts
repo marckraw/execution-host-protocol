@@ -9,6 +9,7 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "automation.create-pr",
   "attachments.inline-image",
   "turns.fileChanges",
+  "turns.fileChanges.combined",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -221,6 +222,7 @@ export type ExecutionSessionDelta =
         activity?: ExecutionActivitySignal;
         contextWindow?: ExecutionContextWindow;
         continuationToken?: string | null;
+        prUrl?: string | null;
         updatedAt?: string;
       };
     }

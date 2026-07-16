@@ -487,6 +487,65 @@ describe("capability negotiation", () => {
   });
 });
 
+describe("session.patch PR URL", () => {
+  it("accepts additive HTTP(S) PR URLs", () => {
+    expect(
+      decodeExecutionEventEnvelope(
+        JSON.stringify({
+          protocolVersion: 1,
+          sessionId: "session-1",
+          seq: 7,
+          event: {
+            kind: "delta",
+            delta: {
+              kind: "session.patch",
+              patch: { prUrl: "https://github.com/acme/repo/pull/7" },
+            },
+          },
+        }),
+      ),
+    ).toEqual({
+      ok: true,
+      value: {
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 7,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "session.patch",
+            patch: { prUrl: "https://github.com/acme/repo/pull/7" },
+          },
+        },
+      },
+    });
+  });
+
+  it("accepts null and rejects non-HTTP(S) schemes", () => {
+    const envelope = (prUrl: unknown) =>
+      JSON.stringify({
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 8,
+        event: {
+          kind: "delta",
+          delta: { kind: "session.patch", patch: { prUrl } },
+        },
+      });
+
+    expect(decodeExecutionEventEnvelope(envelope(null))).toMatchObject({
+      ok: true,
+    });
+    expect(
+      decodeExecutionEventEnvelope(envelope("javascript:alert(1)")),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+    expect(decodeExecutionEventEnvelope(envelope("not a URL"))).toEqual({
+      ok: false,
+      reason: "invalid-payload",
+    });
+  });
+});
+
 describe("command contract", () => {
   const envelope: ExecutionHostCommandEnvelope = {
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
