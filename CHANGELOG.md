@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.6.2
+
+### Patch Changes
+
+- 9986b7a: Add validated live PR URL session patches and the combined turn-file-change capability identifier.
+
 ## 0.6.1
 
 ### Patch Changes
