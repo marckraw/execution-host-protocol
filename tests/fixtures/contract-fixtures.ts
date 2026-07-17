@@ -5,6 +5,7 @@ import {
   type ExecutionHostCommandEnvelope,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
+  type ExecutionRoomChristenResponse,
 } from "../../src/index.js";
 
 type FixtureSource = "recorded" | "hand-authored";
@@ -19,6 +20,26 @@ const providerMeta = {
   providerItemId: null,
   providerEventType: null,
 };
+
+// Captured from a v0.19.0 local daemon retry response on 2026-07-17.
+export const roomChristenPendingFixture = {
+  source: "recorded",
+  value: {
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    room: {
+      id: "158235e5-9402-44f7-a2d2-fae1d1573ac2",
+      name: "trail sweep repro",
+      createdAt: "2026-07-17T13:23:40.475Z",
+      lastActiveAt: "2026-07-17T13:23:40.475Z",
+      founding: "pending",
+      foundingMemoryEntryCount: null,
+      foundingError: null,
+      sessionCount: 1,
+    },
+    founding: "pending",
+    foundingMemoryEntryCount: 0,
+  },
+} satisfies Fixture<ExecutionRoomChristenResponse>;
 
 export const conversationItemFixtures = {
   message: {

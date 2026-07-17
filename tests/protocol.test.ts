@@ -22,6 +22,7 @@ import {
   commandFixtures,
   conversationItemFixtures,
   eventFixtures,
+  roomChristenPendingFixture,
 } from "./fixtures/contract-fixtures.js";
 
 const rawSse = readFileSync(
@@ -710,17 +711,7 @@ describe("Room v1", () => {
       sessionCount: 1,
     };
     expect(
-      decodeExecutionRoomChristenResponse({
-        protocolVersion: 1,
-        room: {
-          ...baseRoom,
-          founding: "pending",
-          foundingMemoryEntryCount: null,
-          foundingError: null,
-        },
-        founding: "pending",
-        foundingMemoryEntryCount: 0,
-      }),
+      decodeExecutionRoomChristenResponse(roomChristenPendingFixture.value),
     ).toMatchObject({
       ok: true,
       value: { founding: "pending", room: { founding: "pending" } },
