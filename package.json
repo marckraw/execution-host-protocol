@@ -1,6 +1,6 @@
 {
   "name": "@mrck-labs/execution-host-protocol",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Versioned execution-host wire contract for agent runtimes and clients",
   "license": "MIT",
   "repository": {

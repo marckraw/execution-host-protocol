@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.11.0
+
+### Minor Changes
+
+- d44481d: Expose the additive asynchronous Room founding lifecycle while preserving legacy Room and christening responses.
+
 ## 0.10.0
 
 ### Minor Changes
