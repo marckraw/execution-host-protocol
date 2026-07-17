@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.10.0
+
+### Minor Changes
+
+- 867b449: Add Room v1 capability negotiation, optional Session room identity, and defensive Room API contracts.
+
 ## 0.9.0
 
 ### Minor Changes
