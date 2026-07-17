@@ -412,6 +412,7 @@ function decodeTurnFileChange(raw: unknown): ExecutionTurnFileChange | null {
     !isNonEmptyString(raw.id) ||
     !isNonEmptyString(raw.sessionId) ||
     !isNonEmptyString(raw.turnId) ||
+    (raw.repoRoot !== undefined && !isNonEmptyString(raw.repoRoot)) ||
     !isNonEmptyString(raw.filePath) ||
     raw.oldPath !== null ||
     !isTurnFileChangeStatus(raw.status) ||

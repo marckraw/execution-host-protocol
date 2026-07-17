@@ -12,6 +12,7 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "interactions.structured",
   "turns.fileChanges",
   "turns.fileChanges.combined",
+  "turns.fileChanges.multiRepo",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -262,6 +263,8 @@ export interface ExecutionTurnFileChange {
   id: string;
   sessionId: string;
   turnId: string;
+  /** Workspace-relative repository root. Absent means the workingDirectory root repository. */
+  repoRoot?: string;
   filePath: string;
   oldPath: null;
   status: ExecutionTurnFileChangeStatus;

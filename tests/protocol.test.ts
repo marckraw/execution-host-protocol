@@ -342,6 +342,7 @@ describe("recorded daemon event contract", () => {
       id: "change-1",
       sessionId: "session-1",
       turnId: "turn-1",
+      repoRoot: "packages/worker",
       filePath: "src/index.ts",
       oldPath: null,
       status: "modified",
@@ -382,6 +383,85 @@ describe("recorded daemon event contract", () => {
         ),
       ).toMatchObject({ ok: true, value: { event: { delta } } });
     }
+  });
+
+  it("keeps multi-repo file changes compatible with the legacy known-fields reader", () => {
+    const recordedEnvelope = JSON.stringify({
+      protocolVersion: 1,
+      sessionId: "session-multi-repo",
+      seq: 12,
+      event: {
+        kind: "delta",
+        delta: {
+          kind: "turn.fileChanges.add",
+          turnId: "turn-1",
+          fileChanges: [
+            {
+              id: "change-1",
+              sessionId: "session-multi-repo",
+              turnId: "turn-1",
+              repoRoot: "cloned-repo",
+              filePath: "README.md",
+              oldPath: null,
+              status: "modified",
+              additions: 1,
+              deletions: 1,
+              diff: "@@ -1 +1 @@\n-before\n+after",
+              truncated: false,
+              binary: false,
+              createdAt: "2026-07-17T10:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(decodeExecutionEventEnvelope(recordedEnvelope)).toMatchObject({
+      ok: true,
+      value: {
+        event: {
+          delta: {
+            fileChanges: [{ repoRoot: "cloned-repo", filePath: "README.md" }],
+          },
+        },
+      },
+    });
+
+    const legacyReader = JSON.parse(recordedEnvelope) as {
+      event: { delta: { fileChanges: Array<Record<string, unknown>> } };
+    };
+    const legacyKnownFields = legacyReader.event.delta.fileChanges.map(
+      ({
+        id,
+        sessionId,
+        turnId,
+        filePath,
+        oldPath,
+        status,
+        additions,
+        deletions,
+        diff,
+        truncated,
+        binary,
+        createdAt,
+      }) => ({
+        id,
+        sessionId,
+        turnId,
+        filePath,
+        oldPath,
+        status,
+        additions,
+        deletions,
+        diff,
+        truncated,
+        binary,
+        createdAt,
+      }),
+    );
+    expect(legacyKnownFields).toEqual([
+      expect.objectContaining({ filePath: "README.md", status: "modified" }),
+    ]);
   });
 });
 
