@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.9.0
+
+### Minor Changes
+
+- 78031a2: Add optional repository roots to turn file changes and advertise multi-repository capture capability.
+
 ## 0.8.0
 
 ### Minor Changes
