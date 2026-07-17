@@ -7,6 +7,8 @@ import {
   decodeExecutionCommandEnvelope,
   decodeExecutionEventEnvelope,
   decodeExecutionProtocolDescriptor,
+  decodeExecutionRoomChristenRequest,
+  decodeExecutionRoomListResponse,
   decodeExecutionStartRequest,
   encodeExecutionCommandEnvelope,
   encodeExecutionEventEnvelope,
@@ -598,6 +600,123 @@ describe("capability negotiation", () => {
     expect(EXECUTION_PROTOCOL_CAPABILITY_IDS).toContain(
       "commands.cancelQueued",
     );
+    expect(EXECUTION_PROTOCOL_CAPABILITY_IDS).toContain("rooms.v1");
+  });
+});
+
+describe("Room v1", () => {
+  it("decodes christening and room directory payloads defensively", () => {
+    expect(
+      decodeExecutionRoomChristenRequest(
+        JSON.stringify({ name: "Project Hearth", sessionId: "session-1" }),
+      ),
+    ).toEqual({
+      ok: true,
+      value: { name: "Project Hearth", sessionId: "session-1" },
+    });
+    expect(
+      decodeExecutionRoomListResponse({
+        protocolVersion: 1,
+        rooms: [
+          {
+            id: "room-1",
+            name: "Project Hearth",
+            createdAt: "2026-07-17T11:00:00.000Z",
+            lastActiveAt: "2026-07-17T11:30:00.000Z",
+            sessionCount: 2,
+            futureField: true,
+          },
+        ],
+        futureField: true,
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        protocolVersion: 1,
+        rooms: [
+          {
+            id: "room-1",
+            name: "Project Hearth",
+            createdAt: "2026-07-17T11:00:00.000Z",
+            lastActiveAt: "2026-07-17T11:30:00.000Z",
+            sessionCount: 2,
+          },
+        ],
+      },
+    });
+    expect(
+      decodeExecutionRoomChristenRequest(
+        JSON.stringify({ name: "", sessionId: "session-1" }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+    expect(
+      decodeExecutionRoomListResponse({
+        protocolVersion: 1,
+        rooms: [{ id: "room-1", name: "bad" }],
+      }),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+  });
+
+  it("round-trips roomId while a legacy known-fields reader ignores it", () => {
+    const request: ExecutionStartRequest = {
+      protocolVersion: 1,
+      providerId: "codex",
+      config: {
+        sessionId: "session-room",
+        initialMessage: "Where were we?",
+        model: "gpt-5.5",
+        effort: "low",
+        continuationToken: null,
+        roomId: "room-1",
+      },
+    };
+    expect(
+      decodeExecutionStartRequest(encodeExecutionStartRequest(request)),
+    ).toEqual({ ok: true, value: request });
+
+    const rawPatch = JSON.stringify({
+      protocolVersion: 1,
+      sessionId: "session-room",
+      seq: 3,
+      event: {
+        kind: "delta",
+        delta: {
+          kind: "session.patch",
+          patch: { roomId: "room-1", updatedAt: "2026-07-17T11:30:00.000Z" },
+        },
+      },
+    });
+    expect(decodeExecutionEventEnvelope(rawPatch)).toMatchObject({
+      ok: true,
+      value: { event: { delta: { patch: { roomId: "room-1" } } } },
+    });
+    const legacyPatch = (
+      JSON.parse(rawPatch) as {
+        event: { delta: { patch: Record<string, unknown> } };
+      }
+    ).event.delta.patch;
+    expect({ updatedAt: legacyPatch.updatedAt }).toEqual({
+      updatedAt: "2026-07-17T11:30:00.000Z",
+    });
+  });
+
+  it("rejects invalid room identifiers", () => {
+    expect(
+      decodeExecutionStartRequest(
+        JSON.stringify({
+          protocolVersion: 1,
+          providerId: "codex",
+          config: {
+            sessionId: "session-room",
+            initialMessage: "hello",
+            model: null,
+            effort: null,
+            continuationToken: null,
+            roomId: "",
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
   });
 });
 

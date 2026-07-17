@@ -28,6 +28,9 @@ import {
   type ExecutionMetadataAttributes,
   type ExecutionPermissionConfig,
   type ExecutionProtocolDescriptor,
+  type ExecutionRoom,
+  type ExecutionRoomChristenRequest,
+  type ExecutionRoomListResponse,
   type ExecutionProviderMeta,
   type ExecutionSendMessageOptions,
   type ExecutionSessionDelta,
@@ -285,6 +288,12 @@ function decodeDelta(
           return failure("invalid-payload");
         }
         patch.prUrl = raw.patch.prUrl;
+      }
+      if (raw.patch.roomId !== undefined) {
+        if (raw.patch.roomId !== null && !isNonEmptyString(raw.patch.roomId)) {
+          return failure("invalid-payload");
+        }
+        patch.roomId = raw.patch.roomId;
       }
       if (raw.patch.updatedAt !== undefined) {
         if (typeof raw.patch.updatedAt !== "string")
@@ -953,6 +962,9 @@ function decodeStartConfig(
     typeof raw.workingDirectory !== "string"
   )
     return failure("invalid-payload");
+  if (raw.roomId !== undefined && !isNonEmptyString(raw.roomId)) {
+    return failure("invalid-payload");
+  }
   if (
     !isNullableString(raw.model) ||
     !isNullableString(raw.effort) ||
@@ -978,10 +990,67 @@ function decodeStartConfig(
     model: raw.model,
     effort: raw.effort,
     continuationToken: raw.continuationToken,
+    ...optionalProperty("roomId", raw.roomId),
     ...optionalProperty("permissionConfig", permissionConfig.value),
     ...optionalProperty("automationMode", raw.automationMode),
     ...optionalProperty("inlineAttachments", inlineAttachments.value),
   });
+}
+
+export function decodeExecutionRoomChristenRequest(
+  raw: string,
+): ExecutionDecodeResult<ExecutionRoomChristenRequest> {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return failure("malformed-json");
+  }
+  if (
+    !isRecord(value) ||
+    !isNonEmptyString(value.name) ||
+    !isNonEmptyString(value.sessionId)
+  ) {
+    return failure("invalid-payload");
+  }
+  return success({ name: value.name, sessionId: value.sessionId });
+}
+
+export function decodeExecutionRoomListResponse(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionRoomListResponse> {
+  if (
+    !isRecord(raw) ||
+    raw.protocolVersion !== EXECUTION_PROTOCOL_VERSION ||
+    !Array.isArray(raw.rooms)
+  ) {
+    return failure("invalid-payload");
+  }
+  const rooms = raw.rooms.map(decodeExecutionRoom);
+  return rooms.every((room): room is ExecutionRoom => room !== null)
+    ? success({ protocolVersion: EXECUTION_PROTOCOL_VERSION, rooms })
+    : failure("invalid-payload");
+}
+
+function decodeExecutionRoom(raw: unknown): ExecutionRoom | null {
+  if (
+    !isRecord(raw) ||
+    !isNonEmptyString(raw.id) ||
+    !isNonEmptyString(raw.name) ||
+    typeof raw.createdAt !== "string" ||
+    typeof raw.lastActiveAt !== "string" ||
+    !Number.isSafeInteger(raw.sessionCount) ||
+    (raw.sessionCount as number) < 0
+  ) {
+    return null;
+  }
+  return {
+    id: raw.id,
+    name: raw.name,
+    createdAt: raw.createdAt,
+    lastActiveAt: raw.lastActiveAt,
+    sessionCount: raw.sessionCount as number,
+  };
 }
 
 const PERMISSION_PRESETS = new Set(["ask", "yolo", "custom"]);

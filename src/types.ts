@@ -13,6 +13,7 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "turns.fileChanges",
   "turns.fileChanges.combined",
   "turns.fileChanges.multiRepo",
+  "rooms.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -286,6 +287,7 @@ export type ExecutionSessionDelta =
         contextWindow?: ExecutionContextWindow;
         continuationToken?: string | null;
         prUrl?: string | null;
+        roomId?: string | null;
         updatedAt?: string;
       };
     }
@@ -396,10 +398,30 @@ export interface ExecutionStartConfig {
   model: string | null;
   effort: string | null;
   continuationToken: string | null;
+  /** Named Room whose memory should orient this Session. */
+  roomId?: string;
   permissionConfig?: ExecutionPermissionConfig;
   /** @deprecated Use permissionConfig. Retained for existing clients. */
   automationMode?: boolean;
   inlineAttachments?: ExecutionInlineImageAttachment[];
+}
+
+export interface ExecutionRoom {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastActiveAt: string;
+  sessionCount: number;
+}
+
+export interface ExecutionRoomListResponse {
+  protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
+  rooms: ExecutionRoom[];
+}
+
+export interface ExecutionRoomChristenRequest {
+  name: string;
+  sessionId: string;
 }
 
 export interface ExecutionWorkspaceSource {
