@@ -8,6 +8,7 @@ import {
   decodeExecutionEventEnvelope,
   decodeExecutionProtocolDescriptor,
   decodeExecutionRoomChristenRequest,
+  decodeExecutionRoomChristenResponse,
   decodeExecutionRoomListResponse,
   decodeExecutionStartRequest,
   encodeExecutionCommandEnvelope,
@@ -698,6 +699,61 @@ describe("Room v1", () => {
     expect({ updatedAt: legacyPatch.updatedAt }).toEqual({
       updatedAt: "2026-07-17T11:30:00.000Z",
     });
+  });
+
+  it("decodes asynchronous Room founding while retaining synchronous responses", () => {
+    const baseRoom = {
+      id: "room-1",
+      name: "Project Hearth",
+      createdAt: "2026-07-17T13:00:00.000Z",
+      lastActiveAt: "2026-07-17T13:00:00.000Z",
+      sessionCount: 1,
+    };
+    expect(
+      decodeExecutionRoomChristenResponse({
+        protocolVersion: 1,
+        room: {
+          ...baseRoom,
+          founding: "pending",
+          foundingMemoryEntryCount: null,
+          foundingError: null,
+        },
+        founding: "pending",
+        foundingMemoryEntryCount: 0,
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: { founding: "pending", room: { founding: "pending" } },
+    });
+    expect(
+      decodeExecutionRoomChristenResponse({
+        protocolVersion: 1,
+        room: baseRoom,
+        foundingMemoryEntryCount: 1,
+      }),
+    ).toMatchObject({ ok: true, value: { foundingMemoryEntryCount: 1 } });
+  });
+
+  it("rejects malformed Room founding fields without breaking legacy room lists", () => {
+    const baseRoom = {
+      id: "room-1",
+      name: "Project Hearth",
+      createdAt: "2026-07-17T13:00:00.000Z",
+      lastActiveAt: "2026-07-17T13:00:00.000Z",
+      sessionCount: 1,
+    };
+    expect(
+      decodeExecutionRoomListResponse({
+        protocolVersion: 1,
+        rooms: [{ ...baseRoom, founding: "forgotten" }],
+      }),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+    expect(
+      decodeExecutionRoomListResponse({
+        protocolVersion: 1,
+        rooms: [baseRoom],
+      }),
+    ).toMatchObject({ ok: true });
   });
 
   it("rejects invalid room identifiers", () => {

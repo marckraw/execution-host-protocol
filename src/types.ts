@@ -412,6 +412,10 @@ export interface ExecutionRoom {
   createdAt: string;
   lastActiveAt: string;
   sessionCount: number;
+  /** Absent on hosts predating the asynchronous founding lifecycle. */
+  founding?: "pending" | "furnished" | "failed";
+  foundingMemoryEntryCount?: number | null;
+  foundingError?: string | null;
 }
 
 export interface ExecutionRoomListResponse {
@@ -422,6 +426,15 @@ export interface ExecutionRoomListResponse {
 export interface ExecutionRoomChristenRequest {
   name: string;
   sessionId: string;
+}
+
+export interface ExecutionRoomChristenResponse {
+  protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
+  room: ExecutionRoom;
+  /** New daemons return pending immediately; retained clients can ignore it. */
+  founding?: "pending" | "furnished" | "failed";
+  /** Retained for clients from the synchronous christening era. */
+  foundingMemoryEntryCount: number;
 }
 
 export interface ExecutionWorkspaceSource {

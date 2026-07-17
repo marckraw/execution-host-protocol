@@ -30,6 +30,7 @@ import {
   type ExecutionProtocolDescriptor,
   type ExecutionRoom,
   type ExecutionRoomChristenRequest,
+  type ExecutionRoomChristenResponse,
   type ExecutionRoomListResponse,
   type ExecutionProviderMeta,
   type ExecutionSendMessageOptions,
@@ -1016,6 +1017,29 @@ export function decodeExecutionRoomChristenRequest(
   return success({ name: value.name, sessionId: value.sessionId });
 }
 
+export function decodeExecutionRoomChristenResponse(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionRoomChristenResponse> {
+  if (
+    !isRecord(raw) ||
+    raw.protocolVersion !== EXECUTION_PROTOCOL_VERSION ||
+    !Number.isSafeInteger(raw.foundingMemoryEntryCount) ||
+    (raw.foundingMemoryEntryCount as number) < 0
+  ) {
+    return failure("invalid-payload");
+  }
+  const room = decodeExecutionRoom(raw.room);
+  if (!room) return failure("invalid-payload");
+  const founding = decodeOptionalRoomFounding(raw.founding);
+  if (!founding.ok) return failure("invalid-payload");
+  return success({
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    room,
+    ...optionalProperty("founding", founding.value),
+    foundingMemoryEntryCount: raw.foundingMemoryEntryCount as number,
+  });
+}
+
 export function decodeExecutionRoomListResponse(
   raw: unknown,
 ): ExecutionDecodeResult<ExecutionRoomListResponse> {
@@ -1044,13 +1068,48 @@ function decodeExecutionRoom(raw: unknown): ExecutionRoom | null {
   ) {
     return null;
   }
+  const founding = decodeOptionalRoomFounding(raw.founding);
+  if (!founding.ok) return null;
+  if (
+    raw.foundingMemoryEntryCount !== undefined &&
+    raw.foundingMemoryEntryCount !== null &&
+    (!Number.isSafeInteger(raw.foundingMemoryEntryCount) ||
+      (raw.foundingMemoryEntryCount as number) < 0)
+  ) {
+    return null;
+  }
+  if (
+    raw.foundingError !== undefined &&
+    raw.foundingError !== null &&
+    typeof raw.foundingError !== "string"
+  ) {
+    return null;
+  }
   return {
     id: raw.id,
     name: raw.name,
     createdAt: raw.createdAt,
     lastActiveAt: raw.lastActiveAt,
     sessionCount: raw.sessionCount as number,
+    ...optionalProperty("founding", founding.value),
+    ...optionalProperty(
+      "foundingMemoryEntryCount",
+      raw.foundingMemoryEntryCount as number | null | undefined,
+    ),
+    ...optionalProperty(
+      "foundingError",
+      raw.foundingError as string | null | undefined,
+    ),
   };
+}
+
+function decodeOptionalRoomFounding(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionRoom["founding"]> {
+  if (raw === undefined) return success(undefined);
+  return raw === "pending" || raw === "furnished" || raw === "failed"
+    ? success(raw)
+    : failure("invalid-payload");
 }
 
 const PERMISSION_PRESETS = new Set(["ask", "yolo", "custom"]);
