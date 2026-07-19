@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.12.0
+
+### Minor Changes
+
+- 527daf0: Add bounded research evidence packs to session starts and follow-up messages.
+
 ## 0.11.0
 
 ### Minor Changes
