@@ -14,6 +14,7 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "turns.fileChanges.combined",
   "turns.fileChanges.multiRepo",
   "rooms.v1",
+  "research.evidence",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -365,6 +366,33 @@ export interface ExecutionPermissionConfig {
   };
 }
 
+/** A bounded retained-message passage supplied as untrusted research evidence. */
+export interface ExecutionResearchEvidenceSource {
+  sourceId: string;
+  endpointId: string;
+  endpointName: string;
+  sessionId: string;
+  itemId: string;
+  sessionTitle: string | null;
+  providerId: string;
+  createdAt: string;
+  text: string;
+}
+
+/** Point-in-time evidence gathered by a client before one research turn. */
+export interface ExecutionResearchEvidencePack {
+  capturedAt: string;
+  question: string;
+  coverage: {
+    selectedEndpointCount: number;
+    searchedEndpointCount: number;
+    candidatePassageCount: number;
+    failedEndpointIds: string[];
+    indexingEndpointIds: string[];
+  };
+  sources: ExecutionResearchEvidenceSource[];
+}
+
 export type ExecutionHostCommand =
   | {
       kind: "send-message";
@@ -373,6 +401,7 @@ export type ExecutionHostCommand =
       inlineAttachments?: ExecutionInlineImageAttachment[];
       skillSelections?: unknown[];
       options?: ExecutionSendMessageOptions;
+      researchEvidence?: ExecutionResearchEvidencePack;
     }
   | { kind: "approve"; providerApprovalId?: string }
   | { kind: "deny"; providerApprovalId?: string }
@@ -404,6 +433,7 @@ export interface ExecutionStartConfig {
   /** @deprecated Use permissionConfig. Retained for existing clients. */
   automationMode?: boolean;
   inlineAttachments?: ExecutionInlineImageAttachment[];
+  researchEvidence?: ExecutionResearchEvidencePack;
 }
 
 export interface ExecutionRoom {

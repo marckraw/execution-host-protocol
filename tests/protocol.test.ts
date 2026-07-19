@@ -16,6 +16,7 @@ import {
   encodeExecutionStartRequest,
   type ExecutionHostCommandEnvelope,
   type ExecutionConversationItemPatch,
+  type ExecutionResearchEvidencePack,
   type ExecutionStartRequest,
 } from "../src/index.js";
 import {
@@ -40,6 +41,31 @@ const recordedEnvelopes = rawSse
       .join("\n");
     return data ? [data] : [];
   });
+
+const researchEvidence: ExecutionResearchEvidencePack = {
+  capturedAt: "2026-07-20T20:00:00.000Z",
+  question: "Where did we settle deployment?",
+  coverage: {
+    selectedEndpointCount: 3,
+    searchedEndpointCount: 2,
+    candidatePassageCount: 7,
+    failedEndpointIds: ["offline"],
+    indexingEndpointIds: [],
+  },
+  sources: [
+    {
+      sourceId: "S1",
+      endpointId: "little-monster",
+      endpointName: "little-monster",
+      sessionId: "session-source",
+      itemId: "item-source",
+      sessionTitle: "Docker deployment",
+      providerId: "claude",
+      createdAt: "2026-07-19T18:00:00.000Z",
+      text: "Remote daemons use the canonical Docker deployment.",
+    },
+  ],
+};
 
 describe("recorded daemon event contract", () => {
   it("decodes all recorded Emergence envelopes verbatim", () => {
@@ -982,6 +1008,7 @@ describe("command contract", () => {
         deliveryMode: "follow-up",
         metadata: { source: { surface: "emergence" } },
       },
+      researchEvidence,
     },
   };
 
@@ -1064,6 +1091,7 @@ describe("start request contract", () => {
           dataBase64: "AQID",
         },
       ],
+      researchEvidence,
     },
     metadata: { source: { surface: "slack", id: "event-1" } },
     workspace: { repository: "owner/repo", ref: "main" },
@@ -1078,6 +1106,25 @@ describe("start request contract", () => {
     expect(
       decodeExecutionStartRequest(encodeExecutionStartRequest(request)),
     ).toEqual({ ok: true, value: request });
+  });
+
+  it("rejects oversized and duplicate research evidence", () => {
+    const decode = (evidence: unknown) =>
+      decodeExecutionStartRequest(
+        JSON.stringify({
+          ...request,
+          config: { ...request.config, researchEvidence: evidence },
+        }),
+      );
+    expect(
+      decode({
+        ...researchEvidence,
+        sources: [researchEvidence.sources[0], researchEvidence.sources[0]],
+      }),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+    expect(
+      decode({ ...researchEvidence, question: "q".repeat(4_001) }),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
   });
 
   it("rejects malformed permission policies without weakening legacy requests", () => {

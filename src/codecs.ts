@@ -28,6 +28,8 @@ import {
   type ExecutionMetadataAttributes,
   type ExecutionPermissionConfig,
   type ExecutionProtocolDescriptor,
+  type ExecutionResearchEvidencePack,
+  type ExecutionResearchEvidenceSource,
   type ExecutionRoom,
   type ExecutionRoomChristenRequest,
   type ExecutionRoomChristenResponse,
@@ -686,6 +688,8 @@ function decodeCommand(
     return failure("invalid-payload");
   const options = decodeOptionalSendOptions(raw.options);
   if (!options.ok) return options;
+  const researchEvidence = decodeOptionalResearchEvidence(raw.researchEvidence);
+  if (!researchEvidence.ok) return researchEvidence;
   return success({
     kind: "send-message",
     text: raw.text,
@@ -693,7 +697,88 @@ function decodeCommand(
     ...optionalProperty("inlineAttachments", inlineAttachments.value),
     ...optionalProperty("skillSelections", raw.skillSelections),
     ...optionalProperty("options", options.value),
+    ...optionalProperty("researchEvidence", researchEvidence.value),
   });
+}
+
+function decodeOptionalResearchEvidence(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionResearchEvidencePack | undefined> {
+  if (raw === undefined) return success(undefined);
+  if (
+    !isRecord(raw) ||
+    !isBoundedString(raw.capturedAt, 64) ||
+    !isBoundedString(raw.question, 4_000) ||
+    !isRecord(raw.coverage) ||
+    !isBoundedInteger(raw.coverage.selectedEndpointCount, 0, 32) ||
+    !isBoundedInteger(raw.coverage.searchedEndpointCount, 0, 32) ||
+    !isBoundedInteger(raw.coverage.candidatePassageCount, 0, 10_000) ||
+    !isBoundedStringArray(raw.coverage.failedEndpointIds, 32, 256) ||
+    !isBoundedStringArray(raw.coverage.indexingEndpointIds, 32, 256) ||
+    !Array.isArray(raw.sources) ||
+    raw.sources.length > 24
+  ) {
+    return failure("invalid-payload");
+  }
+  const sources = raw.sources.map(decodeResearchEvidenceSource);
+  if (sources.some((source) => source === null)) {
+    return failure("invalid-payload");
+  }
+  const sourceIds = sources.map((source) => source?.sourceId);
+  if (new Set(sourceIds).size !== sourceIds.length) {
+    return failure("invalid-payload");
+  }
+  return success(raw as unknown as ExecutionResearchEvidencePack);
+}
+
+function decodeResearchEvidenceSource(
+  raw: unknown,
+): ExecutionResearchEvidenceSource | null {
+  if (
+    !isRecord(raw) ||
+    !isBoundedString(raw.sourceId, 16) ||
+    !isBoundedString(raw.endpointId, 256) ||
+    !isBoundedString(raw.endpointName, 200) ||
+    !isBoundedString(raw.sessionId, 256) ||
+    !isBoundedString(raw.itemId, 256) ||
+    (raw.sessionTitle !== null && !isBoundedString(raw.sessionTitle, 200)) ||
+    !isBoundedString(raw.providerId, 64) ||
+    !isBoundedString(raw.createdAt, 64) ||
+    !isBoundedString(raw.text, 2_000)
+  ) {
+    return null;
+  }
+  return raw as unknown as ExecutionResearchEvidenceSource;
+}
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" && value.length > 0 && value.length <= maxLength
+  );
+}
+
+function isBoundedStringArray(
+  value: unknown,
+  maxItems: number,
+  maxLength: number,
+): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= maxItems &&
+    value.every((item) => isBoundedString(item, maxLength))
+  );
+}
+
+function isBoundedInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): value is number {
+  return (
+    Number.isInteger(value) &&
+    (value as number) >= minimum &&
+    (value as number) <= maximum
+  );
 }
 
 function decodeOptionalSendOptions(
@@ -984,6 +1069,8 @@ function decodeStartConfig(
     raw.inlineAttachments,
   );
   if (!inlineAttachments.ok) return inlineAttachments;
+  const researchEvidence = decodeOptionalResearchEvidence(raw.researchEvidence);
+  if (!researchEvidence.ok) return researchEvidence;
   return success({
     sessionId: raw.sessionId,
     ...optionalProperty("workingDirectory", raw.workingDirectory),
@@ -995,6 +1082,7 @@ function decodeStartConfig(
     ...optionalProperty("permissionConfig", permissionConfig.value),
     ...optionalProperty("automationMode", raw.automationMode),
     ...optionalProperty("inlineAttachments", inlineAttachments.value),
+    ...optionalProperty("researchEvidence", researchEvidence.value),
   });
 }
 
