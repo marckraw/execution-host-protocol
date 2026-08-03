@@ -246,7 +246,29 @@ type MutableConversationItemPatch<
   ? Partial<Omit<Item, "id" | "kind" | "attachments">>
   : never;
 
-export type ExecutionConversationItemPatch = MutableConversationItemPatch;
+export type ExecutionConversationItemPatch = MutableConversationItemPatch & {
+  /**
+   * Text to append to the item's current text, instead of `text` restating the
+   * whole thing.
+   *
+   * A host sends this only to a subscriber that asked for it (see the
+   * `deltas.append.v1` capability); every other subscriber keeps receiving
+   * full-text patches unchanged. It exists because a patch carrying the whole
+   * accumulated reply makes a stream cost the square of its own length: one
+   * production session spent 1.51 GB of envelopes on a ~110 KB reply
+   * (MAR-2218).
+   *
+   * Appends apply strictly in `seq` order onto the item's current text. A
+   * client that cannot be sure it has every append in order — after a resume,
+   * or when it joined mid-item — must not guess: it falls back to the session
+   * snapshot, or to the item's next full-text patch, both of which always
+   * carry the complete text.
+   *
+   * `text` and `textAppend` are alternatives, never a pair to merge: when both
+   * are present, `text` is authoritative and `textAppend` is redundant.
+   */
+  textAppend?: string;
+};
 
 export type ExecutionTurnStatus = "running" | "completed" | "errored";
 export type ExecutionTurnFileChangeStatus = "added" | "modified" | "deleted";

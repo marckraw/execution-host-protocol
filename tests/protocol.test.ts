@@ -250,6 +250,118 @@ describe("recorded daemon event contract", () => {
     void attachmentsPatch;
   });
 
+  it("carries a negotiated text increment through decode (MAR-2218b)", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      JSON.stringify({
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 7,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.patch",
+            itemId: "item-1",
+            patch: { textAppend: " and then some" },
+          },
+        },
+      }),
+    );
+
+    expect(decoded).toEqual({
+      ok: true,
+      value: {
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 7,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.patch",
+            itemId: "item-1",
+            patch: { textAppend: " and then some" },
+          },
+        },
+      },
+    });
+  });
+
+  it("drops a text increment that is not a string, keeping its siblings", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      JSON.stringify({
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 7,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.patch",
+            itemId: "item-1",
+            patch: { textAppend: 42, state: "streaming" },
+          },
+        },
+      }),
+    );
+
+    expect(decoded).toEqual({
+      ok: true,
+      value: {
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 7,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.patch",
+            itemId: "item-1",
+            patch: { state: "streaming" },
+          },
+        },
+      },
+      warnings: [
+        {
+          reason: "dropped-invalid-field",
+          path: "event.delta.patch.textAppend",
+        },
+      ],
+    });
+  });
+
+  it("still accepts a full-text patch unchanged — increments are opt-in", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      JSON.stringify({
+        protocolVersion: 1,
+        sessionId: "session-1",
+        seq: 7,
+        event: {
+          kind: "delta",
+          delta: {
+            kind: "conversation.item.patch",
+            itemId: "item-1",
+            patch: { text: "the whole reply so far", state: "streaming" },
+          },
+        },
+      }),
+    );
+
+    expect(decoded.ok).toBe(true);
+    expect(decoded.ok && decoded.value.event).toEqual({
+      kind: "delta",
+      delta: {
+        kind: "conversation.item.patch",
+        itemId: "item-1",
+        patch: { text: "the whole reply so far", state: "streaming" },
+      },
+    });
+  });
+
+  it("accepts textAppend on the public patch type", () => {
+    const appendPatch: ExecutionConversationItemPatch = {
+      textAppend: " more",
+    };
+    // An item never *holds* a textAppend, so it must not become an item field.
+    expect(appendPatch).toEqual({ textAppend: " more" });
+  });
+
   it("keeps valid message delivery state and drops invalid optional values", () => {
     const envelope = {
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
