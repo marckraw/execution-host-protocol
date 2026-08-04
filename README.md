@@ -15,6 +15,37 @@ Readers ignore unknown object fields so additive producers remain compatible.
 Required known fields and discriminants are still validated. Package semver
 tracks library releases; `EXECUTION_PROTOCOL_VERSION` tracks wire compatibility.
 
+## Streaming text: full patches and negotiated increments
+
+A `conversation.item.patch` normally carries `text`: the item's **whole** text
+as of that envelope. That is simple and self-healing — any single patch is
+enough to reach the right state — but it makes a stream cost the square of its
+own length, because every envelope restates everything before it. One
+production session spent 1.51 GB of envelopes on a ~110 KB reply (MAR-2218).
+
+A host may therefore offer `patch.textAppend`: the text to **append** to the
+item's current text. It is an additive field, not a new envelope kind, and it
+is **opt-in**. A host advertises `deltas.append.v1` among its capabilities, and
+a subscriber that wants increments asks for them when it subscribes. A
+subscriber that does not ask receives full-text patches exactly as before —
+adopting this changes nothing for a client that ignores it.
+
+Rules a client must follow:
+
+- **Order matters.** Appends apply strictly in `seq` order onto the item's
+  current text. Applying them out of order, or twice, corrupts the item;
+  `text` has neither property, which is why it stays the default.
+- **Never guess after a gap.** A client that cannot be certain it has every
+  append in order — after a resume, after a dropped connection, or when it
+  joined mid-item — must not try to reconstruct. It falls back to the session
+  snapshot or to the item's next full-text patch, both of which always carry
+  the complete text.
+- **`text` wins.** The two are alternatives, not a pair to merge. When a patch
+  carries both, `text` is authoritative and `textAppend` is redundant.
+- **A terminal patch always carries `text`.** An item leaving `streaming`
+  restates its whole text, so every stream ends on a self-contained value no
+  matter what happened in the middle.
+
 ## Development
 
 ```bash

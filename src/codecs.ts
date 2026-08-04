@@ -75,6 +75,15 @@ const CONVERSATION_ITEM_FIELD_VALIDATORS = {
 } satisfies Record<string, (value: unknown) => boolean>;
 type ConversationItemField = keyof typeof CONVERSATION_ITEM_FIELD_VALIDATORS;
 
+/**
+ * Patch fields that are not item fields. `textAppend` describes a change TO
+ * the text rather than a value the item holds, so it cannot be derived from
+ * the item shape the way every other patch field is (MAR-2218b).
+ */
+const PATCH_ONLY_FIELD_VALIDATORS = {
+  textAppend: (value: unknown) => typeof value === "string",
+} satisfies Record<string, (value: unknown) => boolean>;
+
 const PATCH_FIELDS = [
   "state",
   "createdAt",
@@ -93,6 +102,12 @@ const PATCH_FIELDS = [
 ] as const satisfies readonly ConversationItemField[];
 type PatchField = (typeof PATCH_FIELDS)[number];
 const PATCH_FIELD_SET = new Set<string>(PATCH_FIELDS);
+
+const PATCH_ONLY_FIELDS = [
+  "textAppend",
+] as const satisfies readonly (keyof typeof PATCH_ONLY_FIELD_VALIDATORS)[];
+type PatchOnlyField = (typeof PATCH_ONLY_FIELDS)[number];
+const PATCH_ONLY_FIELD_SET = new Set<string>(PATCH_ONLY_FIELDS);
 
 export function encodeExecutionEventEnvelope(
   envelope: ExecutionHostEventEnvelope,
@@ -321,14 +336,18 @@ function decodeDelta(
       const patch: Record<string, unknown> = {};
       const warnings: ExecutionDecodeWarning[] = [];
       for (const [key, value] of Object.entries(raw.patch)) {
-        if (!PATCH_FIELD_SET.has(key)) continue;
-        const field = key as PatchField;
-        if (CONVERSATION_ITEM_FIELD_VALIDATORS[field](value)) {
-          patch[field] = value;
+        const validate = PATCH_FIELD_SET.has(key)
+          ? CONVERSATION_ITEM_FIELD_VALIDATORS[key as PatchField]
+          : PATCH_ONLY_FIELD_SET.has(key)
+            ? PATCH_ONLY_FIELD_VALIDATORS[key as PatchOnlyField]
+            : undefined;
+        if (!validate) continue;
+        if (validate(value)) {
+          patch[key] = value;
         } else {
           warnings.push({
             reason: "dropped-invalid-field",
-            path: `event.delta.patch.${field}`,
+            path: `event.delta.patch.${key}`,
           });
         }
       }
