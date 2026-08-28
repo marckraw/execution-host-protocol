@@ -15,6 +15,9 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "turns.fileChanges.multiRepo",
   "rooms.v1",
   "research.evidence",
+  "projects.v1",
+  "projects.v2",
+  "environments.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -512,6 +515,109 @@ export interface ExecutionStartRequest {
   workspace?: ExecutionWorkspaceSource;
   callback?: ExecutionCallbackConfig;
   automation?: ExecutionAutomationConfig;
+  /**
+   * The named Environment on the host whose declared variables this session
+   * should be prepared with (ADR-0011). A residency (Project) that names none
+   * gets the Project's default; an errand that names none runs naked, on the
+   * base set alone. The host never infers it, and a value never travels here —
+   * this is a name, and the host holds what it stands for.
+   */
+  environment?: string | null;
+}
+
+/**
+ * Where a session actually worked, as the host prepared it — not as the client
+ * asked. The two modes are the daemon's own vocabulary (ADR-0011 §2): an
+ * **errand** clones a repository and disposes of it, a **residency** runs in a
+ * standing Project on the host's shelf.
+ *
+ * `environment` is the name the host resolved, `null` when the session ran on
+ * the base set alone. Nothing here is inferred: in project mode `branchName` is
+ * the checkout's actual HEAD at start, and when the dispatcher asked for a
+ * different one `requestedBranchName` reports what was asked so the two can be
+ * compared instead of silently reconciled.
+ */
+export type ExecutionSessionWorkspace =
+  | {
+      mode: "repository";
+      repository: string;
+      branchName: string;
+      baseRef: string;
+      /** Absent on hosts that did not report the clone's path. */
+      workspacePath: string | null;
+      environment: string | null;
+    }
+  | {
+      mode: "project";
+      projectId: string;
+      workingDirectory: string;
+      /** Remote URL of the checkout, credential-redacted; null for non-git. */
+      origin: string | null;
+      /** `normalizeOriginKey(origin)` — the join key clients compare on. */
+      originKey: string | null;
+      /** Actual HEAD at start; null when detached or not a git checkout. */
+      branchName: string | null;
+      requestedBranchName?: string | null;
+      environment: string | null;
+    };
+
+/** One Environment a Project may be started with, and whether it is ready. */
+export interface ExecutionProjectEnvironmentRef {
+  name: string;
+  /** True for the Project's default — the one a session gets by naming none. */
+  default: boolean;
+  /** Every declared key of this environment is present on the host. */
+  provisioned: boolean;
+  /** Declared keys the host does not have. NAMES ONLY — never values. */
+  missing: string[];
+}
+
+/**
+ * A standing anchored workspace this host advertises. `origin`/`originKey` and
+ * `environments` are derived facts the host computes at catalog load; they are
+ * read-only and absent on hosts predating `projects.v2`.
+ */
+export interface ExecutionProject {
+  id: string;
+  name: string;
+  workingDirectory: string;
+  origin: string | null;
+  originKey: string | null;
+  environments: ExecutionProjectEnvironmentRef[];
+}
+
+export interface ExecutionProjectListResponse {
+  /** Absent on hosts that served projects before the payload was contracted. */
+  protocolVersion?: typeof EXECUTION_PROTOCOL_VERSION;
+  projects: ExecutionProject[];
+}
+
+/**
+ * A named template on a host: declared variable NAMES, never their values.
+ * Values live in one file per environment on the box and never cross this wire
+ * — a payload carrying a `values` field is rejected outright, not sanitised,
+ * because a host that offered one has misunderstood the contract (ADR-0011 §5).
+ */
+export interface ExecutionEnvironment {
+  name: string;
+  keys: string[];
+  /** Composition: this environment's bundle unions its includes'; own keys win. */
+  includes?: string[];
+  provisioned: boolean;
+  missing: string[];
+}
+
+export interface ExecutionEnvironmentListResponse {
+  protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
+  environments: ExecutionEnvironment[];
+}
+
+/** The declarable half of an Environment: its shape, never its contents. */
+export interface ExecutionEnvironmentDeclaration {
+  /** Optional in a PUT body; the URL names the environment. */
+  name?: string;
+  keys: string[];
+  includes?: string[];
 }
 
 export type ExecutionDecodeFailureReason =

@@ -15,6 +15,9 @@ import {
   type ExecutionDecodeFailureReason,
   type ExecutionDecodeResult,
   type ExecutionDecodeWarning,
+  type ExecutionEnvironment,
+  type ExecutionEnvironmentDeclaration,
+  type ExecutionEnvironmentListResponse,
   type ExecutionHostCommand,
   type ExecutionHostCommandEnvelope,
   type ExecutionHostEvent,
@@ -27,6 +30,9 @@ import {
   type ExecutionMessageDelivery,
   type ExecutionMetadataAttributes,
   type ExecutionPermissionConfig,
+  type ExecutionProject,
+  type ExecutionProjectEnvironmentRef,
+  type ExecutionProjectListResponse,
   type ExecutionProtocolDescriptor,
   type ExecutionResearchEvidencePack,
   type ExecutionResearchEvidenceSource,
@@ -39,6 +45,7 @@ import {
   type ExecutionSessionDelta,
   type ExecutionSessionMetadata,
   type ExecutionSessionStatus,
+  type ExecutionSessionWorkspace,
   type ExecutionTurn,
   type ExecutionTurnFileChange,
   type ExecutionStartConfig,
@@ -201,6 +208,12 @@ export function decodeExecutionStartRequest(
   if (!callback.ok) return callback;
   const automation = decodeOptionalAutomation(base.value.automation);
   if (!automation.ok) return automation;
+  // A misspelled environment is refused rather than dropped: dropping it runs
+  // the session on the base set alone, which looks like success and is the one
+  // outcome the caller did not ask for.
+  if (!isOptionalNullableNonEmptyString(base.value.environment)) {
+    return failure("invalid-payload");
+  }
 
   return success({
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
@@ -210,6 +223,10 @@ export function decodeExecutionStartRequest(
     ...optionalProperty("workspace", workspace.value),
     ...optionalProperty("callback", callback.value),
     ...optionalProperty("automation", automation.value),
+    ...optionalProperty(
+      "environment",
+      base.value.environment as string | null | undefined,
+    ),
   });
 }
 
@@ -1105,6 +1122,252 @@ function decodeStartConfig(
   });
 }
 
+export function encodeExecutionSessionWorkspace(
+  workspace: ExecutionSessionWorkspace,
+): string {
+  return JSON.stringify(workspace);
+}
+
+/**
+ * Reads the work address a host echoed. Hosts predating ADR-0011 sent a bare
+ * `{ repository, branchName, baseRef }` with no discriminator; that shape is
+ * still read, as a repository-mode address whose path and environment are
+ * simply unknown. Encoding always writes `mode`, so a record that makes a
+ * round trip comes back explicit.
+ */
+export function decodeExecutionSessionWorkspace(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionSessionWorkspace> {
+  if (!isRecord(raw)) return failure("invalid-payload");
+
+  if (raw.mode === "project") {
+    if (
+      !isNonEmptyString(raw.projectId) ||
+      !isNonEmptyString(raw.workingDirectory) ||
+      !isNullableString(raw.origin) ||
+      !isNullableString(raw.originKey) ||
+      !isNullableString(raw.branchName) ||
+      !isOptionalNullableString(raw.requestedBranchName) ||
+      !isNullableString(raw.environment)
+    ) {
+      return failure("invalid-payload");
+    }
+    return success({
+      mode: "project",
+      projectId: raw.projectId,
+      workingDirectory: raw.workingDirectory,
+      origin: raw.origin,
+      originKey: raw.originKey,
+      branchName: raw.branchName,
+      ...optionalProperty(
+        "requestedBranchName",
+        raw.requestedBranchName as string | null | undefined,
+      ),
+      environment: raw.environment,
+    });
+  }
+
+  if (raw.mode !== undefined && raw.mode !== "repository") {
+    return failure("unknown-kind");
+  }
+  if (
+    !isNonEmptyString(raw.repository) ||
+    typeof raw.branchName !== "string" ||
+    typeof raw.baseRef !== "string"
+  ) {
+    return failure("invalid-payload");
+  }
+  if (
+    !isOptionalNullableString(raw.workspacePath) ||
+    !isOptionalNullableString(raw.environment)
+  ) {
+    return failure("invalid-payload");
+  }
+  return success({
+    mode: "repository",
+    repository: raw.repository,
+    branchName: raw.branchName,
+    baseRef: raw.baseRef,
+    workspacePath: (raw.workspacePath as string | null | undefined) ?? null,
+    environment: (raw.environment as string | null | undefined) ?? null,
+  });
+}
+
+/**
+ * Reads a host's advertised Projects. `origin`, `originKey` and `environments`
+ * are absent on hosts predating `projects.v2`, and read as unknown rather than
+ * as a claim: no origin, no key, no environments — never a guess.
+ */
+export function decodeExecutionProjectListResponse(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionProjectListResponse> {
+  if (!isRecord(raw) || !Array.isArray(raw.projects)) {
+    return failure("invalid-payload");
+  }
+  if (
+    raw.protocolVersion !== undefined &&
+    raw.protocolVersion !== EXECUTION_PROTOCOL_VERSION
+  ) {
+    return failure("unsupported-protocol-version");
+  }
+
+  const projects: ExecutionProject[] = [];
+  for (const entry of raw.projects) {
+    const project = decodeExecutionProject(entry);
+    if (!project) return failure("invalid-payload");
+    projects.push(project);
+  }
+
+  return success({
+    ...optionalProperty(
+      "protocolVersion",
+      raw.protocolVersion as typeof EXECUTION_PROTOCOL_VERSION | undefined,
+    ),
+    projects,
+  });
+}
+
+function decodeExecutionProject(raw: unknown): ExecutionProject | null {
+  if (
+    !isRecord(raw) ||
+    !isNonEmptyString(raw.id) ||
+    !isNonEmptyString(raw.name) ||
+    !isNonEmptyString(raw.workingDirectory) ||
+    !isOptionalNullableString(raw.origin) ||
+    !isOptionalNullableString(raw.originKey)
+  ) {
+    return null;
+  }
+
+  const environments: ExecutionProjectEnvironmentRef[] = [];
+  if (raw.environments !== undefined) {
+    if (!Array.isArray(raw.environments)) return null;
+    for (const entry of raw.environments) {
+      if (
+        !isRecord(entry) ||
+        !isNonEmptyString(entry.name) ||
+        typeof entry.default !== "boolean" ||
+        typeof entry.provisioned !== "boolean" ||
+        !isStringArray(entry.missing)
+      ) {
+        return null;
+      }
+      // Names are the whole contract here; a host that attached values to a
+      // reference is refused the same way the catalog refuses one.
+      if (carriesValues(entry)) return null;
+      environments.push({
+        name: entry.name,
+        default: entry.default,
+        provisioned: entry.provisioned,
+        missing: [...entry.missing],
+      });
+    }
+  }
+
+  return {
+    id: raw.id,
+    name: raw.name,
+    workingDirectory: raw.workingDirectory,
+    origin: (raw.origin as string | null | undefined) ?? null,
+    originKey: (raw.originKey as string | null | undefined) ?? null,
+    environments,
+  };
+}
+
+export function decodeExecutionEnvironmentListResponse(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionEnvironmentListResponse> {
+  if (
+    !isRecord(raw) ||
+    raw.protocolVersion !== EXECUTION_PROTOCOL_VERSION ||
+    !Array.isArray(raw.environments)
+  ) {
+    return failure("invalid-payload");
+  }
+
+  const environments: ExecutionEnvironment[] = [];
+  for (const entry of raw.environments) {
+    const environment = decodeExecutionEnvironment(entry);
+    if (!environment) return failure("invalid-payload");
+    environments.push(environment);
+  }
+
+  return success({ protocolVersion: EXECUTION_PROTOCOL_VERSION, environments });
+}
+
+function decodeExecutionEnvironment(raw: unknown): ExecutionEnvironment | null {
+  if (
+    !isRecord(raw) ||
+    !isNonEmptyString(raw.name) ||
+    !isStringArray(raw.keys) ||
+    typeof raw.provisioned !== "boolean" ||
+    !isStringArray(raw.missing)
+  ) {
+    return null;
+  }
+  if (raw.includes !== undefined && !isStringArray(raw.includes)) return null;
+  if (carriesValues(raw)) return null;
+
+  return {
+    name: raw.name,
+    keys: [...raw.keys],
+    ...optionalProperty(
+      "includes",
+      raw.includes === undefined ? undefined : [...(raw.includes as string[])],
+    ),
+    provisioned: raw.provisioned,
+    missing: [...raw.missing],
+  };
+}
+
+/**
+ * Reads a declaration — the shape of an environment, never its contents.
+ *
+ * A body carrying `values` is rejected outright rather than stripped. Stripping
+ * would accept the request, answer 200, and teach the caller that sending
+ * secrets over this wire works; refusing it says the only true thing, which is
+ * that this door does not exist (ADR-0011 §5).
+ */
+export function decodeExecutionEnvironmentDeclaration(
+  raw: string,
+): ExecutionDecodeResult<ExecutionEnvironmentDeclaration> {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return failure("malformed-json");
+  }
+  if (!isRecord(value)) return failure("invalid-payload");
+  if (carriesValues(value)) return failure("invalid-payload");
+  if (!isStringArray(value.keys)) return failure("invalid-payload");
+  if (value.includes !== undefined && !isStringArray(value.includes)) {
+    return failure("invalid-payload");
+  }
+  if (value.name !== undefined && !isNonEmptyString(value.name)) {
+    return failure("invalid-payload");
+  }
+
+  return success({
+    ...optionalProperty("name", value.name as string | undefined),
+    keys: [...value.keys],
+    ...optionalProperty(
+      "includes",
+      value.includes === undefined
+        ? undefined
+        : [...(value.includes as string[])],
+    ),
+  });
+}
+
+/**
+ * The one rule this contract will not bend: a value never crosses this wire.
+ * Presence of the field is enough — a `values` that is null, empty, or an
+ * innocent-looking string still means the sender believed values belong here.
+ */
+function carriesValues(raw: Record<string, unknown>): boolean {
+  return "values" in raw;
+}
+
 export function decodeExecutionRoomChristenRequest(
   raw: string,
 ): ExecutionDecodeResult<ExecutionRoomChristenRequest> {
@@ -1530,6 +1793,12 @@ function isOptionalNullableString(value: unknown): boolean {
 }
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
+}
+function isOptionalNullableNonEmptyString(value: unknown): boolean {
+  return value === undefined || value === null || isNonEmptyString(value);
+}
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString);
 }
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;

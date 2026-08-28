@@ -5,8 +5,13 @@ import {
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
   decodeExecutionCommandEnvelope,
+  decodeExecutionEnvironmentDeclaration,
+  decodeExecutionEnvironmentListResponse,
   decodeExecutionEventEnvelope,
+  decodeExecutionProjectListResponse,
   decodeExecutionProtocolDescriptor,
+  decodeExecutionSessionWorkspace,
+  encodeExecutionSessionWorkspace,
   decodeExecutionRoomChristenRequest,
   decodeExecutionRoomChristenResponse,
   decodeExecutionRoomListResponse,
@@ -14,6 +19,7 @@ import {
   encodeExecutionCommandEnvelope,
   encodeExecutionEventEnvelope,
   encodeExecutionStartRequest,
+  normalizeOriginKey,
   type ExecutionHostCommandEnvelope,
   type ExecutionConversationItemPatch,
   type ExecutionResearchEvidencePack,
@@ -22,8 +28,16 @@ import {
 import {
   commandFixtures,
   conversationItemFixtures,
+  environmentDeclarationFixture,
+  environmentDeclarationWithValuesFixture,
+  environmentListFixture,
   eventFixtures,
+  legacyProjectListFixture,
+  legacySessionWorkspaceFixture,
+  projectListFixture,
   roomChristenPendingFixture,
+  sessionWorkspaceFixtures,
+  startRequestWithEnvironmentFixture,
 } from "./fixtures/contract-fixtures.js";
 
 const rawSse = readFileSync(
@@ -1265,5 +1279,261 @@ describe("start request contract", () => {
     expect(
       decodeExecutionStartRequest(encodeExecutionStartRequest(legacy)),
     ).toEqual({ ok: true, value: legacy });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0011 — the work address, the environments contract, project origin.
+// ---------------------------------------------------------------------------
+
+describe("the work address on a start request (ADR-0011 §2)", () => {
+  it("carries an environment name", () => {
+    const decoded = decodeExecutionStartRequest(
+      encodeExecutionStartRequest(startRequestWithEnvironmentFixture.value),
+    );
+
+    expect(decoded).toMatchObject({
+      ok: true,
+      value: { environment: "new-blok/staging" },
+    });
+  });
+
+  it("keeps a 0.13 request byte-identical through a round trip", () => {
+    const raw = JSON.stringify({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      providerId: "claude",
+      config: {
+        sessionId: "session-1",
+        initialMessage: "hello",
+        model: null,
+        effort: null,
+        continuationToken: null,
+      },
+    });
+    const decoded = decodeExecutionStartRequest(raw);
+    if (!decoded.ok) throw new Error(decoded.reason);
+
+    expect("environment" in decoded.value).toBe(false);
+    expect(encodeExecutionStartRequest(decoded.value)).toBe(raw);
+  });
+
+  it("keeps an explicitly naked request", () => {
+    const decoded = decodeExecutionStartRequest(
+      JSON.stringify({
+        ...startRequestWithEnvironmentFixture.value,
+        environment: null,
+      }),
+    );
+
+    expect(decoded).toMatchObject({ ok: true, value: { environment: null } });
+  });
+
+  it("refuses an environment it cannot read rather than running naked", () => {
+    for (const environment of [42, "", {}, ["a"], true]) {
+      expect(
+        decodeExecutionStartRequest(
+          JSON.stringify({
+            ...startRequestWithEnvironmentFixture.value,
+            environment,
+          }),
+        ),
+      ).toEqual({ ok: false, reason: "invalid-payload" });
+    }
+  });
+});
+
+describe("the echoed work address (ADR-0011 §2)", () => {
+  it("round-trips both modes", () => {
+    for (const fixture of Object.values(sessionWorkspaceFixtures)) {
+      const decoded = decodeExecutionSessionWorkspace(
+        JSON.parse(encodeExecutionSessionWorkspace(fixture.value)),
+      );
+
+      expect(decoded).toEqual({ ok: true, value: fixture.value });
+    }
+  });
+
+  it("reads a pre-ADR-0011 echo as a repository address", () => {
+    const decoded = decodeExecutionSessionWorkspace(
+      legacySessionWorkspaceFixture.value,
+    );
+
+    expect(decoded).toEqual({
+      ok: true,
+      value: {
+        mode: "repository",
+        repository: "marckraw/emergence",
+        branchName: "agent/errand-0",
+        baseRef: "master",
+        workspacePath: null,
+        environment: null,
+      },
+    });
+  });
+
+  it("re-encodes a legacy echo with its mode made explicit", () => {
+    const decoded = decodeExecutionSessionWorkspace(
+      legacySessionWorkspaceFixture.value,
+    );
+    if (!decoded.ok) throw new Error(decoded.reason);
+
+    expect(
+      JSON.parse(encodeExecutionSessionWorkspace(decoded.value)),
+    ).toMatchObject({ mode: "repository" });
+  });
+
+  it("reports a project address whose HEAD is not what was asked for", () => {
+    const decoded = decodeExecutionSessionWorkspace(
+      sessionWorkspaceFixtures.project.value,
+    );
+    if (!decoded.ok) throw new Error(decoded.reason);
+    if (decoded.value.mode !== "project") throw new Error("expected project");
+
+    expect(decoded.value.branchName).toBe("master");
+    expect(decoded.value.requestedBranchName).toBe("feature/banner");
+  });
+
+  it("refuses a mode it does not know", () => {
+    expect(
+      decodeExecutionSessionWorkspace({ mode: "sublet", repository: "a/b" }),
+    ).toEqual({ ok: false, reason: "unknown-kind" });
+  });
+});
+
+describe("projects carry their origin (ADR-0011 §4)", () => {
+  it("decodes an enriched project list", () => {
+    const decoded = decodeExecutionProjectListResponse(
+      projectListFixture.value,
+    );
+
+    expect(decoded).toEqual({ ok: true, value: projectListFixture.value });
+  });
+
+  it("reads a pre-projects.v2 host as knowing nothing, never as claiming nothing exists wrongly", () => {
+    const decoded = decodeExecutionProjectListResponse(
+      legacyProjectListFixture.value,
+    );
+
+    expect(decoded).toEqual({
+      ok: true,
+      value: {
+        projects: [
+          {
+            id: "new-blok",
+            name: "new-blok",
+            workingDirectory: "/srv/projects/new-blok",
+            origin: null,
+            originKey: null,
+            environments: [],
+          },
+        ],
+      },
+    });
+  });
+
+  it("matches a local checkout to an advertised project by key", () => {
+    const decoded = decodeExecutionProjectListResponse(
+      projectListFixture.value,
+    );
+    if (!decoded.ok) throw new Error(decoded.reason);
+
+    const localRemote = "git@github.com:MarcKraw/new-blok.git";
+    const match = decoded.value.projects.find(
+      (project) => project.originKey === normalizeOriginKey(localRemote),
+    );
+
+    expect(match?.id).toBe("new-blok");
+  });
+
+  it("refuses a project whose environment reference smuggles values", () => {
+    expect(
+      decodeExecutionProjectListResponse({
+        projects: [
+          {
+            id: "new-blok",
+            name: "new-blok",
+            workingDirectory: "/srv/projects/new-blok",
+            environments: [
+              {
+                name: "new-blok/staging",
+                default: true,
+                provisioned: true,
+                missing: [],
+                values: {},
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+  });
+});
+
+describe("the environments contract (ADR-0011 §5)", () => {
+  it("decodes a catalog of declarations and their provisioned state", () => {
+    const decoded = decodeExecutionEnvironmentListResponse(
+      environmentListFixture.value,
+    );
+
+    expect(decoded).toEqual({ ok: true, value: environmentListFixture.value });
+  });
+
+  it("names what is missing without naming what is present", () => {
+    const decoded = decodeExecutionEnvironmentListResponse(
+      environmentListFixture.value,
+    );
+    if (!decoded.ok) throw new Error(decoded.reason);
+    const staging = decoded.value.environments.find(
+      (environment) => environment.name === "new-blok/staging",
+    );
+
+    expect(staging).toMatchObject({
+      provisioned: false,
+      missing: ["STORYBLOK_TOKEN"],
+      includes: ["shared/storyblok"],
+    });
+  });
+
+  it("decodes a declaration", () => {
+    expect(
+      decodeExecutionEnvironmentDeclaration(
+        JSON.stringify(environmentDeclarationFixture.value),
+      ),
+    ).toEqual({ ok: true, value: environmentDeclarationFixture.value });
+  });
+
+  it("rejects a declaration carrying values, however empty", () => {
+    expect(
+      decodeExecutionEnvironmentDeclaration(
+        JSON.stringify(environmentDeclarationWithValuesFixture.value),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
+  });
+
+  it("rejects a values field whatever it holds — presence is the offence", () => {
+    for (const values of [null, {}, [], "", "anything"]) {
+      expect(
+        decodeExecutionEnvironmentDeclaration(
+          JSON.stringify({ keys: ["A_NAME"], values }),
+        ),
+      ).toEqual({ ok: false, reason: "invalid-payload" });
+    }
+  });
+
+  it("rejects a listed environment carrying values", () => {
+    expect(
+      decodeExecutionEnvironmentListResponse({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        environments: [
+          {
+            name: "new-blok/staging",
+            keys: ["STORYBLOK_TOKEN"],
+            provisioned: true,
+            missing: [],
+            values: {},
+          },
+        ],
+      }),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
   });
 });

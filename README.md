@@ -46,6 +46,42 @@ Rules a client must follow:
   restates its whole text, so every stream ends on a self-contained value no
   matter what happened in the middle.
 
+## The work address and environments
+
+A host owns **Environments**: named templates, each a declared set of variable
+**names** whose values live on the box and never travel (ADR-0011). A session
+says where it works and the host echoes what it actually prepared.
+
+- **Asking.** `ExecutionStartRequest.environment` names one. A residency — a
+  session in a standing Project — that names none gets the Project's default;
+  an errand that names none runs naked, on the host's base set alone. The host
+  never infers it.
+- **Echoing.** `ExecutionSessionWorkspace` is a discriminated union filled in
+  both modes. `mode: "repository"` describes an errand's clone; `mode:
+"project"` describes a residency and carries `origin`, `originKey`, and the
+  checkout's **actual** HEAD at start, plus `requestedBranchName` when the
+  dispatcher asked for a different one. Nothing is derived: the branch is
+  whatever was there, and a mismatch is reported rather than reconciled.
+- **Reading the catalog.** `ExecutionEnvironment` lists a template's key names,
+  its `includes`, and whether the host has every value (`provisioned`,
+  `missing`). `missing` names keys; it never names their contents.
+- **Matching a checkout to a Project.** Compare `originKey`, not URLs.
+  `normalizeOriginKey` collapses every spelling of a remote — ssh, scp-like,
+  https, credentialed, ported, trailing-slashed, `.git`-suffixed, any case —
+  onto one `host/owner/repo` key, and returns null for anything that names no
+  remote.
+
+**No value ever crosses this wire.** Every environment-shaped decoder rejects a
+payload carrying a `values` field, whatever it holds and however empty —
+presence is the offence. A value-writing door needs its own decision, made
+after a host has real secret storage and an audit trail; until then, a client
+shows a name and a copy-ready instruction, and a human places the value on the
+host.
+
+Legacy readers stay compatible: a pre-ADR-0011 `workspace` echo with no `mode`
+decodes as a repository address, and a host predating `projects.v2` decodes to
+`origin: null`, `originKey: null`, `environments: []` — unknown, never guessed.
+
 ## Development
 
 ```bash
