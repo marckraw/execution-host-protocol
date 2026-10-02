@@ -595,3 +595,91 @@ describe("the token", () => {
     );
   });
 });
+
+describe("listeners, redirects and timeouts", () => {
+  it("keeps a throwing warnings listener from failing a start the host accepted", async () => {
+    host.startBody = (request) => ({
+      protocolVersion: 1,
+      sessionId: (request.config as { sessionId: string }).sessionId,
+      workspace: { mode: "sublet" },
+    });
+    const throwing = client({
+      onWarnings: () => {
+        throw new Error("the logger exploded");
+      },
+    });
+
+    await expect(
+      throwing.start(startRequest("session-new")),
+    ).resolves.toMatchObject({
+      status: "started",
+      workspace: null,
+    });
+  });
+
+  it("never lets an async warnings listener's rejection escape", async () => {
+    const escaped: unknown[] = [];
+    const onEscape = (reason: unknown) => escaped.push(reason);
+    process.on("unhandledRejection", onEscape);
+    try {
+      host.snapshots.set("session-1", {
+        protocolVersion: 1,
+        sessionId: "session-1",
+        providerId: "claude",
+        status: "paused",
+        conversation: [],
+        lastSeq: 0,
+      });
+      await client({
+        onWarnings: async () => {
+          throw new Error("the logger exploded");
+        },
+      }).snapshot("session-1");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      process.off("unhandledRejection", onEscape);
+    }
+
+    expect(escaped).toEqual([]);
+  });
+
+  it("refuses redirects on every request and on the stream", async () => {
+    const all = client();
+    await all.health();
+    await all.handshake();
+    await all.projects();
+    await all.start(startRequest("session-new"));
+    await all.command("session-1", { kind: "stop" });
+    await all.snapshot("session-1");
+    for await (const frame of all.events("session-1")) {
+      if (frame.type === "caught-up") break;
+    }
+
+    expect(host.redirectModes.length).toBeGreaterThanOrEqual(8);
+    expect(new Set(host.redirectModes)).toEqual(new Set(["error"]));
+  });
+
+  it("refuses a timeout that is not a positive duration, and holds a huge one", async () => {
+    for (const requestTimeoutMs of [0, -5, Number.NaN]) {
+      expect(() => client({ requestTimeoutMs })).toThrow(RangeError);
+    }
+    expect(() => client({ healthTimeoutMs: 0 })).toThrow(RangeError);
+    await expect(
+      client().snapshot("session-1", { timeoutMs: 0 }),
+    ).rejects.toThrow(RangeError);
+    // Thirty days, from a host that answers 30 ms later: a timer given that
+    // delay fires at once, so only a clamped one lets the answer arrive.
+    const slow = client({
+      requestTimeoutMs: 30 * 24 * 60 * 60 * 1000,
+      fetch: async (input, init) => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        if (init?.signal?.aborted)
+          throw new DOMException("aborted", "AbortError");
+        return host.fetch(input, init);
+      },
+    });
+    expect(await slow.command("session-1", { kind: "stop" })).toMatchObject({
+      status: "accepted",
+    });
+  });
+});

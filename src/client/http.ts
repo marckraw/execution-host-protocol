@@ -159,6 +159,21 @@ export interface Deadline {
   close(): void;
 }
 
+/**
+ * The longest delay a timer holds. Past it, Node and browsers fire at once,
+ * so "thirty days" would mean "now" — every wait here is clamped to it, which
+ * is as good as forever for a deadline.
+ */
+export const MAX_TIMER_MS = 2_147_483_647;
+
+/** A positive duration in milliseconds, or a `RangeError` naming `name`. */
+export function positiveMs(value: number, name: string): number {
+  if (!(value > 0)) {
+    throw new RangeError(`${name} must be a positive number of milliseconds`);
+  }
+  return value;
+}
+
 export function startDeadline(
   callerSignal: AbortSignal | undefined,
   timeoutMs: number | null,
@@ -170,10 +185,13 @@ export function startDeadline(
   const arm = () => {
     if (timeoutMs === null || !Number.isFinite(timeoutMs)) return;
     if (timer !== null) clearTimeout(timer);
-    timer = setTimeout(() => {
-      expired = true;
-      controller.abort();
-    }, timeoutMs);
+    timer = setTimeout(
+      () => {
+        expired = true;
+        controller.abort();
+      },
+      Math.min(timeoutMs, MAX_TIMER_MS),
+    );
   };
 
   if (callerSignal?.aborted) controller.abort(callerSignal.reason);

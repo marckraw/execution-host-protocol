@@ -51,6 +51,32 @@ describe("the SSE parser", () => {
     expect(frames).toEqual([{ id: null, event: null, data }]);
   });
 
+  it("reads CRLF cut between CR and LF, on an id line and a data line", () => {
+    const parser = createSseParser();
+    expect([
+      ...parser.feed("id: 1\r"),
+      ...parser.feed("\ndata: x\r"),
+      ...parser.feed("\n\r"),
+      ...parser.feed("\n"),
+    ]).toEqual([{ id: "1", event: null, data: "x" }]);
+  });
+
+  it("refuses a frame past its cap, whether its line ends or not", () => {
+    const unended = createSseParser({ maxFrameLength: 100 });
+    expect(() => unended.feed(`data: ${"x".repeat(60)}`)).not.toThrow();
+    expect(() => unended.feed("x".repeat(60))).toThrow(RangeError);
+
+    const ended = createSseParser({ maxFrameLength: 100 });
+    expect(() =>
+      ended.feed(`data: ${"x".repeat(60)}\ndata: ${"x".repeat(60)}\n`),
+    ).toThrow(RangeError);
+
+    const fine = createSseParser({ maxFrameLength: 100 });
+    for (let index = 0; index < 50; index += 1) {
+      expect(fine.feed(`data: ${"x".repeat(60)}\n\n`)).toHaveLength(1);
+    }
+  });
+
   it("drops a frame without data and one the stream ended inside", () => {
     const parser = createSseParser();
     expect(parser.feed("event: ping\n\nid: 9\ndata: half")).toEqual([]);

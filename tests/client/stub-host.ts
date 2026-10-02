@@ -31,6 +31,10 @@ export interface StubHost {
   emitBatch(events: ExecutionHostEvent[], sessionId?: string): void;
   /** Writes raw SSE text to every open stream (a frame the client cannot read). */
   writeRaw(text: string): void;
+  /** Writes raw bytes to every open stream, cut wherever the test cuts them. */
+  writeBytes(bytes: Uint8Array): void;
+  /** The `redirect` mode of every request, in order. */
+  redirectModes: Array<string | undefined>;
   prune(...seqs: number[]): void;
   /** Ends every open stream cleanly, as a host restart does. */
   closeStreams(): void;
@@ -148,6 +152,10 @@ export function createStubHost(): StubHost {
     writeRaw(text) {
       write(null, text);
     },
+    writeBytes(bytes) {
+      for (const stream of streams) stream.controller.enqueue(bytes);
+    },
+    redirectModes: [],
     prune(...seqs) {
       host.log = host.log.filter((envelope) => !seqs.includes(envelope.seq));
     },
@@ -172,6 +180,7 @@ export function createStubHost(): StubHost {
       const headers = new Headers(init?.headers);
       const method = init?.method ?? "GET";
       const signal = init?.signal ?? undefined;
+      host.redirectModes.push(init?.redirect);
       if (signal?.aborted) throw abortError(signal);
       const authorized =
         headers.get("Authorization") === `Bearer ${host.token}`;
@@ -359,8 +368,20 @@ export const HEALTH_BODY = {
 /** Polls until `condition` holds, on real timers, or fails the test. */
 export async function waitFor(condition: () => boolean, timeoutMs = 2_000) {
   const started = Date.now();
+  let last = started;
+  let longestPause = 0;
+  let polls = 0;
   while (!condition()) {
-    if (Date.now() - started > timeoutMs) throw new Error("timed out waiting");
+    const now = Date.now();
+    longestPause = Math.max(longestPause, now - last);
+    last = now;
+    polls += 1;
+    // Saying how often it looked tells a stalled machine from a stuck test.
+    if (now - started > timeoutMs) {
+      throw new Error(
+        `timed out waiting: ${polls} looks, the longest ${longestPause} ms apart`,
+      );
+    }
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
 }

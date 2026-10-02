@@ -166,14 +166,15 @@ await host.command(
 ); // { status: "accepted" | "no-session", commandId }
 
 const follow = host.followSession(sessionId, {
-  afterSeq: cursor, // the last seq already applied
+  afterSeq: savedCursor, // what was persisted with the last envelope applied
   deltas: "append",
-  onEnvelope: async (envelope) => {
-    await apply(envelope);
+  onEnvelope: async (envelope, { cursor, signal }) => {
+    // One write: the envelope and the cursor to resume after it.
+    await applyAndSaveCursor(envelope, cursor, { signal });
   },
-  onGap: async () => {
-    const snapshot = await host.snapshot(sessionId);
-    if (snapshot) await reset(snapshot);
+  onGap: async (_gap, { signal }) => {
+    const snapshot = await host.snapshot(sessionId, { signal });
+    if (snapshot) await resetFromSnapshot(snapshot); // saves snapshot.lastSeq
     return snapshot?.lastSeq; // carry on after it
   },
 });
@@ -186,25 +187,54 @@ token; `handshake()` adds the token probe and never throws. `projects()`,
 `snapshot()` (null for a session the host does not have) and `events()` — one
 connection, decoded but not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
-`not-found`, `http`, `malformed`), the status, and the host's own words. The
-token goes in the `Authorization` header and nowhere else.
+`not-found`, `http`, `malformed`), the status, and the host's own words.
+
+**The token** goes in the `Authorization` header and nowhere else. One no
+header could carry — a line break, a control character, anything outside ASCII
+— is refused when the client is made, without being repeated; surrounding
+whitespace is dropped, as `fetch` drops it. Every message built from a failure,
+and a host's refusal, has the token replaced by `[token]`, and the `cause` an
+error carries is a scrubbed copy, never the original.
+
+**Requests** refuse redirects (`redirect: "error"`): a redirect would carry the
+token to wherever it points, and a 302 turns a POST into a GET. Timeouts must
+be positive, and one past what a timer holds (about 24.8 days) waits that long
+rather than firing at once. A command id is checked before anything is sent.
+Listeners — `onWarnings`, `onStatus` — never break what they listen to: a throw
+or a rejected promise from one is swallowed.
 
 **What `followSession` promises.**
 
 - **It keeps following.** A finished turn is an envelope like any other: a
   shared session goes quiet between turns, and the next one may be anybody's.
-  Only `stop()`, the caller's `signal`, or the host's verdict ends it — `404`
-  (`no-session`) or a refused token (`unauthorized`). `done` resolves with the
-  reason and never rejects.
+  `done` resolves with why it ended and never rejects:
+  - `stopped` — `stop()`, or the caller's `signal`.
+  - `no-session` — the stream answered 404: the host does not have the session,
+    or a proxy answered for it. Final for this follow; check the snapshot, and
+    follow again if the session is back.
+  - `unauthorized` — the stream answered 401 or 403, the host's or a proxy's or
+    WAF's. The same token will not do better.
+  - `gave-up` — `maxAttempts` was set and ran out.
+  - `crashed` — the follow's own machinery threw (a bug, or a callback it does
+    not guard, such as `retryDelayMs`).
 - **It reconnects.** A stream that ends or breaks is reopened with
   `Last-Event-ID: <last kept seq>`, after 1 s doubling to 30 s, for as long as
-  it takes unless `maxAttempts` says otherwise; a connection that delivered
-  resets the count. A connection that goes 90 s without a byte (hosts send a
-  keep-alive every 25 s) is replaced.
+  it takes unless `maxAttempts` says otherwise. A healthy connection — one that
+  kept a frame, or stayed open `healthyAfterMs` (30 s) — starts the count over;
+  a host that answers `caught-up` and hangs up is not healthy. A connection
+  that goes 90 s without a byte, headers included (hosts send a keep-alive
+  every 25 s), is replaced; time a handler takes does not count.
 - **Each envelope once, in order.** `onEnvelope` is awaited before the next
   frame is read. If it throws, the envelope was not kept: the follow reconnects
-  after the last one that was, and delivers it again. Replayed duplicates are
-  dropped.
+  after the last one that was, and delivers it again — so does `onSkip` or
+  `onGap` throwing. Replayed duplicates are dropped.
+- **Persist `info.cursor` in the same write as the envelope.** `follow.lastSeq`
+  moves only once a handler has returned, so inside one it still names the
+  envelope before; `info.cursor` is the `afterSeq` to resume from.
+- **`stop()` ends it at once.** It closes the stream, cancels a pending
+  reconnect, and abandons a handler still running — that envelope does not
+  count as kept, and its `info.signal` aborts so it can give up too. It is safe
+  to call, and to await, from inside a handler.
 - **It tells a gap from a prune.** A host deletes superseded streaming patches
   from its log, so its replay has holes nothing can fill. A hole under the
   first frame of a connection, or inside a replay the host named, is that
@@ -215,16 +245,19 @@ token goes in the `Authorization` header and nowhere else.
 - **It steps over what it cannot apply.** A kind it does not know goes to
   `onSkip` and the cursor moves on (MAR-3633). A frame it cannot read goes to
   `onSkip` and `onGap` (`{ reason: "unreadable" }`): reading it again would fail
-  the same way, so the snapshot is how to be sure.
-- **`follow.lastSeq` is the cursor to persist**, and the `afterSeq` to resume
-  from after a restart.
+  the same way, so the snapshot is how to be sure. An envelope about another
+  session has no place in this one's stream and never moves the cursor.
 
 **The replay boundary.** A host may name its replay (agents-daemon `414f740`):
-each replayed envelope frame carries `event: replay`, and one frame with no
+each replayed envelope frame carries `event: replay`; the envelopes that
+arrived while the replay was read follow it unnamed; and one frame with no
 envelope, `event: caught-up` with `data: {"throughSeq": N}`, ends it — even an
 empty one. Below `N`, holes are pruned history and the cursor may stand at `N`;
-after it, the next number is the only number. A host that names neither is read
-as before, with the first frame of each connection carrying the rule alone.
+after it, the next number is the only number, whatever a frame is named. A host
+that names neither is read as before, with the first frame of each connection
+carrying the rule alone. Frames under any other name are not read at all, as
+EventSource ignores the names nobody listens for, and a frame longer than
+`maxFrameLength` (16 MiB) fails the connection rather than grow without end.
 
 ## The work address and environments
 

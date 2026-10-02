@@ -7,6 +7,9 @@ export interface SseFrame {
   data: string;
 }
 
+/** The default cap on one frame: 16 MiB of text, data lines and all. */
+export const DEFAULT_MAX_SSE_FRAME_LENGTH = 16 * 1024 * 1024;
+
 /**
  * An incremental text/event-stream parser. Feed it decoded text in arrival
  * order, cut anywhere, and it returns each frame once the blank line that ends
@@ -16,56 +19,98 @@ export interface SseFrame {
  * ended in the middle of is never returned — per the specification, it was
  * never finished.
  */
-export function createSseParser(): { feed(chunk: string): SseFrame[] } {
-  let buffer = "";
+export function createSseParser(
+  options: {
+    /**
+     * The most text one frame may hold, data lines and the line still
+     * arriving included. Past it, `feed` throws a `RangeError` rather than
+     * buffer a host that never ends its line. Default 16 MiB.
+     */
+    maxFrameLength?: number;
+  } = {},
+): { feed(chunk: string): SseFrame[] } {
+  const maxFrameLength = options.maxFrameLength ?? DEFAULT_MAX_SSE_FRAME_LENGTH;
+  /**
+   * The line still arriving, kept as the pieces it came in. Joined only when
+   * its line break comes: appending to one string and searching it on every
+   * chunk made a long line cost the square of its length, because each
+   * search flattened everything appended so far.
+   */
+  let pending: string[] = [];
+  let pendingLength = 0;
   let data: string[] = [];
+  /** The length of the data lines the current frame holds so far. */
+  let dataLength = 0;
   let id: string | null = null;
   let event: string | null = null;
   let started = false;
 
+  const takeLine = (line: string, frames: SseFrame[]) => {
+    if (line === "") {
+      if (data.length > 0) frames.push({ id, event, data: data.join("\n") });
+      data = [];
+      dataLength = 0;
+      id = null;
+      event = null;
+      return;
+    }
+    if (line.startsWith(":")) return;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const raw = colon === -1 ? "" : line.slice(colon + 1);
+    const value = raw.startsWith(" ") ? raw.slice(1) : raw;
+    if (field === "data") {
+      data.push(value);
+      dataLength += value.length + 1;
+    } else if (field === "id") id = value;
+    else if (field === "event") event = value;
+  };
+
   return {
-    feed(chunk) {
-      // What is left of the buffer holds no line break: it was all searched
-      // last time, so the search resumes where the new text begins. Searching
-      // from the start every time made a long line, arriving in many pieces,
-      // cost the square of its length.
-      let searchFrom = buffer.length;
-      buffer += chunk;
-      if (!started && buffer.length > 0) {
+    feed(text) {
+      let chunk = text;
+      if (!started && chunk.length > 0) {
         started = true;
-        if (buffer.charCodeAt(0) === 0xfeff) {
-          buffer = buffer.slice(1);
-          searchFrom = Math.max(0, searchFrom - 1);
-        }
+        if (chunk.charCodeAt(0) === 0xfeff) chunk = chunk.slice(1);
       }
       const frames: SseFrame[] = [];
-      let start = 0;
-      let end = buffer.indexOf("\n", searchFrom);
-      while (end !== -1) {
-        const line = buffer.slice(start, end).replace(/\r$/, "");
-        start = end + 1;
-        end = buffer.indexOf("\n", start);
-
-        if (line === "") {
-          if (data.length > 0)
-            frames.push({ id, event, data: data.join("\n") });
-          data = [];
-          id = null;
-          event = null;
-          continue;
+      let end = chunk.indexOf("\n");
+      if (end === -1) {
+        if (chunk.length > 0) {
+          pending.push(chunk);
+          pendingLength += chunk.length;
         }
-        if (line.startsWith(":")) continue;
-
-        const colon = line.indexOf(":");
-        const field = colon === -1 ? line : line.slice(0, colon);
-        const raw = colon === -1 ? "" : line.slice(colon + 1);
-        const value = raw.startsWith(" ") ? raw.slice(1) : raw;
-        if (field === "data") data.push(value);
-        else if (field === "id") id = value;
-        else if (field === "event") event = value;
+      } else {
+        // The unfinished line ends in this chunk: join it once, here.
+        const first = pending.join("") + chunk.slice(0, end);
+        pending = [];
+        pendingLength = 0;
+        takeLine(first.replace(/\r$/, ""), frames);
+        let start = end + 1;
+        end = chunk.indexOf("\n", start);
+        while (end !== -1) {
+          takeLine(chunk.slice(start, end).replace(/\r$/, ""), frames);
+          start = end + 1;
+          end = chunk.indexOf("\n", start);
+        }
+        if (start < chunk.length) {
+          pending.push(chunk.slice(start));
+          pendingLength = chunk.length - start;
+        }
       }
-      buffer = buffer.slice(start);
+      // Checked once per chunk: what one chunk brings is already in memory,
+      // and the frame it belongs to — finished lines and the unfinished one
+      // alike — may not grow past the cap across chunks.
+      if (dataLength + pendingLength > maxFrameLength) {
+        throw tooLong(maxFrameLength);
+      }
       return frames;
     },
   };
+}
+
+function tooLong(maxFrameLength: number): RangeError {
+  return new RangeError(
+    `an event-stream frame grew past ${maxFrameLength} characters`,
+  );
 }

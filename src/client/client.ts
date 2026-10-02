@@ -31,12 +31,14 @@ import {
   failureOf,
   joinUrl,
   kindOfStatus,
+  positiveMs,
   reasonOf,
   scrubberFor,
   seconds,
   startDeadline,
   usableToken,
 } from "./http.js";
+import { notify } from "./listeners.js";
 import {
   decodeExecutionSessionSnapshot,
   type ExecutionSessionSnapshot,
@@ -177,9 +179,14 @@ export function createExecutionHostClient(
     // Called bare, never as a method of the options object.
     fetch: (input, init) => fetchFn(input, init),
   };
-  const requestTimeoutMs =
-    options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-  const healthTimeoutMs = options.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
+  const requestTimeoutMs = positiveMs(
+    options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    "requestTimeoutMs",
+  );
+  const healthTimeoutMs = positiveMs(
+    options.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
+    "healthTimeoutMs",
+  );
   const mintCommandId = options.createCommandId ?? randomCommandId;
   /**
    * The command id a request carries: the caller's, or a minted one — checked
@@ -194,8 +201,10 @@ export function createExecutionHostClient(
 
   /**
    * One request, within a deadline that covers reading the body too, handed to
-   * `read` with the response. Failures on the way become `ExecutionHostError`;
-   * a caller's abort is rethrown as it came.
+   * `read` with the response. Only what `fetch` and the body throw becomes a
+   * transport `ExecutionHostError` — a listener's mistake, or this client's,
+   * is not a failure to reach the host. A caller's abort is rethrown as it
+   * came.
    */
   const request = async <T>(
     operation: string,
@@ -207,33 +216,61 @@ export function createExecutionHostClient(
       timeoutMs: number;
       signal: AbortSignal | undefined;
     },
-    read: (response: Response) => Promise<T>,
+    read: (
+      response: Response,
+      body: { json(): Promise<unknown> },
+    ) => Promise<T>,
   ): Promise<T> => {
-    const deadline = startDeadline(init.signal, init.timeoutMs);
-    try {
-      const response = await connection.fetch(joinUrl(baseUrl, path), {
-        method: init.method,
-        headers: {
-          Accept: "application/json",
-          ...(init.authenticated
-            ? { Authorization: `Bearer ${connection.token}` }
-            : {}),
-          ...(init.body === undefined
-            ? {}
-            : { "Content-Type": "application/json" }),
-        },
-        ...(init.body === undefined ? {} : { body: init.body }),
-        signal: deadline.signal,
-      });
-      return await read(response);
-    } catch (error) {
-      throw failureOf(error, {
+    const timeoutMs = positiveMs(init.timeoutMs, "timeoutMs");
+    const deadline = startDeadline(init.signal, timeoutMs);
+    const transport = (error: unknown) =>
+      failureOf(error, {
         operation,
         deadline,
         callerSignal: init.signal,
-        timeoutReason: `no answer within ${seconds(init.timeoutMs)}`,
+        timeoutReason: `no answer within ${seconds(timeoutMs)}`,
         scrub: connection.scrub,
       });
+    try {
+      let response: Response;
+      try {
+        response = await connection.fetch(joinUrl(baseUrl, path), {
+          method: init.method,
+          headers: {
+            Accept: "application/json",
+            ...(init.authenticated
+              ? { Authorization: `Bearer ${connection.token}` }
+              : {}),
+            ...(init.body === undefined
+              ? {}
+              : { "Content-Type": "application/json" }),
+          },
+          ...(init.body === undefined ? {} : { body: init.body }),
+          signal: deadline.signal,
+          // A redirect would carry the token wherever it points, and a 302
+          // turns a POST into a GET: a host that moved is a configuration fix.
+          redirect: "error",
+        });
+      } catch (error) {
+        throw transport(error);
+      }
+      const json = async (): Promise<unknown> => {
+        let text: string;
+        try {
+          text = await response.text();
+        } catch (error) {
+          throw transport(error);
+        }
+        try {
+          return text.trim() === "" ? {} : (JSON.parse(text) as unknown);
+        } catch {
+          throw new ExecutionHostError("malformed", "the answer is not JSON", {
+            operation,
+            status: response.status,
+          });
+        }
+      };
+      return await read(response, { json });
     } finally {
       deadline.dispose();
     }
@@ -249,22 +286,6 @@ export function createExecutionHostClient(
       },
     );
 
-  const json = async (
-    operation: string,
-    response: Response,
-  ): Promise<unknown> => {
-    const text = await response.text();
-    try {
-      return text.trim() === "" ? {} : (JSON.parse(text) as unknown);
-    } catch (error) {
-      throw new ExecutionHostError("malformed", "the answer is not JSON", {
-        operation,
-        status: response.status,
-        cause: error,
-      });
-    }
-  };
-
   const health = (requestOptions: ExecutionRequestOptions = {}) =>
     request(
       "health",
@@ -275,9 +296,9 @@ export function createExecutionHostClient(
         timeoutMs: requestOptions.timeoutMs ?? healthTimeoutMs,
         signal: requestOptions.signal,
       },
-      async (response) => {
+      async (response, body) => {
         if (!response.ok) throw await refusal("health", response);
-        const parsed = parseExecutionHostHealth(await json("health", response));
+        const parsed = parseExecutionHostHealth(await body.json());
         if (parsed === null) {
           throw new ExecutionHostError(
             "malformed",
@@ -353,11 +374,9 @@ export function createExecutionHostClient(
           timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
           signal: requestOptions.signal,
         },
-        async (response) => {
+        async (response, body) => {
           if (!response.ok) throw await refusal("projects", response);
-          const decoded = decodeExecutionProjectListResponse(
-            await json("projects", response),
-          );
+          const decoded = decodeExecutionProjectListResponse(await body.json());
           if (!decoded.ok) {
             throw new ExecutionHostError("malformed", decoded.reason, {
               operation: "projects",
@@ -381,14 +400,14 @@ export function createExecutionHostClient(
           timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
           signal: requestOptions.signal,
         },
-        async (response): Promise<ExecutionStartResult> => {
+        async (response, body): Promise<ExecutionStartResult> => {
           if (response.status === 409) {
             await response.body?.cancel().catch(() => {});
             return { status: "exists", sessionId, commandId };
           }
           if (!response.ok) throw await refusal("start", response);
-          const body = await json("start", response);
-          const echoed = isRecord(body) ? body.sessionId : undefined;
+          const echo = await body.json();
+          const echoed = isRecord(echo) ? echo.sessionId : undefined;
           // An answer about another session is not an answer about this one,
           // and filing it here would describe this session with another's
           // workspace (Convergence MAR-2694).
@@ -402,14 +421,14 @@ export function createExecutionHostClient(
             );
           }
           let workspace: ExecutionSessionWorkspace | null = null;
-          const raw = isRecord(body) ? body.workspace : undefined;
+          const raw = isRecord(echo) ? echo.workspace : undefined;
           if (raw !== undefined && raw !== null) {
             const decoded = decodeExecutionSessionWorkspace(raw);
             if (decoded.ok) workspace = decoded.value;
             else {
               // The session is running either way; an echo this build cannot
               // read degrades to "not reported", out loud.
-              options.onWarnings?.({
+              notify(options.onWarnings, {
                 operation: "start",
                 sessionId,
                 warnings: [
@@ -465,14 +484,14 @@ export function createExecutionHostClient(
           timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
           signal: requestOptions.signal,
         },
-        async (response) => {
+        async (response, body) => {
           if (response.status === 404) {
             await response.body?.cancel().catch(() => {});
             return null;
           }
           if (!response.ok) throw await refusal("snapshot", response);
           const decoded = decodeExecutionSessionSnapshot(
-            await json("snapshot", response),
+            await body.json(),
             sessionId,
           );
           if (!decoded.ok) {
@@ -483,7 +502,7 @@ export function createExecutionHostClient(
             );
           }
           if (decoded.warnings?.length) {
-            options.onWarnings?.({
+            notify(options.onWarnings, {
               operation: "snapshot",
               sessionId,
               warnings: decoded.warnings,

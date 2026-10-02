@@ -3,7 +3,8 @@ import type {
   ExecutionDecodeWarning,
   ExecutionHostEventEnvelope,
 } from "../types.js";
-import { ExecutionHostError } from "./http.js";
+import { ExecutionHostError, MAX_TIMER_MS, positiveMs } from "./http.js";
+import { isThenable, notify } from "./listeners.js";
 import {
   nextExecutionStreamPhase,
   readExecutionSeq,
@@ -17,6 +18,24 @@ export interface ExecutionFollowEnvelopeInfo {
   replay: boolean;
   /** Optional fields the decoder dropped from this envelope. */
   warnings: ExecutionDecodeWarning[];
+  /**
+   * The cursor to persist in the same write as this envelope: once it is
+   * applied, a later follow resumes with `afterSeq` set to it. `follow.lastSeq`
+   * moves only after the handler returns, so inside the handler it still
+   * names the envelope before this one — persist this, not that.
+   */
+  cursor: number;
+  /**
+   * Aborted when the follow stops. A handler still running then is abandoned
+   * — its envelope does not count as kept — so it should give up too.
+   */
+  signal: AbortSignal;
+}
+
+/** What a gap or skip handler is told besides the gap or skip itself. */
+export interface ExecutionFollowHandlerInfo {
+  /** Aborted when the follow stops; a handler still running then is abandoned. */
+  signal: AbortSignal;
 }
 
 /**
@@ -64,16 +83,25 @@ export type ExecutionFollowStatus =
   | { state: "waiting"; attempt: number; delayMs: number; error: unknown };
 
 /**
- * Why a follow ended. Only `stop()` (or the caller's signal) and the host's
- * own verdicts end one: `no-session` (the host does not have it — torn down,
- * or never started there) and `unauthorized` (it refused the token).
- * `gave-up` happens only when `maxAttempts` is set and ran out.
+ * Why a follow ended.
+ *
+ * `stopped` — `stop()` or the caller's signal.
+ * `no-session` — the stream answered 404: the host does not have the session
+ * (torn down, never started there, or a proxy answering for it). Final for
+ * this follow; check the snapshot, and follow again if the session is back.
+ * `unauthorized` — the stream answered 401 or 403, the host's or a proxy's or
+ * WAF's. Retrying with the same token will not change it.
+ * `gave-up` — `maxAttempts` was set and ran out.
+ * `crashed` — the follow's own machinery threw: a bug here, or in a callback
+ * it does not guard, such as `retryDelayMs`. Following again the same way
+ * will not help.
  */
 export type ExecutionFollowEnd =
   | { reason: "stopped"; lastSeq: number }
   | { reason: "no-session"; lastSeq: number; error: ExecutionHostError }
   | { reason: "unauthorized"; lastSeq: number; error: ExecutionHostError }
-  | { reason: "gave-up"; lastSeq: number; error: unknown };
+  | { reason: "gave-up"; lastSeq: number; error: unknown }
+  | { reason: "crashed"; lastSeq: number; error: unknown };
 
 export interface ExecutionFollowOptions {
   /** Follow from after this `seq` — the last one already applied; 0 for all. */
@@ -92,8 +120,18 @@ export interface ExecutionFollowOptions {
     info: ExecutionFollowEnvelopeInfo,
   ): void | Promise<void>;
   /** See `ExecutionFollowGap`. Return a snapshot's `lastSeq` to resume after it. */
-  onGap?(gap: ExecutionFollowGap): void | number | Promise<void | number>;
-  onSkip?(skip: ExecutionFollowSkip): void | Promise<void>;
+  onGap?(
+    gap: ExecutionFollowGap,
+    info: ExecutionFollowHandlerInfo,
+  ): void | number | Promise<void | number>;
+  /**
+   * Awaited like `onEnvelope`, and like it, a throw means the frame was not
+   * taken: it is offered again after the backoff.
+   */
+  onSkip?(
+    skip: ExecutionFollowSkip,
+    info: ExecutionFollowHandlerInfo,
+  ): void | Promise<void>;
   /**
    * Connection changes, for a log or a "reconnecting…" line. Never awaited.
    * The first report comes after `followSession` has returned, so a handler
@@ -117,18 +155,28 @@ export interface ExecutionFollowOptions {
   healthyAfterMs?: number;
   /**
    * Reconnect when a connection goes this long without a byte (hosts send a
-   * keep-alive every 25 s). Default 90 s; null waits forever.
+   * keep-alive every 25 s), headers included. Default 90 s; null waits
+   * forever; it must otherwise be positive.
    */
   idleTimeoutMs?: number | null;
+  /** The most text one SSE frame may hold; see `events()`. Default 16 MiB. */
+  maxFrameLength?: number;
 }
 
 export interface ExecutionSessionFollow {
   readonly sessionId: string;
-  /** The last `seq` handed on or stepped over — the cursor to persist. */
+  /**
+   * The last `seq` handed on or stepped over, once its handler returned. For
+   * the cursor to write together with an envelope, use `info.cursor`.
+   */
   readonly lastSeq: number;
   /** Settles when the follow ends; never rejects. */
   readonly done: Promise<ExecutionFollowEnd>;
-  /** Ends the follow: closes the stream, cancels a pending reconnect. */
+  /**
+   * Ends the follow at once: closes the stream, cancels a pending reconnect,
+   * and abandons a handler still running — it sees its `info.signal` abort.
+   * Safe to call, and to await, from inside a handler.
+   */
   stop(): Promise<ExecutionFollowEnd>;
 }
 
@@ -138,6 +186,7 @@ export type OpenEventStream = (
     deltas: ExecutionDeltaMode;
     signal: AbortSignal;
     idleTimeoutMs: number | null;
+    maxFrameLength?: number;
   },
 ) => AsyncIterable<ExecutionStreamFrame>;
 
@@ -157,9 +206,10 @@ const DEFAULT_HEALTHY_AFTER_MS = 30_000;
  * A stream that ends or breaks is reopened after the last `seq` kept, sooner
  * when the connection was healthy — it kept a frame, or stayed open — and
  * later, up to the cap, when it was not. A `caught-up` alone is not health: a
- * host that answers the cursor and hangs up every time is failing politely. Replayed duplicates are dropped, a hole in the live stream is
- * reported and resumed, and only the host's verdicts — no such session, a
- * refused token — or `stop()` end the follow.
+ * host that answers the cursor and hangs up every time is failing politely.
+ * Replayed duplicates are dropped, a hole in the live stream is reported and
+ * resumed, and only the host's verdicts — no such session, a refused token —
+ * or `stop()` end the follow.
  */
 export function followExecutionSession(
   open: OpenEventStream,
@@ -177,25 +227,57 @@ export function followExecutionSession(
   const deltas = options.deltas ?? "full-text";
   const retryDelayMs = options.retryDelayMs ?? executionRetryDelayMs;
   const maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+  if (!(maxAttempts >= 0))
+    throw new RangeError("maxAttempts must be 0 or more");
   const idleTimeoutMs =
     options.idleTimeoutMs === undefined
       ? DEFAULT_IDLE_TIMEOUT_MS
-      : options.idleTimeoutMs;
+      : options.idleTimeoutMs === null
+        ? null
+        : positiveMs(options.idleTimeoutMs, "idleTimeoutMs");
   const healthyAfterMs = options.healthyAfterMs ?? DEFAULT_HEALTHY_AFTER_MS;
+  if (!(healthyAfterMs >= 0)) {
+    throw new RangeError("healthyAfterMs must be 0 or more milliseconds");
+  }
+  const streamOptions =
+    options.maxFrameLength === undefined
+      ? {}
+      : { maxFrameLength: options.maxFrameLength };
 
   const following = new AbortController();
   const stop = () => following.abort();
   if (options.signal?.aborted) stop();
   else options.signal?.addEventListener("abort", stop, { once: true });
   const stopped = () => following.signal.aborted;
+  const whenStopped = new Promise<void>((resolve) => {
+    if (following.signal.aborted) resolve();
+    else
+      following.signal.addEventListener("abort", () => resolve(), {
+        once: true,
+      });
+  });
+  const handlerInfo: ExecutionFollowHandlerInfo = { signal: following.signal };
 
   let lastSeq = afterSeq;
-  const report = (status: ExecutionFollowStatus) => {
-    try {
-      options.onStatus?.(status);
-    } catch {
-      // A listener's mistake is not the stream's.
-    }
+  const report = (status: ExecutionFollowStatus) =>
+    notify(options.onStatus, status);
+  /**
+   * What a handler came to, or `abandoned` when the follow stopped first.
+   * Not waiting for a handler past `stop()` is what lets one await `stop()`
+   * itself, and lets a handler that never settles be left behind; a late
+   * rejection from it stays handled, through the race.
+   */
+  const settle = async (
+    work: unknown,
+  ): Promise<{ abandoned: true } | { abandoned: false; value: unknown }> => {
+    if (!isThenable(work)) return { abandoned: false, value: work };
+    return Promise.race([
+      Promise.resolve(work).then((value) => ({
+        abandoned: false as const,
+        value,
+      })),
+      whenStopped.then(() => ({ abandoned: true as const })),
+    ]);
   };
   /** A cursor a gap handler handed back, when it is one that moves forward. */
   const resumeAfter = (value: unknown, current: number) =>
@@ -225,6 +307,7 @@ export function followExecutionSession(
         deltas,
         signal: connection.signal,
         idleTimeoutMs,
+        ...streamOptions,
       })[Symbol.asyncIterator]();
 
       try {
@@ -262,11 +345,13 @@ export function followExecutionSession(
                 : seqOfFrameId(frame.id);
           if (seq === null) {
             if (frame.type === "unreadable") {
-              await options.onSkip?.({
-                reason: "unreadable",
-                seq: null,
-                detail: frame.reason,
-              });
+              const skipped = await settle(
+                options.onSkip?.(
+                  { reason: "unreadable", seq: null, detail: frame.reason },
+                  handlerInfo,
+                ),
+              );
+              if (skipped.abandoned) break;
             }
             continue;
           }
@@ -279,27 +364,44 @@ export function followExecutionSession(
 
           let cursor = seq;
           if (frame.type === "envelope") {
-            await options.onEnvelope(frame.envelope, {
-              replay: frame.replay,
-              warnings: frame.warnings,
-            });
-          } else if (frame.type === "skipped") {
-            await options.onSkip?.({
-              reason: "unknown-kind",
-              seq,
-              path: frame.skipped.path,
-              kind: frame.skipped.kind,
-            });
-          } else {
-            await options.onSkip?.({
-              reason: "unreadable",
-              seq,
-              detail: frame.reason,
-            });
-            cursor = resumeAfter(
-              await options.onGap?.({ reason: "unreadable", lastSeq, seq }),
-              cursor,
+            const delivered = await settle(
+              options.onEnvelope(frame.envelope, {
+                replay: frame.replay,
+                warnings: frame.warnings,
+                cursor: seq,
+                signal: following.signal,
+              }),
             );
+            if (delivered.abandoned) break;
+          } else if (frame.type === "skipped") {
+            const skipped = await settle(
+              options.onSkip?.(
+                {
+                  reason: "unknown-kind",
+                  seq,
+                  path: frame.skipped.path,
+                  kind: frame.skipped.kind,
+                },
+                handlerInfo,
+              ),
+            );
+            if (skipped.abandoned) break;
+          } else {
+            const skipped = await settle(
+              options.onSkip?.(
+                { reason: "unreadable", seq, detail: frame.reason },
+                handlerInfo,
+              ),
+            );
+            if (skipped.abandoned) break;
+            const reconciled = await settle(
+              options.onGap?.(
+                { reason: "unreadable", lastSeq, seq },
+                handlerInfo,
+              ),
+            );
+            if (reconciled.abandoned) break;
+            cursor = resumeAfter(reconciled.value, cursor);
           }
           lastSeq = cursor;
           kept = true;
@@ -310,7 +412,10 @@ export function followExecutionSession(
           // take a while, and the host would go on writing to nobody.
           connection.abort();
           await frames.return?.().catch(() => {});
-          lastSeq = resumeAfter(await options.onGap?.(hole), lastSeq);
+          const reconciled = await settle(options.onGap?.(hole, handlerInfo));
+          if (!reconciled.abandoned) {
+            lastSeq = resumeAfter(reconciled.value, lastSeq);
+          }
         }
       } catch (error) {
         failure = error;
@@ -352,7 +457,7 @@ export function followExecutionSession(
             ),
         };
       }
-      const delayMs = Math.max(0, retryDelayMs(attempt));
+      const delayMs = clampDelay(retryDelayMs(attempt));
       report({ state: "waiting", attempt, delayMs, error: failure });
       await abortableWait(delayMs, following.signal);
     }
@@ -363,7 +468,7 @@ export function followExecutionSession(
   const done = Promise.resolve()
     .then(run)
     .catch((error: unknown): ExecutionFollowEnd => ({
-      reason: "gave-up",
+      reason: "crashed",
       lastSeq,
       error,
     }))
@@ -395,7 +500,12 @@ function abortableWait(ms: number, signal: AbortSignal): Promise<void> {
       signal.removeEventListener("abort", finish);
       resolve();
     };
-    const timer = setTimeout(finish, ms);
+    const timer = setTimeout(finish, clampDelay(ms));
     signal.addEventListener("abort", finish, { once: true });
   });
+}
+
+/** A wait a timer can hold: no less than 0, no more than ~24.8 days. */
+function clampDelay(ms: number): number {
+  return Number.isNaN(ms) ? 0 : Math.min(MAX_TIMER_MS, Math.max(0, ms));
 }

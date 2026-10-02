@@ -10,6 +10,7 @@ import {
   failureOf,
   joinUrl,
   kindOfStatus,
+  positiveMs,
   reasonOf,
   seconds,
   startDeadline,
@@ -44,6 +45,12 @@ export interface ExecutionEventStreamOptions {
    * (the default here) waits forever.
    */
   idleTimeoutMs?: number | null;
+  /**
+   * The most text one SSE frame may hold. A host that never ends its line
+   * would otherwise grow the buffer forever with the idle timer satisfied;
+   * past this the stream fails as `malformed`. Default 16 MiB.
+   */
+  maxFrameLength?: number;
 }
 
 /**
@@ -105,7 +112,10 @@ export async function* streamSessionEvents(
 ): AsyncGenerator<ExecutionStreamFrame, void, undefined> {
   const operation = "events";
   const afterSeq = options.afterSeq ?? 0;
-  const idleTimeoutMs = options.idleTimeoutMs ?? null;
+  const idleTimeoutMs =
+    options.idleTimeoutMs == null
+      ? null
+      : positiveMs(options.idleTimeoutMs, "idleTimeoutMs");
   const deadline = startDeadline(options.signal, idleTimeoutMs);
   const context = {
     operation,
@@ -133,6 +143,9 @@ export async function* streamSessionEvents(
             ...(afterSeq > 0 ? { "Last-Event-ID": String(afterSeq) } : {}),
           },
           signal: deadline.signal,
+          // A redirect would carry the token to wherever it points, and a 302
+          // turns a POST into a GET; a host that moved is a configuration fix.
+          redirect: "error",
         },
       );
     } catch (error) {
@@ -159,7 +172,11 @@ export async function* streamSessionEvents(
     deadline.pause();
     yield { type: "open" };
     const decoder = new TextDecoder();
-    const parser = createSseParser();
+    const parser = createSseParser(
+      options.maxFrameLength === undefined
+        ? {}
+        : { maxFrameLength: options.maxFrameLength },
+    );
     for (;;) {
       let read: ReadableStreamReadResult<Uint8Array>;
       deadline.extend();
@@ -171,9 +188,17 @@ export async function* streamSessionEvents(
       }
       deadline.pause();
       if (read.done) return;
-      for (const frame of parser.feed(
-        decoder.decode(read.value, { stream: true }),
-      )) {
+      let frames: SseFrame[];
+      try {
+        frames = parser.feed(decoder.decode(read.value, { stream: true }));
+      } catch (error) {
+        throw new ExecutionHostError(
+          "malformed",
+          error instanceof Error ? error.message : String(error),
+          { operation },
+        );
+      }
+      for (const frame of frames) {
         const decoded = readFrame(frame, sessionId);
         if (decoded !== null) yield decoded;
       }
