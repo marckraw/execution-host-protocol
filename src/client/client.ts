@@ -32,8 +32,10 @@ import {
   joinUrl,
   kindOfStatus,
   reasonOf,
+  scrubberFor,
   seconds,
   startDeadline,
+  usableToken,
 } from "./http.js";
 import {
   decodeExecutionSessionSnapshot,
@@ -167,16 +169,26 @@ export function createExecutionHostClient(
   if (typeof fetchFn !== "function") {
     throw new TypeError("No fetch: pass one in options.fetch");
   }
+  const token = usableToken(options.token);
   const connection: HostConnection = {
     baseUrl,
-    token: options.token,
+    token,
+    scrub: scrubberFor(token),
     // Called bare, never as a method of the options object.
     fetch: (input, init) => fetchFn(input, init),
   };
   const requestTimeoutMs =
     options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const healthTimeoutMs = options.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
-  const createCommandId = options.createCommandId ?? randomCommandId;
+  const mintCommandId = options.createCommandId ?? randomCommandId;
+  /**
+   * The command id a request carries: the caller's, or a minted one — checked
+   * here, where the mistake is, rather than refused by the host as a 400.
+   */
+  const commandIdFor = (given: string | undefined): string =>
+    given === undefined
+      ? checkedCommandId(mintCommandId(), "createCommandId() must return")
+      : checkedCommandId(given, "commandId must be");
   const sessionPath = (sessionId: string) =>
     `/v0/execution/sessions/${encodeURIComponent(sessionId)}`;
 
@@ -220,6 +232,7 @@ export function createExecutionHostClient(
         deadline,
         callerSignal: init.signal,
         timeoutReason: `no answer within ${seconds(init.timeoutMs)}`,
+        scrub: connection.scrub,
       });
     } finally {
       deadline.dispose();
@@ -229,7 +242,7 @@ export function createExecutionHostClient(
   const refusal = async (operation: string, response: Response) =>
     new ExecutionHostError(
       kindOfStatus(response.status),
-      await reasonOf(response),
+      await reasonOf(response, connection.scrub),
       {
         operation,
         status: response.status,
@@ -279,7 +292,7 @@ export function createExecutionHostClient(
   const probeMeta = async (
     requestOptions: ExecutionRequestOptions,
   ): Promise<ExecutionHostMetaProbe> => {
-    if (connection.token.trim() === "") return { kind: "no-token" };
+    if (connection.token === "") return { kind: "no-token" };
     try {
       return await request(
         "meta",
@@ -319,8 +332,9 @@ export function createExecutionHostClient(
         parsed = await health(requestOptions);
       } catch (error) {
         if (requestOptions.signal?.aborted) throw error;
-        failure =
-          error instanceof ExecutionHostError ? error.message : String(error);
+        failure = connection.scrub(
+          error instanceof ExecutionHostError ? error.message : String(error),
+        );
       }
       const meta: ExecutionHostMetaProbe =
         parsed === null
@@ -354,8 +368,8 @@ export function createExecutionHostClient(
         },
       ),
 
-    start: (startRequest, requestOptions = {}) => {
-      const commandId = startRequest.commandId ?? createCommandId();
+    start: async (startRequest, requestOptions = {}) => {
+      const commandId = commandIdFor(startRequest.commandId);
       const sessionId = startRequest.config.sessionId;
       return request(
         "start",
@@ -409,8 +423,8 @@ export function createExecutionHostClient(
       );
     },
 
-    command: (sessionId, command, commandOptions = {}) => {
-      const commandId = commandOptions.commandId ?? createCommandId();
+    command: async (sessionId, command, commandOptions = {}) => {
+      const commandId = commandIdFor(commandOptions.commandId);
       const envelope: ExecutionHostCommandEnvelope = {
         protocolVersion: EXECUTION_PROTOCOL_VERSION,
         sessionId,
@@ -490,6 +504,22 @@ export function createExecutionHostClient(
         followOptions,
       ),
   };
+}
+
+/** The bound the protocol puts on a command id (MAR-3633). */
+const COMMAND_ID_MAX_LENGTH = 256;
+
+function checkedCommandId(commandId: unknown, rule: string): string {
+  if (
+    typeof commandId !== "string" ||
+    commandId.length === 0 ||
+    commandId.length > COMMAND_ID_MAX_LENGTH
+  ) {
+    throw new TypeError(
+      `${rule} a non-empty string of at most ${COMMAND_ID_MAX_LENGTH} characters`,
+    );
+  }
+  return commandId;
 }
 
 function randomCommandId(): string {

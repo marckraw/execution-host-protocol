@@ -144,6 +144,13 @@ describe("starting a session", () => {
     expect(result).toMatchObject({ status: "started", commandId: "caller-1" });
   });
 
+  it("refuses a start id the host would refuse, before sending anything", async () => {
+    await expect(
+      client().start({ ...startRequest("session-new"), commandId: "" }),
+    ).rejects.toThrow(TypeError);
+    expect(host.startRequests).toEqual([]);
+  });
+
   it("says a session already exists rather than failing", async () => {
     expect(await client().start(startRequest("session-1"))).toEqual({
       status: "exists",
@@ -233,6 +240,20 @@ describe("commands", () => {
     expect(
       host.commandRequests.map((request) => request.body.commandId),
     ).toEqual(["retry-me", "retry-me"]);
+  });
+
+  it("refuses a command id the host would refuse, before sending anything", async () => {
+    for (const commandId of ["", "c".repeat(257)]) {
+      await expect(
+        client().command("session-1", { kind: "stop" }, { commandId }),
+      ).rejects.toThrow(TypeError);
+    }
+    await expect(
+      client({ createCommandId: () => "" }).command("session-1", {
+        kind: "stop",
+      }),
+    ).rejects.toThrow(/createCommandId/);
+    expect(host.commandRequests).toEqual([]);
   });
 
   it("says when the host has no such session", async () => {
@@ -389,13 +410,56 @@ describe("one connection to the event stream", () => {
         },
       },
       { type: "unreadable", reason: "malformed-json", id: "2", replay: false },
+      // About another session: it says nothing about where this one is.
       {
         type: "unreadable",
         reason: "invalid-envelope",
-        id: "3",
+        id: null,
         replay: false,
       },
     ]);
+  });
+
+  it("reads only unnamed, `message` and `replay` frames, as EventSource does", async () => {
+    host.framing = false;
+    const frames = client().events("session-1");
+    const seen: ExecutionStreamFrame[] = [];
+    const reading = (async () => {
+      for await (const frame of frames) {
+        seen.push(frame);
+        if (seen.length === 3) break;
+      }
+    })();
+    await waitFor(() => host.openStreams() === 1);
+    const envelope = (seq: number) =>
+      `{"protocolVersion":1,"sessionId":"session-1","seq":${seq},"event":{"kind":"heartbeat"}}`;
+    host.writeRaw(`event: presence\nid: 1\ndata: ${envelope(1)}\n\n`);
+    host.writeRaw("event: ping\ndata: not an envelope\n\n");
+    host.writeRaw(`event: message\nid: 1\ndata: ${envelope(1)}\n\n`);
+    host.writeRaw(`event: replay\nid: 2\ndata: ${envelope(2)}\n\n`);
+    await reading;
+
+    expect(
+      seen.map((frame) => [frame.type, "replay" in frame && frame.replay]),
+    ).toEqual([
+      ["open", false],
+      ["envelope", false],
+      ["envelope", true],
+    ]);
+  });
+
+  it("refuses an answer without a body, as React Native's fetch can give", async () => {
+    const bodiless = client({
+      fetch: async () =>
+        ({ ok: true, status: 200, body: undefined }) as unknown as Response,
+    });
+    const reading = (async () => {
+      for await (const frame of bodiless.events("session-1")) void frame;
+    })();
+    await expect(reading).rejects.toMatchObject({
+      kind: "malformed",
+      operation: "events",
+    });
   });
 
   it("fails to open with the host's verdict", async () => {
@@ -433,5 +497,101 @@ describe("one connection to the event stream", () => {
       collect(client().events("session-1", { idleTimeoutMs: 30 }), () => false),
     ).rejects.toMatchObject({ kind: "timeout", operation: "events" });
     expect(host.openStreams()).toBe(0);
+  });
+});
+
+describe("the token", () => {
+  const SECRET = "sk-live-SECRET-0123456789";
+
+  it("refuses a token no request could carry, without repeating it", () => {
+    for (const token of [`${SECRET}\nextra`, `${SECRET}\u0000`, `${SECRET}é`]) {
+      let thrown: unknown;
+      try {
+        client({ token });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect(String(thrown)).not.toContain("SECRET");
+    }
+  });
+
+  it("sends a token with surrounding whitespace the way fetch would, trimmed", async () => {
+    await client({ token: `  ${host.token}\n` }).command("session-1", {
+      kind: "stop",
+    });
+    expect(host.commandRequests).toHaveLength(1);
+  });
+
+  it("keeps the token out of every message it builds from a failure", async () => {
+    // A runtime that quotes the header it choked on.
+    const echoing = client({
+      token: SECRET,
+      fetch: async (_input, init) => {
+        const value = new Headers(init?.headers).get("Authorization");
+        throw new TypeError(
+          `Headers.append: "${value}" is an invalid header value`,
+        );
+      },
+    });
+    const error = await echoing.snapshot("session-1").catch((caught) => caught);
+    expect(error).toBeInstanceOf(ExecutionHostError);
+    expect(error.reason).not.toContain(SECRET);
+    expect(error.message).not.toContain(SECRET);
+    expect(String(error.cause ?? "")).not.toContain(SECRET);
+    expect(error.reason).toContain("[token]");
+
+    const handshake = await client({
+      token: SECRET,
+      fetch: async (input, init) => {
+        if (String(input).endsWith("/health")) return host.fetch(input, init);
+        throw new TypeError(`bad header Bearer ${SECRET}`);
+      },
+    }).handshake();
+    expect(handshake.status).toBe("unreachable");
+    expect(handshake.detail).not.toContain(SECRET);
+  });
+
+  it("keeps the token out of a host's refusal that quotes it", async () => {
+    const quoting = client({
+      token: SECRET,
+      fetch: async () =>
+        new Response(JSON.stringify({ error: `token ${SECRET} is revoked` }), {
+          status: 403,
+        }),
+    });
+    const error = await quoting
+      .command("session-1", { kind: "stop" })
+      .catch((caught) => caught);
+    expect(error).toMatchObject({ kind: "auth", status: 403 });
+    expect(error.reason).toBe("token [token] is revoked");
+  });
+
+  it("keeps the token out of what a follow reports", async () => {
+    const statuses: unknown[] = [];
+    const followed = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: SECRET,
+      fetch: async () => {
+        throw new TypeError(`bad header Bearer ${SECRET}`);
+      },
+    }).followSession("session-1", {
+      onEnvelope: () => {},
+      onStatus: (status) => statuses.push(status),
+      retryDelayMs: () => 0,
+      maxAttempts: 1,
+    });
+    const end = await followed.done;
+
+    expect(end.reason).toBe("gave-up");
+    expect(
+      JSON.stringify(statuses) + String((end as { error?: unknown }).error),
+    ).not.toContain(SECRET);
+    expect(statuses).toContainEqual(
+      expect.objectContaining({
+        state: "waiting",
+        error: expect.objectContaining({ kind: "network" }),
+      }),
+    );
   });
 });

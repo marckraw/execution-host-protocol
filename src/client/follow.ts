@@ -94,16 +94,27 @@ export interface ExecutionFollowOptions {
   /** See `ExecutionFollowGap`. Return a snapshot's `lastSeq` to resume after it. */
   onGap?(gap: ExecutionFollowGap): void | number | Promise<void | number>;
   onSkip?(skip: ExecutionFollowSkip): void | Promise<void>;
-  /** Connection changes, for a log or a "reconnecting…" line. Never awaited. */
+  /**
+   * Connection changes, for a log or a "reconnecting…" line. Never awaited.
+   * The first report comes after `followSession` has returned, so a handler
+   * may use the follow it belongs to — `stop()` included.
+   */
   onStatus?(status: ExecutionFollowStatus): void;
   /** The wait before reconnect `attempt` (1, 2, …). Default 1 s doubling to 30 s. */
   retryDelayMs?(attempt: number): number;
   /**
-   * Give up after this many connections in a row that kept nothing. Default
-   * Infinity: a host that cannot be reached is a fact about the network, not
-   * about the session, so the follow keeps looking until it is stopped.
+   * Give up after this many unhealthy connections in a row: connections that
+   * kept no frame and closed within `healthyAfterMs`. Default Infinity: a host
+   * that cannot be reached is a fact about the network, not about the
+   * session, so the follow keeps looking until it is stopped.
    */
   maxAttempts?: number;
+  /**
+   * A connection open at least this long was healthy even if it delivered
+   * nothing — a quiet session between turns — so the wait before the next
+   * one starts over. Default 30 s, past the host's 25 s keep-alive.
+   */
+  healthyAfterMs?: number;
   /**
    * Reconnect when a connection goes this long without a byte (hosts send a
    * keep-alive every 25 s). Default 90 s; null waits forever.
@@ -136,6 +147,7 @@ export function executionRetryDelayMs(attempt: number): number {
 }
 
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
+const DEFAULT_HEALTHY_AFTER_MS = 30_000;
 
 /**
  * Follows one session for as long as it is asked to.
@@ -143,8 +155,9 @@ const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
  * A finished turn never ends it: a shared session goes quiet between turns and
  * the next one may be anybody's, so `completed` is an envelope like any other.
  * A stream that ends or breaks is reopened after the last `seq` kept, sooner
- * when the connection was making progress and later, up to the cap, when it
- * was not. Replayed duplicates are dropped, a hole in the live stream is
+ * when the connection was healthy — it kept a frame, or stayed open — and
+ * later, up to the cap, when it was not. A `caught-up` alone is not health: a
+ * host that answers the cursor and hangs up every time is failing politely. Replayed duplicates are dropped, a hole in the live stream is
  * reported and resumed, and only the host's verdicts — no such session, a
  * refused token — or `stop()` end the follow.
  */
@@ -168,6 +181,7 @@ export function followExecutionSession(
     options.idleTimeoutMs === undefined
       ? DEFAULT_IDLE_TIMEOUT_MS
       : options.idleTimeoutMs;
+  const healthyAfterMs = options.healthyAfterMs ?? DEFAULT_HEALTHY_AFTER_MS;
 
   const following = new AbortController();
   const stop = () => following.abort();
@@ -193,11 +207,16 @@ export function followExecutionSession(
     let attempt = 0;
     while (!stopped()) {
       report({ state: "connecting", afterSeq: lastSeq, attempt });
+      // A report's handler may have stopped the follow; nothing opens after.
+      if (stopped()) break;
       const connection = new AbortController();
       const close = () => connection.abort();
       following.signal.addEventListener("abort", close, { once: true });
       let phase: ExecutionStreamPhase = "resumed";
-      let progressed = false;
+      /** Kept a frame: delivered one, or stepped over one with a place. */
+      let kept = false;
+      let openedAt: number | null = null;
+      let caughtUp = false;
       let hole: ExecutionFollowGap | null = null;
       /** Why the connection ended: the stream's own error, or a handler's. */
       let failure: unknown = null;
@@ -220,6 +239,7 @@ export function followExecutionSession(
           if (next.done || stopped()) break;
           const frame = next.value;
           if (frame.type === "open") {
+            openedAt = Date.now();
             report({ state: "open", afterSeq: lastSeq });
             continue;
           }
@@ -227,12 +247,13 @@ export function followExecutionSession(
             // Every hole below the boundary is history the host no longer
             // holds; from here on, the next number is the only number.
             phase = "live";
-            progressed = true;
+            caughtUp = true;
             lastSeq = resumeAfter(frame.throughSeq, lastSeq);
             report({ state: "live", lastSeq });
             continue;
           }
-          if (frame.replay) phase = "replay";
+          // A replay ends at its boundary: past it, the name vouches for nothing.
+          if (frame.replay && !caughtUp) phase = "replay";
           const seq =
             frame.type === "envelope"
               ? frame.envelope.seq
@@ -281,7 +302,7 @@ export function followExecutionSession(
             );
           }
           lastSeq = cursor;
-          progressed = true;
+          kept = true;
           phase = nextExecutionStreamPhase(phase, reading);
         }
         if (hole !== null && !stopped()) {
@@ -308,10 +329,12 @@ export function followExecutionSession(
           return { reason: "unauthorized", lastSeq, error: failure };
         }
       }
-      if (progressed) attempt = 0;
+      const healthy =
+        kept || (openedAt !== null && Date.now() - openedAt >= healthyAfterMs);
+      if (healthy) attempt = 0;
       // A hole on a connection that was delivering is the stream's ordinary
       // repair, not a failure: resume at once, and the host replays it.
-      if (hole !== null && failure === null && progressed) {
+      if (hole !== null && failure === null && healthy) {
         await abortableWait(0, following.signal);
         continue;
       }
@@ -336,7 +359,9 @@ export function followExecutionSession(
     return { reason: "stopped", lastSeq };
   };
 
-  const done = run()
+  // Started a turn later, so the caller holds the follow before any report.
+  const done = Promise.resolve()
+    .then(run)
     .catch((error: unknown): ExecutionFollowEnd => ({
       reason: "gave-up",
       lastSeq,

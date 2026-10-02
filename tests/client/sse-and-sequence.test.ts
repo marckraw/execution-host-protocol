@@ -33,6 +33,24 @@ describe("the SSE parser", () => {
     ).toEqual([{ id: null, event: null, data: "one\ntwo" }]);
   });
 
+  it("reads a long line that arrives in many pieces, and a CRLF split between two", () => {
+    const parser = createSseParser();
+    const data = "x".repeat(50_000);
+    const frames = [];
+    for (let at = 0; at < data.length; at += 7) {
+      frames.push(
+        ...parser.feed(`${at === 0 ? "data: " : ""}${data.slice(at, at + 7)}`),
+      );
+    }
+    frames.push(
+      ...parser.feed("\r"),
+      ...parser.feed("\n\r"),
+      ...parser.feed("\n"),
+    );
+
+    expect(frames).toEqual([{ id: null, event: null, data }]);
+  });
+
   it("drops a frame without data and one the stream ended inside", () => {
     const parser = createSseParser();
     expect(parser.feed("event: ping\n\nid: 9\ndata: half")).toEqual([]);

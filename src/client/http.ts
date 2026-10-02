@@ -55,12 +55,61 @@ export function kindOfStatus(status: number): ExecutionHostErrorKind {
 /** The longest stretch of a refusal's body worth carrying into an error. */
 const MAX_REASON_LENGTH = 500;
 
+/** Takes the token out of a sentence before anyone can read it. */
+export type Scrub = (text: string) => string;
+
+/**
+ * Replaces every spelling of the token a message could carry — as sent, and
+ * URL-encoded — with `[token]`. An error message is the one place a token can
+ * escape the header it was given to: a runtime quoting the header it refused,
+ * or a proxy quoting the request it rejected.
+ */
+export function scrubberFor(token: string): Scrub {
+  const spellings = [...new Set([token, encodeURIComponent(token)])].filter(
+    (spelling) => spelling.length > 0,
+  );
+  return (text) =>
+    spellings.reduce(
+      (scrubbed, spelling) => scrubbed.split(spelling).join("[token]"),
+      text,
+    );
+}
+
+/**
+ * The token as a header can carry it, or a `TypeError` that never repeats it.
+ * Surrounding whitespace is dropped, as `fetch` drops it from a header value —
+ * a token read from a file keeps working with its trailing newline. Anything
+ * else outside printable ASCII is refused here, because `fetch` would refuse
+ * it later in an error that quotes the whole header.
+ */
+export function usableToken(raw: unknown): string {
+  if (typeof raw !== "string") throw new TypeError("token must be a string");
+  const token = raw.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
+  if (!/^[\t\x20-\x7e]*$/.test(token)) {
+    throw new TypeError(
+      "token cannot be sent in an Authorization header: it holds a line break, a control character, or a character outside ASCII",
+    );
+  }
+  return token;
+}
+
 /**
  * What a refusing host said: its JSON `error` or `message`, else its text,
- * else the status. Reading the body is best effort; a broken one still has a
- * status.
+ * else the status — with the token taken out. Reading the body is best
+ * effort; a broken one still has a status.
  */
-export async function reasonOf(response: Response): Promise<string> {
+export async function reasonOf(
+  response: Response,
+  scrub: Scrub,
+): Promise<string> {
+  // Scrubbed before it is cut, so a cut never leaves the start of a token.
+  const reason = scrub(await rawReasonOf(response));
+  return reason.length > MAX_REASON_LENGTH
+    ? `${reason.slice(0, MAX_REASON_LENGTH)}…`
+    : reason;
+}
+
+async function rawReasonOf(response: Response): Promise<string> {
   let body = "";
   try {
     body = await response.text();
@@ -83,10 +132,7 @@ export async function reasonOf(response: Response): Promise<string> {
     // Not JSON: its text says it.
   }
   const text = body.trim();
-  if (text === "") return `HTTP ${response.status}`;
-  return text.length > MAX_REASON_LENGTH
-    ? `${text.slice(0, MAX_REASON_LENGTH)}…`
-    : text;
+  return text === "" ? `HTTP ${response.status}` : text;
 }
 
 export function joinUrl(baseUrl: string, path: string): string {
@@ -170,21 +216,46 @@ export function failureOf(
     callerSignal: AbortSignal | undefined;
     /** What to say when the deadline, not the network, ended it. */
     timeoutReason: string;
+    scrub: Scrub;
   },
 ): unknown {
   if (context.callerSignal?.aborted) return error;
   if (error instanceof ExecutionHostError) return error;
+  const cause = scrubbedCopy(error, context.scrub);
   if (context.deadline.expired) {
     return new ExecutionHostError("timeout", context.timeoutReason, {
       operation: context.operation,
-      cause: error,
+      cause,
     });
   }
   return new ExecutionHostError(
     "network",
-    `the connection failed (${error instanceof Error ? error.message : String(error)})`,
-    { operation: context.operation, cause: error },
+    `the connection failed (${cause.message})`,
+    { operation: context.operation, cause },
   );
+}
+
+/**
+ * A copy of a failure that is safe to hand on: its name, its message with the
+ * token taken out, and the system code underneath it (`ECONNREFUSED`), which
+ * is the useful half of a `fetch failed`. Never the original, whose message
+ * — and whose causes' messages — may quote the header.
+ */
+function scrubbedCopy(error: unknown, scrub: Scrub): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const nested = error instanceof Error ? error.cause : undefined;
+  const code =
+    codeOf(error) ??
+    (typeof nested === "object" && nested !== null ? codeOf(nested) : null);
+  const copy = new Error(scrub(code ? `${message}: ${code}` : message));
+  copy.name = error instanceof Error ? error.name : "Error";
+  if (code) (copy as Error & { code?: string }).code = code;
+  return copy;
+}
+
+function codeOf(value: unknown): string | null {
+  const code = (value as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.length > 0 ? code : null;
 }
 
 /** A duration for a person: `90 s`, `1.5 s`, `250 ms`. */

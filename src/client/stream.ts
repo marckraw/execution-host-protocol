@@ -13,6 +13,7 @@ import {
   reasonOf,
   seconds,
   startDeadline,
+  type Scrub,
 } from "./http.js";
 import {
   EXECUTION_CAUGHT_UP_EVENT,
@@ -52,11 +53,13 @@ export interface ExecutionEventStreamOptions {
  * apply. `skipped` — a well-formed envelope of a
  * kind this build does not know: apply nothing, but its `seq` is certain
  * (MAR-3633). `unreadable` — a frame that is not an envelope this build can
- * read, or one about another session; `id` is its SSE id, which on a host's
- * frames is the `seq` it held. `caught-up` — the host's replay is complete
- * through `throughSeq` (null when the frame was unreadable).
+ * read; `id` is its SSE id, which on a host's frames is the `seq` it held, or
+ * null for an envelope about another session, which has no place in this
+ * one's stream. `caught-up` — the host's replay is complete through
+ * `throughSeq` (null when the frame was unreadable).
  *
- * `replay` is true on a frame the host named as replayed history.
+ * `replay` is true on a frame the host named as replayed history. Frames under
+ * any other name than `replay`, `caught-up` or `message` are not read at all.
  */
 export type ExecutionStreamFrame =
   | { type: "open" }
@@ -78,6 +81,8 @@ export type ExecutionStreamFrame =
 export interface HostConnection {
   baseUrl: string;
   token: string;
+  /** Takes the token out of any message built from a failure. */
+  scrub: Scrub;
   fetch: typeof globalThis.fetch;
 }
 
@@ -107,6 +112,7 @@ export async function* streamSessionEvents(
     deadline,
     callerSignal: options.signal,
     timeoutReason: `no data for ${seconds(idleTimeoutMs ?? 0)}`,
+    scrub: connection.scrub,
   };
   const query = options.deltas === "append" ? "?deltas=append" : "";
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -134,10 +140,11 @@ export async function* streamSessionEvents(
       throw failureOf(error, context);
     }
 
-    if (!response.ok || response.body === null) {
+    // `== null`: React Native's fetch leaves a missing body undefined.
+    if (!response.ok || response.body == null) {
       const reason = response.ok
         ? "the stream has no body"
-        : await reasonOf(response);
+        : await reasonOf(response, connection.scrub);
       await response.body?.cancel().catch(() => {});
       throw new ExecutionHostError(
         response.ok ? "malformed" : kindOfStatus(response.status),
@@ -167,7 +174,8 @@ export async function* streamSessionEvents(
       for (const frame of parser.feed(
         decoder.decode(read.value, { stream: true }),
       )) {
-        yield readFrame(frame, sessionId);
+        const decoded = readFrame(frame, sessionId);
+        if (decoded !== null) yield decoded;
       }
     }
   } finally {
@@ -180,39 +188,53 @@ export async function* streamSessionEvents(
   }
 }
 
-function readFrame(frame: SseFrame, sessionId: string): ExecutionStreamFrame {
+/** The SSE default name: a frame named `message` is an unnamed one. */
+const DEFAULT_EVENT = "message";
+
+/**
+ * One SSE frame as a stream frame, or null for a frame this reader does not
+ * listen to. Only unnamed (or `message`) frames and `replay` frames carry
+ * envelopes, and `caught-up` carries the boundary; any other name is a frame
+ * for some other listener and is ignored unread, as EventSource ignores the
+ * names nobody listens for.
+ */
+function readFrame(
+  frame: SseFrame,
+  sessionId: string,
+): ExecutionStreamFrame | null {
   if (frame.event === EXECUTION_CAUGHT_UP_EVENT) {
     return {
       type: "caught-up",
       throughSeq: decodeExecutionCaughtUp(frame.data),
     };
   }
+  if (
+    frame.event !== null &&
+    frame.event !== DEFAULT_EVENT &&
+    frame.event !== EXECUTION_REPLAY_EVENT
+  ) {
+    return null;
+  }
   const replay = frame.event === EXECUTION_REPLAY_EVENT;
   const decoded = decodeExecutionEventEnvelope(frame.data);
+  const about = decoded.ok
+    ? decoded.value.sessionId
+    : decoded.skipped?.sessionId;
+  if (about !== undefined && about !== sessionId) {
+    // An envelope about another session says nothing about where this one
+    // is, so its id is no place in this stream: unreadable, and unplaced.
+    return { type: "unreadable", reason: "invalid-envelope", id: null, replay };
+  }
   if (decoded.ok) {
-    return decoded.value.sessionId === sessionId
-      ? {
-          type: "envelope",
-          envelope: decoded.value,
-          replay,
-          warnings: decoded.warnings ?? [],
-        }
-      : {
-          type: "unreadable",
-          reason: "invalid-envelope",
-          id: frame.id,
-          replay,
-        };
+    return {
+      type: "envelope",
+      envelope: decoded.value,
+      replay,
+      warnings: decoded.warnings ?? [],
+    };
   }
   if (decoded.skipped) {
-    return decoded.skipped.sessionId === sessionId
-      ? { type: "skipped", skipped: decoded.skipped, replay }
-      : {
-          type: "unreadable",
-          reason: "invalid-envelope",
-          id: frame.id,
-          replay,
-        };
+    return { type: "skipped", skipped: decoded.skipped, replay };
   }
   return { type: "unreadable", reason: decoded.reason, id: frame.id, replay };
 }

@@ -15,6 +15,9 @@ import {
  *   settles: holes a replay cannot fill.
  * - `framing` names replayed frames `replay` and ends each replay with a
  *   `caught-up` frame (agents-daemon `414f740`); off, it streams as master does.
+ *   As the host does, envelopes that arrived while the replay was being read
+ *   (`bufferedSeqs`) follow the named replay unnamed, and `caught-up` carries
+ *   the last `seq` written.
  */
 export interface StubHost {
   fetch: typeof globalThis.fetch;
@@ -24,6 +27,8 @@ export interface StubHost {
     sessionId?: string,
   ): ExecutionHostEventEnvelope;
   loseFrame(event: ExecutionHostEvent, sessionId?: string): void;
+  /** Logs several envelopes and writes them as ONE chunk, as a replay arrives. */
+  emitBatch(events: ExecutionHostEvent[], sessionId?: string): void;
   /** Writes raw SSE text to every open stream (a frame the client cannot read). */
   writeRaw(text: string): void;
   prune(...seqs: number[]): void;
@@ -32,6 +37,8 @@ export interface StubHost {
   /** Breaks every open stream mid-read. */
   breakStreams(): void;
   framing: boolean;
+  /** Logged envelopes a connection writes as live (unnamed) after its replay. */
+  bufferedSeqs: Set<number>;
   log: ExecutionHostEventEnvelope[];
   openStreams(): number;
   eventsRequests: Array<{
@@ -91,6 +98,7 @@ export function createStubHost(): StubHost {
 
   const host: StubHost = {
     framing: true,
+    bufferedSeqs: new Set(),
     log: [],
     eventsRequests: [],
     eventsStatus: 200,
@@ -126,6 +134,16 @@ export function createStubHost(): StubHost {
         seq: nextSeq(sessionId),
         event,
       });
+    },
+    emitBatch(events, sessionId = "session-1") {
+      const envelopes = events.map((event) => ({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        sessionId,
+        seq: nextSeq(sessionId),
+        event,
+      }));
+      host.log.push(...envelopes);
+      write(sessionId, envelopes.map((envelope) => frame(envelope)).join(""));
     },
     writeRaw(text) {
       write(null, text);
@@ -240,21 +258,24 @@ export function createStubHost(): StubHost {
             signal?.addEventListener("abort", onAbort, { once: true });
             entry = { sessionId, controller, detach };
             streams.add(entry);
-            let replayed = after;
-            for (const envelope of host.log) {
-              if (envelope.sessionId !== sessionId || envelope.seq <= after)
-                continue;
-              controller.enqueue(
-                encoder.encode(
-                  frame(envelope, host.framing ? "replay" : undefined),
-                ),
-              );
-              replayed = envelope.seq;
+            let written = after;
+            const pending = host.log.filter(
+              (envelope) =>
+                envelope.sessionId === sessionId && envelope.seq > after,
+            );
+            // The replay, then what arrived while it was being read, unnamed.
+            for (const buffered of [false, true]) {
+              for (const envelope of pending) {
+                if (host.bufferedSeqs.has(envelope.seq) !== buffered) continue;
+                const name = host.framing && !buffered ? "replay" : undefined;
+                controller.enqueue(encoder.encode(frame(envelope, name)));
+                written = envelope.seq;
+              }
             }
             if (host.framing) {
               controller.enqueue(
                 encoder.encode(
-                  `event: caught-up\ndata: ${JSON.stringify({ throughSeq: replayed })}\n\n`,
+                  `event: caught-up\ndata: ${JSON.stringify({ throughSeq: written })}\n\n`,
                 ),
               );
             }

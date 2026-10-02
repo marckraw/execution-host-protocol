@@ -25,17 +25,26 @@ export function createSseParser(): { feed(chunk: string): SseFrame[] } {
 
   return {
     feed(chunk) {
+      // What is left of the buffer holds no line break: it was all searched
+      // last time, so the search resumes where the new text begins. Searching
+      // from the start every time made a long line, arriving in many pieces,
+      // cost the square of its length.
+      let searchFrom = buffer.length;
       buffer += chunk;
       if (!started && buffer.length > 0) {
         started = true;
-        if (buffer.charCodeAt(0) === 0xfeff) buffer = buffer.slice(1);
+        if (buffer.charCodeAt(0) === 0xfeff) {
+          buffer = buffer.slice(1);
+          searchFrom = Math.max(0, searchFrom - 1);
+        }
       }
       const frames: SseFrame[] = [];
-      let end = buffer.indexOf("\n");
+      let start = 0;
+      let end = buffer.indexOf("\n", searchFrom);
       while (end !== -1) {
-        const line = buffer.slice(0, end).replace(/\r$/, "");
-        buffer = buffer.slice(end + 1);
-        end = buffer.indexOf("\n");
+        const line = buffer.slice(start, end).replace(/\r$/, "");
+        start = end + 1;
+        end = buffer.indexOf("\n", start);
 
         if (line === "") {
           if (data.length > 0)
@@ -55,6 +64,7 @@ export function createSseParser(): { feed(chunk: string): SseFrame[] } {
         else if (field === "id") id = value;
         else if (field === "event") event = value;
       }
+      buffer = buffer.slice(start);
       return frames;
     },
   };

@@ -1,14 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createExecutionHostClient,
   executionRetryDelayMs,
-  type ExecutionFollowGap,
   type ExecutionFollowOptions,
-  type ExecutionFollowSkip,
-  type ExecutionFollowStatus,
   type ExecutionSessionFollow,
 } from "../../src/client/index.js";
-import type { ExecutionHostEventEnvelope } from "../../src/index.js";
+import { followOn, type Recording } from "./follow-recording.js";
 import { createStubHost, type StubHost, waitFor } from "./stub-host.js";
 
 let host: StubHost;
@@ -23,54 +19,11 @@ afterEach(async () => {
   await Promise.all(follows.map((follow) => follow.stop()));
 });
 
-interface Recording {
-  follow: ExecutionSessionFollow;
-  delivered: ExecutionHostEventEnvelope[];
-  seqs: () => number[];
-  gaps: ExecutionFollowGap[];
-  skips: ExecutionFollowSkip[];
-  statuses: ExecutionFollowStatus[];
-  delays: number[];
-}
-
 /** Follows session-1 on the stub, recording everything the follow says. */
 const follow = (
   options: Partial<ExecutionFollowOptions> = {},
   token = host.token,
-): Recording => {
-  const client = createExecutionHostClient({
-    baseUrl: "https://host.test",
-    token,
-    fetch: host.fetch,
-  });
-  const recording: Omit<Recording, "follow"> = {
-    delivered: [],
-    seqs: () => recording.delivered.map((envelope) => envelope.seq),
-    gaps: [],
-    skips: [],
-    statuses: [],
-    delays: [],
-  };
-  const followed = client.followSession("session-1", {
-    onEnvelope: (envelope) => {
-      recording.delivered.push(envelope);
-    },
-    onGap: (gap) => {
-      recording.gaps.push(gap);
-    },
-    onSkip: (skip) => {
-      recording.skips.push(skip);
-    },
-    onStatus: (status) => recording.statuses.push(status),
-    retryDelayMs: (attempt) => {
-      recording.delays.push(attempt);
-      return 0;
-    },
-    ...options,
-  });
-  follows.push(followed);
-  return { ...recording, follow: followed } as Recording;
-};
+): Recording => followOn(host, follows, options, token);
 
 const lastEventIds = () =>
   host.eventsRequests.map((request) => request.lastEventId);
