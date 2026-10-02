@@ -3,13 +3,21 @@
 Public, transport-agnostic wire contract shared by agent execution runtimes and
 clients. It contains TypeScript types plus dependency-free runtime codecs for
 the versioned JSON envelopes used to start Sessions, send commands, and stream
-events.
+events — and, under its `client` subpath, one client that speaks them to a
+host over HTTP and SSE.
 
 ## Boundaries
 
-Included: public request/envelope types, defensive validators, encoders, and
-recorded contract fixtures. Excluded: HTTP/SSE clients, stream sequencing,
-persistence snapshots, provider implementations, and daemon-only endpoints.
+The package root is the contract: public request/envelope types, defensive
+validators, encoders, and recorded contract fixtures. It has no transport and
+never imports the client, so a consumer of the contract loads none.
+
+`@mrck-labs/execution-host-protocol/client` is the one place the contract meets
+HTTP: a host's routes, its event stream, stream sequencing, and the session
+snapshot it serves. It has no dependencies beyond the contract beside it.
+
+Excluded from both: persistence, provider implementations, and daemon-internal
+state.
 
 Readers ignore unknown object fields so additive producers remain compatible.
 Required known fields and discriminants are still validated. Package semver
@@ -135,6 +143,122 @@ add a kind without breaking the readers that predate it.
   they are gone a host sends a new kind only to a subscriber that asked for it,
   the way increments wait for `?deltas=append`.
 
+## The client
+
+Three clients spoke this protocol, each with what the others lacked (MAR-3638):
+Emergence's, Convergence's, and accent.'s gateway. This is the one that replaces
+them. It is built to plain JavaScript with explicit extensions — ESM and
+CommonJS, like the root — so it loads where TypeScript is never compiled: Node
+running `.ts` by type stripping, Bun, Electron, browsers, and React Native with
+a `fetch` passed in.
+
+```ts
+import { createExecutionHostClient } from "@mrck-labs/execution-host-protocol/client";
+
+const host = createExecutionHostClient({ baseUrl, token });
+
+await host.handshake(); // { status: "connected" | "unauthorized" | "incompatible" | "unreachable", health, detail }
+await host.start(startRequest); // { status: "started" | "exists", sessionId, commandId, workspace }
+await host.command(
+  sessionId,
+  { kind: "send-message", text: "Ship it" },
+  { actor: { kind: "person", id: "usr_piotr", displayName: "Piotr" } },
+); // { status: "accepted" | "no-session", commandId }
+
+const follow = host.followSession(sessionId, {
+  afterSeq: savedCursor, // what was persisted with the last envelope applied
+  deltas: "append",
+  onEnvelope: async (envelope, { cursor, signal }) => {
+    // One write: the envelope and the cursor to resume after it.
+    await applyAndSaveCursor(envelope, cursor, { signal });
+  },
+  onGap: async (_gap, { signal }) => {
+    const snapshot = await host.snapshot(sessionId, { signal });
+    if (snapshot) await resetFromSnapshot(snapshot); // saves snapshot.lastSeq
+    return snapshot?.lastSeq; // carry on after it
+  },
+});
+// …
+await follow.stop();
+```
+
+`health()` reads the public `/health` (capabilities included) without the
+token; `handshake()` adds the token probe and never throws. `projects()`,
+`snapshot()` (null for a session the host does not have) and `events()` — one
+connection, decoded but not sequenced — cover the rest. A refusal is an
+`ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
+`not-found`, `http`, `malformed`), the status, and the host's own words.
+
+**The token** goes in the `Authorization` header and nowhere else. One no
+header could carry — a line break, a control character, anything outside ASCII
+— is refused when the client is made, without being repeated; surrounding
+whitespace is dropped, as `fetch` drops it. Every message built from a failure,
+and a host's refusal, has the token replaced by `[token]`, and the `cause` an
+error carries is a scrubbed copy, never the original.
+
+**Requests** refuse redirects (`redirect: "error"`): a redirect would carry the
+token to wherever it points, and a 302 turns a POST into a GET. Timeouts must
+be positive, and one past what a timer holds (about 24.8 days) waits that long
+rather than firing at once. A command id is checked before anything is sent.
+Listeners — `onWarnings`, `onStatus` — never break what they listen to: a throw
+or a rejected promise from one is swallowed.
+
+**What `followSession` promises.**
+
+- **It keeps following.** A finished turn is an envelope like any other: a
+  shared session goes quiet between turns, and the next one may be anybody's.
+  `done` resolves with why it ended and never rejects:
+  - `stopped` — `stop()`, or the caller's `signal`.
+  - `no-session` — the stream answered 404: the host does not have the session,
+    or a proxy answered for it. Final for this follow; check the snapshot, and
+    follow again if the session is back.
+  - `unauthorized` — the stream answered 401 or 403, the host's or a proxy's or
+    WAF's. The same token will not do better.
+  - `gave-up` — `maxAttempts` was set and ran out.
+  - `crashed` — the follow's own machinery threw (a bug, or a callback it does
+    not guard, such as `retryDelayMs`).
+- **It reconnects.** A stream that ends or breaks is reopened with
+  `Last-Event-ID: <last kept seq>`, after 1 s doubling to 30 s, for as long as
+  it takes unless `maxAttempts` says otherwise. A healthy connection — one that
+  kept a frame, or stayed open `healthyAfterMs` (30 s) — starts the count over;
+  a host that answers `caught-up` and hangs up is not healthy. A connection
+  that goes 90 s without a byte, headers included (hosts send a keep-alive
+  every 25 s), is replaced; time a handler takes does not count.
+- **Each envelope once, in order.** `onEnvelope` is awaited before the next
+  frame is read. If it throws, the envelope was not kept: the follow reconnects
+  after the last one that was, and delivers it again — so does `onSkip` or
+  `onGap` throwing. Replayed duplicates are dropped.
+- **Persist `info.cursor` in the same write as the envelope.** `follow.lastSeq`
+  moves only once a handler has returned, so inside one it still names the
+  envelope before; `info.cursor` is the `afterSeq` to resume from.
+- **`stop()` ends it at once.** It closes the stream, cancels a pending
+  reconnect, and abandons a handler still running — that envelope does not
+  count as kept, and its `info.signal` aborts so it can give up too. It is safe
+  to call, and to await, from inside a handler.
+- **It tells a gap from a prune.** A host deletes superseded streaming patches
+  from its log, so its replay has holes nothing can fill. A hole under the
+  first frame of a connection, or inside a replay the host named, is that
+  history. A hole on a live stream is loss: the frame above it is not
+  delivered, `onGap` hears `{ reason: "hole" }`, and the follow resumes so the
+  host replays what was lost. Return a refetched snapshot's `lastSeq` from
+  `onGap` to resume after it instead.
+- **It steps over what it cannot apply.** A kind it does not know goes to
+  `onSkip` and the cursor moves on (MAR-3633). A frame it cannot read goes to
+  `onSkip` and `onGap` (`{ reason: "unreadable" }`): reading it again would fail
+  the same way, so the snapshot is how to be sure. An envelope about another
+  session has no place in this one's stream and never moves the cursor.
+
+**The replay boundary.** A host may name its replay (agents-daemon `414f740`):
+each replayed envelope frame carries `event: replay`; the envelopes that
+arrived while the replay was read follow it unnamed; and one frame with no
+envelope, `event: caught-up` with `data: {"throughSeq": N}`, ends it — even an
+empty one. Below `N`, holes are pruned history and the cursor may stand at `N`;
+after it, the next number is the only number, whatever a frame is named. A host
+that names neither is read as before, with the first frame of each connection
+carrying the rule alone. Frames under any other name are not read at all, as
+EventSource ignores the names nobody listens for, and a frame longer than
+`maxFrameLength` (16 MiB) fails the connection rather than grow without end.
+
 ## The work address and environments
 
 A host owns **Environments**: named templates, each a declared set of variable
@@ -195,7 +319,10 @@ Before the first npm release the package was consumed via immutable GitHub tags
 scope); npm under `@mrck-labs` is now the canonical channel.
 
 The package ships both ESM (`import`) and CommonJS (`require`) builds, so it
-loads from Electron main processes and Node/Bun runtimes alike.
+loads from Electron main processes and Node/Bun runtimes alike. The client is a
+subpath export, `@mrck-labs/execution-host-protocol/client`, resolved through
+`exports`: Node 20+, and TypeScript with `moduleResolution` `node16`,
+`nodenext` or `bundler`.
 
 ## Releasing
 

@@ -11,6 +11,23 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(loaded.EXECUTION_PROTOCOL_VERSION, 1);
   assert.equal(typeof loaded.decodeExecutionEventEnvelope, "function");
   assert.equal(typeof loaded.decodeExecutionCommandEnvelope, "function");
+  // The root is the contract: the client is reachable only by its subpath.
+  assert.equal(loaded.createExecutionHostClient, undefined);
 }
 
-console.log("Package exports resolve from CommonJS and ESM.");
+const commonJsClient = require(`${packageName}/client`);
+const esModuleClient = await import(`${packageName}/client`);
+
+for (const loaded of [commonJsClient, esModuleClient]) {
+  assert.equal(typeof loaded.createExecutionHostClient, "function");
+  assert.equal(typeof loaded.ExecutionHostError, "function");
+  assert.equal(typeof loaded.decodeExecutionSessionSnapshot, "function");
+  const client = loaded.createExecutionHostClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "check",
+    fetch: async () => new Response(null, { status: 503 }),
+  });
+  assert.equal(typeof client.followSession, "function");
+}
+
+console.log("Package exports resolve from CommonJS and ESM, root and client.");
