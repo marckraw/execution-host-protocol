@@ -175,3 +175,45 @@ describe("over a real socket", () => {
     await waitFor(() => streamRequests.every((request) => request.closed));
   });
 });
+
+describe("a host that redirects", () => {
+  it("never follows it: the token stays with the host it was given to", async () => {
+    const elsewhere: Array<{ url: string; authorization: string | null }> = [];
+    const other = createServer((request, response) => {
+      elsewhere.push({
+        url: request.url ?? "",
+        authorization: request.headers.authorization ?? null,
+      });
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end('{"projects":[]}');
+    });
+    await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+    const otherUrl = `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
+    const moved = createServer((request, response) => {
+      response.writeHead(request.method === "POST" ? 307 : 302, {
+        Location: `${otherUrl}${request.url ?? "/"}`,
+      });
+      response.end();
+    });
+    await new Promise<void>((resolve) => moved.listen(0, "127.0.0.1", resolve));
+    try {
+      const client = createExecutionHostClient({
+        baseUrl: `http://127.0.0.1:${(moved.address() as AddressInfo).port}`,
+        token: TOKEN,
+      });
+
+      await expect(client.projects()).rejects.toMatchObject({
+        kind: "network",
+      });
+      await expect(
+        client.command("session-e2e", { kind: "stop" }),
+      ).rejects.toMatchObject({ kind: "network" });
+      expect(elsewhere).toEqual([]);
+    } finally {
+      moved.closeAllConnections();
+      other.closeAllConnections();
+      await new Promise((resolve) => moved.close(resolve));
+      await new Promise((resolve) => other.close(resolve));
+    }
+  });
+});
