@@ -47,6 +47,8 @@ import {
   type ExecutionSendMessageOptions,
   type ExecutionSessionDelta,
   type ExecutionSessionMetadata,
+  type ExecutionSessionPatchRequest,
+  type ExecutionSessionPatchResponse,
   type ExecutionSessionStatus,
   type ExecutionSessionWorkspace,
   type ExecutionSkippedEnvelope,
@@ -112,6 +114,16 @@ const PATCH_ONLY_FIELD_SET = new Set<string>(PATCH_ONLY_FIELDS);
 
 /** The bound on actor ids, display names, and command ids (MAR-3633). */
 const ATTRIBUTION_MAX_LENGTH = 256;
+
+/** The bound on a model or effort id a session patch names (MAR-3662). */
+const MODEL_SELECTION_MAX_LENGTH = 256;
+
+/** Every field a session patch may name (MAR-3662). */
+const SESSION_PATCH_FIELDS: ReadonlySet<string> = new Set([
+  "title",
+  "model",
+  "effort",
+]);
 
 /**
  * A discriminant this reader does not know, carried up from wherever it sat to
@@ -315,6 +327,90 @@ export function decodeExecutionStartRequest(
   });
 }
 
+export function encodeExecutionSessionPatchRequest(
+  request: ExecutionSessionPatchRequest,
+): string {
+  return JSON.stringify(request);
+}
+
+/**
+ * Reads a session patch (MAR-3662), as strictly as a request into a host is
+ * read: a body naming no field, a field this build does not know, or a value
+ * of the wrong shape is `invalid-payload`. Refused, never dropped — a dropped
+ * field reads as a change that was made.
+ *
+ * `model` and `effort` are null (the default) or a non-empty id of at most 256
+ * characters; whether the provider offers it is the host's question, answered
+ * from its catalog. `title` is null or a string, and what the host keeps of it
+ * is the host's rule.
+ */
+export function decodeExecutionSessionPatchRequest(
+  raw: string,
+): ExecutionDecodeResult<ExecutionSessionPatchRequest> {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return failure("malformed-json");
+  }
+  if (!isRecord(value)) return failure("invalid-payload");
+  const fields = Object.keys(value);
+  if (
+    fields.length === 0 ||
+    !fields.every((field) => SESSION_PATCH_FIELDS.has(field))
+  ) {
+    return failure("invalid-payload");
+  }
+  if (
+    !isOptionalNullableString(value.title) ||
+    !isOptionalSelectionId(value.model) ||
+    !isOptionalSelectionId(value.effort)
+  ) {
+    return failure("invalid-payload");
+  }
+  return success({
+    ...optionalProperty("title", value.title as string | null | undefined),
+    ...optionalProperty("model", value.model as string | null | undefined),
+    ...optionalProperty("effort", value.effort as string | null | undefined),
+  });
+}
+
+/**
+ * Reads a host's answer to a session patch (MAR-3662): the title-only answer
+ * every host gives, `{ sessionId, title }`, or a selection answer, which adds
+ * `protocolVersion`, `model` and `effort`. Fields it does not know are ignored.
+ */
+export function decodeExecutionSessionPatchResponse(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionSessionPatchResponse> {
+  if (!isRecord(raw) || !isNonEmptyString(raw.sessionId)) {
+    return failure("invalid-payload");
+  }
+  if (
+    raw.protocolVersion !== undefined &&
+    raw.protocolVersion !== EXECUTION_PROTOCOL_VERSION
+  ) {
+    return failure("unsupported-protocol-version");
+  }
+  if (
+    !isOptionalNullableString(raw.title) ||
+    !isOptionalNullableNonEmptyString(raw.model) ||
+    !isOptionalNullableNonEmptyString(raw.effort)
+  ) {
+    return failure("invalid-payload");
+  }
+  return success({
+    ...optionalProperty(
+      "protocolVersion",
+      raw.protocolVersion as typeof EXECUTION_PROTOCOL_VERSION | undefined,
+    ),
+    sessionId: raw.sessionId,
+    ...optionalProperty("title", raw.title as string | null | undefined),
+    ...optionalProperty("model", raw.model as string | null | undefined),
+    ...optionalProperty("effort", raw.effort as string | null | undefined),
+  });
+}
+
 function decodeEvent(raw: unknown): KindAwareResult<ExecutionHostEvent> {
   if (!isRecord(raw) || typeof raw.kind !== "string") {
     return failure("invalid-envelope");
@@ -412,6 +508,20 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
           return failure("invalid-payload");
         }
         patch.roomId = raw.patch.roomId;
+      }
+      // The selection a session's next turn runs on (MAR-3662): null is the
+      // default, and an id is never empty.
+      if (raw.patch.model !== undefined) {
+        if (raw.patch.model !== null && !isNonEmptyString(raw.patch.model)) {
+          return failure("invalid-payload");
+        }
+        patch.model = raw.patch.model;
+      }
+      if (raw.patch.effort !== undefined) {
+        if (raw.patch.effort !== null && !isNonEmptyString(raw.patch.effort)) {
+          return failure("invalid-payload");
+        }
+        patch.effort = raw.patch.effort;
       }
       if (raw.patch.updatedAt !== undefined) {
         if (typeof raw.patch.updatedAt !== "string")
@@ -1982,6 +2092,13 @@ function isOptionalString(value: unknown): value is string | undefined {
 }
 function isOptionalNullableNonEmptyString(value: unknown): boolean {
   return value === undefined || value === null || isNonEmptyString(value);
+}
+function isOptionalSelectionId(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    isBoundedString(value, MODEL_SELECTION_MAX_LENGTH)
+  );
 }
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isNonEmptyString);

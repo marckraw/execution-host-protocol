@@ -63,6 +63,12 @@ export interface StubHost {
   startBody: ((request: Record<string, unknown>) => unknown) | null;
   commandRequests: Array<{ sessionId: string; body: Record<string, unknown> }>;
   commandStatus: number;
+  patchRequests: Array<{ sessionId: string; body: Record<string, unknown> }>;
+  /** Status the next session patches answer with; 400 refuses the selection. */
+  patchStatus: number;
+  /** The answer to a session patch; by default the patch, echoed. */
+  patchBody:
+    ((sessionId: string, patch: Record<string, unknown>) => unknown) | null;
   sessions: Set<string>;
   snapshots: Map<string, unknown>;
   token: string;
@@ -116,6 +122,9 @@ export function createStubHost(): StubHost {
     startBody: null,
     commandRequests: [],
     commandStatus: 202,
+    patchRequests: [],
+    patchStatus: 200,
+    patchBody: null,
     sessions: new Set(["session-1"]),
     snapshots: new Map(),
     token: "stub-token",
@@ -297,6 +306,27 @@ export function createStubHost(): StubHost {
           status: 200,
           headers: { "Content-Type": "text/event-stream" },
         });
+      }
+
+      if (method === "PATCH") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        host.patchRequests.push({ sessionId, body });
+        if (!host.sessions.has(sessionId)) {
+          return json({ error: `Session not found: ${sessionId}` }, 404);
+        }
+        if (host.patchStatus !== 200) {
+          return json(
+            { error: "Invalid session patch: claude has no model gpt-6" },
+            host.patchStatus,
+          );
+        }
+        return json(
+          host.patchBody?.(sessionId, body) ?? {
+            protocolVersion: EXECUTION_PROTOCOL_VERSION,
+            sessionId,
+            ...body,
+          },
+        );
       }
 
       if (method === "GET") {

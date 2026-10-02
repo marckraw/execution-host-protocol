@@ -1,7 +1,10 @@
 import {
   decodeExecutionProjectListResponse,
+  decodeExecutionSessionPatchRequest,
+  decodeExecutionSessionPatchResponse,
   decodeExecutionSessionWorkspace,
   encodeExecutionCommandEnvelope,
+  encodeExecutionSessionPatchRequest,
   encodeExecutionStartRequest,
 } from "../codecs.js";
 import {
@@ -11,6 +14,7 @@ import {
   type ExecutionHostCommand,
   type ExecutionHostCommandEnvelope,
   type ExecutionProject,
+  type ExecutionSessionPatchRequest,
   type ExecutionSessionWorkspace,
   type ExecutionStartRequest,
 } from "../types.js";
@@ -107,6 +111,22 @@ export interface ExecutionCommandResult {
   commandId: string;
 }
 
+/**
+ * `patched` — the host took the patch, and says what it holds now: the title
+ * as stored when the patch named one, and the model and effort the session's
+ * next turn runs on when it named either (MAR-3662). `no-session` — the host
+ * has no session by that id (404).
+ */
+export type ExecutionSessionPatchResult =
+  | {
+      status: "patched";
+      sessionId: string;
+      title?: string | null;
+      model?: string | null;
+      effort?: string | null;
+    }
+  | { status: "no-session"; sessionId: string };
+
 export interface ExecutionHostClient {
   readonly baseUrl: string;
   /** `GET /health`, unauthenticated. Throws `ExecutionHostError` when unreadable. */
@@ -130,6 +150,19 @@ export interface ExecutionHostClient {
     command: ExecutionHostCommand,
     options?: ExecutionCommandOptions,
   ): Promise<ExecutionCommandResult>;
+  /**
+   * Changes a session's settings (`PATCH /v0/execution/sessions/:id`): its
+   * title, and on a host advertising `sessions.modelSelection.v1` the model
+   * and effort its turns run on from the next one (MAR-3662). A patch the
+   * protocol would refuse throws before anything is sent; a selection the
+   * host's catalog does not offer is its 400, an `ExecutionHostError`
+   * carrying the host's reason.
+   */
+  patchSession(
+    sessionId: string,
+    patch: ExecutionSessionPatchRequest,
+    options?: ExecutionRequestOptions,
+  ): Promise<ExecutionSessionPatchResult>;
   /** The session as the host has it now, or null when it has none by that id. */
   snapshot(
     sessionId: string,
@@ -210,7 +243,7 @@ export function createExecutionHostClient(
     operation: string,
     path: string,
     init: {
-      method: "GET" | "POST";
+      method: "GET" | "POST" | "PATCH";
       body?: string;
       authenticated: boolean;
       timeoutMs: number;
@@ -470,6 +503,48 @@ export function createExecutionHostClient(
           if (!response.ok) throw await refusal(operation, response);
           await response.body?.cancel().catch(() => {});
           return { status: "accepted", commandId };
+        },
+      );
+    },
+
+    patchSession: async (sessionId, patch, requestOptions = {}) => {
+      const body = encodeExecutionSessionPatchRequest(patch);
+      // Checked here, where the mistake is, rather than refused by the host.
+      if (!decodeExecutionSessionPatchRequest(body).ok) {
+        throw new TypeError(
+          "A session patch names at least one of title, model and effort, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string",
+        );
+      }
+      return request(
+        "patch session",
+        sessionPath(sessionId),
+        {
+          method: "PATCH",
+          body,
+          authenticated: true,
+          timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+          signal: requestOptions.signal,
+        },
+        async (response, answer): Promise<ExecutionSessionPatchResult> => {
+          if (response.status === 404) {
+            await response.body?.cancel().catch(() => {});
+            return { status: "no-session", sessionId };
+          }
+          if (!response.ok) throw await refusal("patch session", response);
+          const decoded = decodeExecutionSessionPatchResponse(
+            await answer.json(),
+          );
+          if (!decoded.ok || decoded.value.sessionId !== sessionId) {
+            throw new ExecutionHostError(
+              "malformed",
+              decoded.ok
+                ? `the host answered about session ${decoded.value.sessionId}, not ${sessionId}`
+                : `the answer is unreadable (${decoded.reason})`,
+              { operation: "patch session", status: response.status },
+            );
+          }
+          const { protocolVersion: _version, ...held } = decoded.value;
+          return { status: "patched", ...held };
         },
       );
     },
