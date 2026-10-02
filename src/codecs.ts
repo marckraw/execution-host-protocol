@@ -1243,6 +1243,71 @@ function decodeStartConfig(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Contract shapes read on their own (MAR-3638): a session snapshot carries
+// items, turns and session state outside any envelope, and a reader of one
+// should hold it to the same rules as the stream that built it. A second
+// decoder for the same wire shape is how the two drift apart.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads one conversation item outside an envelope — from a snapshot's
+ * `conversation`, say — by the same rules as `conversation.item.add`.
+ * Warnings name paths relative to the item (`item.author`). An item of a kind
+ * this build does not know is `unknown-kind`: a list reader drops it and keeps
+ * the rest, which is the list form of skipping an envelope (MAR-3633).
+ */
+export function decodeExecutionConversationItem(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionConversationItem> {
+  const item = decodeConversationItem(raw, "item");
+  if (!item.ok && "unknownKind" in item) return failure("unknown-kind");
+  return item;
+}
+
+/** Reads one turn record, as `turn.add` carries it. */
+export function decodeExecutionTurn(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionTurn> {
+  const turn = decodeTurn(raw);
+  return turn ? success(turn) : failure("invalid-payload");
+}
+
+/** Reads one turn file change, as `turn.fileChanges.add` carries it. */
+export function decodeExecutionTurnFileChange(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionTurnFileChange> {
+  const change = decodeTurnFileChange(raw);
+  return change ? success(change) : failure("invalid-payload");
+}
+
+/** Reads a context-window reading, as the `context-window` event carries it. */
+export function decodeExecutionContextWindow(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionContextWindow> {
+  const contextWindow = decodeContextWindow(raw);
+  return contextWindow ? success(contextWindow) : failure("invalid-payload");
+}
+
+/** Reads an activity signal, as the `activity` event carries it; null is one. */
+export function decodeExecutionActivitySignal(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionActivitySignal> {
+  const activity = decodeActivity(raw);
+  return activity.valid ? success(activity.value) : failure("invalid-payload");
+}
+
+/**
+ * Reads session metadata, as a start request carries it. Absent and null both
+ * read as null: no metadata.
+ */
+export function decodeExecutionSessionMetadata(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionSessionMetadata | null> {
+  const metadata = decodeOptionalMetadata(raw);
+  return metadata.ok ? success(metadata.value ?? null) : metadata;
+}
+
 export function encodeExecutionSessionWorkspace(
   workspace: ExecutionSessionWorkspace,
 ): string {

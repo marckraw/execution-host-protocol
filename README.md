@@ -3,13 +3,21 @@
 Public, transport-agnostic wire contract shared by agent execution runtimes and
 clients. It contains TypeScript types plus dependency-free runtime codecs for
 the versioned JSON envelopes used to start Sessions, send commands, and stream
-events.
+events — and, under its `client` subpath, one client that speaks them to a
+host over HTTP and SSE.
 
 ## Boundaries
 
-Included: public request/envelope types, defensive validators, encoders, and
-recorded contract fixtures. Excluded: HTTP/SSE clients, stream sequencing,
-persistence snapshots, provider implementations, and daemon-only endpoints.
+The package root is the contract: public request/envelope types, defensive
+validators, encoders, and recorded contract fixtures. It has no transport and
+never imports the client, so a consumer of the contract loads none.
+
+`@mrck-labs/execution-host-protocol/client` is the one place the contract meets
+HTTP: a host's routes, its event stream, stream sequencing, and the session
+snapshot it serves. It has no dependencies beyond the contract beside it.
+
+Excluded from both: persistence, provider implementations, and daemon-internal
+state.
 
 Readers ignore unknown object fields so additive producers remain compatible.
 Required known fields and discriminants are still validated. Package semver
@@ -135,6 +143,89 @@ add a kind without breaking the readers that predate it.
   they are gone a host sends a new kind only to a subscriber that asked for it,
   the way increments wait for `?deltas=append`.
 
+## The client
+
+Three clients spoke this protocol, each with what the others lacked (MAR-3638):
+Emergence's, Convergence's, and accent.'s gateway. This is the one that replaces
+them. It is built to plain JavaScript with explicit extensions — ESM and
+CommonJS, like the root — so it loads where TypeScript is never compiled: Node
+running `.ts` by type stripping, Bun, Electron, browsers, and React Native with
+a `fetch` passed in.
+
+```ts
+import { createExecutionHostClient } from "@mrck-labs/execution-host-protocol/client";
+
+const host = createExecutionHostClient({ baseUrl, token });
+
+await host.handshake(); // { status: "connected" | "unauthorized" | "incompatible" | "unreachable", health, detail }
+await host.start(startRequest); // { status: "started" | "exists", sessionId, commandId, workspace }
+await host.command(
+  sessionId,
+  { kind: "send-message", text: "Ship it" },
+  { actor: { kind: "person", id: "usr_piotr", displayName: "Piotr" } },
+); // { status: "accepted" | "no-session", commandId }
+
+const follow = host.followSession(sessionId, {
+  afterSeq: cursor, // the last seq already applied
+  deltas: "append",
+  onEnvelope: async (envelope) => {
+    await apply(envelope);
+  },
+  onGap: async () => {
+    const snapshot = await host.snapshot(sessionId);
+    if (snapshot) await reset(snapshot);
+    return snapshot?.lastSeq; // carry on after it
+  },
+});
+// …
+await follow.stop();
+```
+
+`health()` reads the public `/health` (capabilities included) without the
+token; `handshake()` adds the token probe and never throws. `projects()`,
+`snapshot()` (null for a session the host does not have) and `events()` — one
+connection, decoded but not sequenced — cover the rest. A refusal is an
+`ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
+`not-found`, `http`, `malformed`), the status, and the host's own words. The
+token goes in the `Authorization` header and nowhere else.
+
+**What `followSession` promises.**
+
+- **It keeps following.** A finished turn is an envelope like any other: a
+  shared session goes quiet between turns, and the next one may be anybody's.
+  Only `stop()`, the caller's `signal`, or the host's verdict ends it — `404`
+  (`no-session`) or a refused token (`unauthorized`). `done` resolves with the
+  reason and never rejects.
+- **It reconnects.** A stream that ends or breaks is reopened with
+  `Last-Event-ID: <last kept seq>`, after 1 s doubling to 30 s, for as long as
+  it takes unless `maxAttempts` says otherwise; a connection that delivered
+  resets the count. A connection that goes 90 s without a byte (hosts send a
+  keep-alive every 25 s) is replaced.
+- **Each envelope once, in order.** `onEnvelope` is awaited before the next
+  frame is read. If it throws, the envelope was not kept: the follow reconnects
+  after the last one that was, and delivers it again. Replayed duplicates are
+  dropped.
+- **It tells a gap from a prune.** A host deletes superseded streaming patches
+  from its log, so its replay has holes nothing can fill. A hole under the
+  first frame of a connection, or inside a replay the host named, is that
+  history. A hole on a live stream is loss: the frame above it is not
+  delivered, `onGap` hears `{ reason: "hole" }`, and the follow resumes so the
+  host replays what was lost. Return a refetched snapshot's `lastSeq` from
+  `onGap` to resume after it instead.
+- **It steps over what it cannot apply.** A kind it does not know goes to
+  `onSkip` and the cursor moves on (MAR-3633). A frame it cannot read goes to
+  `onSkip` and `onGap` (`{ reason: "unreadable" }`): reading it again would fail
+  the same way, so the snapshot is how to be sure.
+- **`follow.lastSeq` is the cursor to persist**, and the `afterSeq` to resume
+  from after a restart.
+
+**The replay boundary.** A host may name its replay (agents-daemon `414f740`):
+each replayed envelope frame carries `event: replay`, and one frame with no
+envelope, `event: caught-up` with `data: {"throughSeq": N}`, ends it — even an
+empty one. Below `N`, holes are pruned history and the cursor may stand at `N`;
+after it, the next number is the only number. A host that names neither is read
+as before, with the first frame of each connection carrying the rule alone.
+
 ## The work address and environments
 
 A host owns **Environments**: named templates, each a declared set of variable
@@ -195,7 +286,10 @@ Before the first npm release the package was consumed via immutable GitHub tags
 scope); npm under `@mrck-labs` is now the canonical channel.
 
 The package ships both ESM (`import`) and CommonJS (`require`) builds, so it
-loads from Electron main processes and Node/Bun runtimes alike.
+loads from Electron main processes and Node/Bun runtimes alike. The client is a
+subpath export, `@mrck-labs/execution-host-protocol/client`, resolved through
+`exports`: Node 20+, and TypeScript with `moduleResolution` `node16`,
+`nodenext` or `bundler`.
 
 ## Releasing
 
