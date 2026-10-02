@@ -16,6 +16,7 @@ export {
   type ExecutionHostClient,
   type ExecutionHostClientOptions,
   type ExecutionRequestOptions,
+  type ExecutionSessionPatchResult,
   type ExecutionStartResult,
 } from "./client.js";
 export {

@@ -42,6 +42,14 @@ export interface ExecutionSessionSnapshot {
   protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
   sessionId: string;
   providerId: string;
+  /**
+   * The model the session's next turn runs on; null is the provider's default.
+   * Absent when the host did not say, as one predating
+   * `sessions.modelSelection.v1` does not (MAR-3662).
+   */
+  model?: string | null;
+  /** The reasoning effort it runs with; null is the model's default. Absent as `model` is. */
+  effort?: string | null;
   /** Whether the host will take commands for it now. */
   commandable: boolean;
   status: ExecutionSessionStatus;
@@ -122,12 +130,31 @@ export function decodeExecutionSessionSnapshot(
     }
   });
 
+  // Absent stays absent: null already means the default, so a host that did
+  // not say is not one that said "the default" (MAR-3662).
+  const selectionId = (value: unknown) =>
+    value === null || isNonEmptyString(value)
+      ? { ok: true as const, value }
+      : { ok: false as const };
+  const model = field<string | null | undefined>(
+    "model",
+    undefined,
+    selectionId,
+  );
+  const effort = field<string | null | undefined>(
+    "effort",
+    undefined,
+    selectionId,
+  );
+
   return {
     ok: true,
     value: {
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
       sessionId: raw.sessionId,
       providerId: raw.providerId,
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
       commandable: field<boolean>("commandable", false, (value) =>
         typeof value === "boolean" ? { ok: true, value } : { ok: false },
       ),

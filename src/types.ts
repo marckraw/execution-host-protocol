@@ -34,6 +34,13 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * its commands create, so a client can match its own sends (MAR-3633).
    */
   "items.author.v1",
+  /**
+   * A session's model and effort change between turns (MAR-3662): the host
+   * takes them on a session patch at any time, runs every turn that starts
+   * after the change on them, reports the current ones on the session's
+   * snapshot, and tells followers with a `session.patch` carrying both.
+   */
+  "sessions.modelSelection.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -375,6 +382,18 @@ export type ExecutionSessionDelta =
         continuationToken?: string | null;
         prUrl?: string | null;
         roomId?: string | null;
+        /**
+         * The model the session's turns run on from the next one, after a
+         * change between turns (`sessions.modelSelection.v1`); null is the
+         * provider's default. A host sends `effort` with it: the two are one
+         * selection.
+         *
+         * A turn runs on the selection in force when its `turn.add` was sent.
+         * One already running when this arrives keeps what it started with.
+         */
+        model?: string | null;
+        /** The reasoning effort those turns run with; null is the model's default. */
+        effort?: string | null;
         updatedAt?: string;
       };
     }
@@ -600,6 +619,47 @@ export interface ExecutionStartRequest {
   commandId?: string;
   /** Who started the session, and so wrote its initial message (MAR-3633). */
   actor?: ExecutionActor;
+}
+
+/**
+ * A change to a session's settings: the body of
+ * `PATCH /v0/execution/sessions/:sessionId` (MAR-3662).
+ *
+ * Every field is optional, and one left out keeps its value; but a patch names
+ * at least one, and a field the host does not know is refused rather than
+ * dropped — a misspelt field that was dropped would read as a change made.
+ *
+ * `model` and `effort` are what the session's turns run on. On a host
+ * advertising `sessions.modelSelection.v1` they change between turns: the host
+ * takes the change at any time, leaves a turn already running on what it
+ * started with, and runs every turn that starts afterwards on the new
+ * selection, resuming the same conversation. It checks the selection against
+ * its provider's catalog of models and the efforts each takes, and refuses one
+ * the catalog does not offer.
+ */
+export interface ExecutionSessionPatchRequest {
+  /** The session's display title; null clears it. The host may shorten it, and refuses a blank one. */
+  title?: string | null;
+  /** The model the session's turns run on from the next one; null is the provider's default. */
+  model?: string | null;
+  /** The reasoning effort they run with; null is the model's default. */
+  effort?: string | null;
+}
+
+/**
+ * A host's answer to a session patch (MAR-3662). A patch naming a model or an
+ * effort is answered with the selection the session's next turn will run on —
+ * `model` and `effort` both, whichever one it named — and with the title as
+ * the host stored it, when it named one too. A patch naming only a title is
+ * answered as hosts have always answered one: `{ sessionId, title }`.
+ */
+export interface ExecutionSessionPatchResponse {
+  /** Absent from a title-only answer, which predates the contract. */
+  protocolVersion?: typeof EXECUTION_PROTOCOL_VERSION;
+  sessionId: string;
+  title?: string | null;
+  model?: string | null;
+  effort?: string | null;
 }
 
 /**

@@ -107,6 +107,54 @@ Beside the fields every item carries, it reads:
   word. A host has no users of its own, so authorizing who may act stays with
   the client that knows them.
 
+## Changing the model between turns
+
+A session's model and effort are set when it starts (`config.model`,
+`config.effort`). On a host advertising `sessions.modelSelection.v1` they
+change between turns, by patching the session:
+
+```http
+PATCH /v0/execution/sessions/accent_8f2c
+Content-Type: application/json
+
+{ "model": "claude-opus-5-5", "effort": "high" }
+```
+
+The host answers with the selection the next turn will run on:
+
+```json
+{
+  "protocolVersion": 1,
+  "sessionId": "accent_8f2c",
+  "model": "claude-opus-5-5",
+  "effort": "high"
+}
+```
+
+- **Any time; from the next turn.** The host takes a change whether the
+  session is idle or mid-turn. A turn already running keeps what it started
+  with, and every turn that starts afterwards runs on the new selection — a
+  message queued behind the running turn included — resuming the same
+  conversation. Exactly: a turn runs on the selection in force when its
+  `turn.add` was sent, so a follower can tell what each turn ran on from the
+  stream alone.
+- **Checked against the catalog.** The model must be one the session's
+  provider offers, and the effort one that model takes — or, with the
+  provider's default model, one the provider takes. Anything else is a `400`
+  that says which. null asks for the default. A field left out keeps its
+  value, and it is the selection that results which is checked. The provider
+  itself never changes: continuation tokens belong to it.
+- **Strict coming in.** `ExecutionSessionPatchRequest` is
+  `{ title?, model?, effort? }`; a patch naming none of them, or anything else,
+  is `invalid-payload` (`decodeExecutionSessionPatchRequest`). One naming only a
+  title is the title patch hosts have always taken, answered as always with
+  `{ sessionId, title }`.
+- **Followers hear it.** The change is a `session.patch` delta carrying
+  `model` and `effort` together. A reader older than 0.17 decodes it as an
+  empty patch and carries on. The session's snapshot carries its current
+  `model` and `effort`; a host that does not report them leaves both absent,
+  which is not the same as reporting the defaults.
+
 ## New kinds without breaking old readers
 
 Readers have always ignored unknown _fields_; an unknown _kind_ used to fail the
@@ -164,6 +212,10 @@ await host.command(
   { kind: "send-message", text: "Ship it" },
   { actor: { kind: "person", id: "usr_piotr", displayName: "Piotr" } },
 ); // { status: "accepted" | "no-session", commandId }
+await host.patchSession(sessionId, {
+  model: "claude-opus-5-5",
+  effort: "high",
+}); // { status: "patched" | "no-session", sessionId, model, effort }
 
 const follow = host.followSession(sessionId, {
   afterSeq: savedCursor, // what was persisted with the last envelope applied
@@ -184,8 +236,9 @@ await follow.stop();
 
 `health()` reads the public `/health` (capabilities included) without the
 token; `handshake()` adds the token probe and never throws. `projects()`,
-`snapshot()` (null for a session the host does not have) and `events()` — one
-connection, decoded but not sequenced — cover the rest. A refusal is an
+`snapshot()` (null for a session the host does not have), `patchSession()` (a
+session's title, or the model and effort its next turn runs on) and `events()`
+— one connection, decoded but not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
 `not-found`, `http`, `malformed`), the status, and the host's own words.
 
