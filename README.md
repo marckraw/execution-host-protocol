@@ -46,6 +46,95 @@ Rules a client must follow:
   restates its whole text, so every stream ends on a self-contained value no
   matter what happened in the middle.
 
+## Who sent it: actors and command ids
+
+Several people may drive one session through one client, so a command says who
+sent it. Every command envelope, and the start request, may carry an `actor` —
+a person or an agent, by the sending client's own id for them and the name it
+showed — and a `commandId`, the client's own id for that command: unique within
+the session, reused when the same command is retried.
+
+```json
+{
+  "protocolVersion": 1,
+  "sessionId": "accent_8f2c",
+  "commandId": "4b7e1a52-6f0e-4d0b-9a57-0c3f5d2e8a11",
+  "actor": { "kind": "person", "id": "usr_piotr", "displayName": "Piotr" },
+  "command": { "kind": "send-message", "text": "Ship the staging banner" }
+}
+```
+
+A host advertising `items.author.v1` echoes both on the user `message` item the
+command created — `author`, and the command id as `clientMessageId` — so a
+client can match the transcript to its own sends. A `send-message` or `steer`
+creates such an item; so does the start request, for the initial message.
+Beside the fields every item carries, it reads:
+
+```json
+{
+  "kind": "message",
+  "actor": "user",
+  "text": "Ship the staging banner",
+  "delivery": "queued",
+  "author": { "kind": "person", "id": "usr_piotr", "displayName": "Piotr" },
+  "clientMessageId": "4b7e1a52-6f0e-4d0b-9a57-0c3f5d2e8a11"
+}
+```
+
+(The item's `actor` stays what it was, the role. The person is the `author`.)
+
+- **Optional, everywhere.** An envelope without either decodes exactly as
+  before, and a host predating them (0.14 and older) ignores both, so sending
+  them is always safe. A host advertising `commands.actor.v1` reads and records
+  them.
+- **Strict coming in, tolerant going out.** A host refuses, as
+  `invalid-payload`, a command or start request whose `actor` or `commandId` is
+  present but unreadable — an unknown actor kind, `null`, an empty id or name,
+  or one over 256 characters — because dropping either would look like success.
+  A reader drops an unreadable `author` or `clientMessageId` from an item with a
+  `dropped-invalid-field` warning and keeps the message.
+- **Fixed at creation.** A patch never carries `author` or `clientMessageId`,
+  and a reader ignores them if one does.
+- **The host records; the client vouches.** `actor` is the sending client's
+  word. A host has no users of its own, so authorizing who may act stays with
+  the client that knows them.
+
+## New kinds without breaking old readers
+
+Readers have always ignored unknown _fields_; an unknown _kind_ used to fail the
+whole envelope. `decodeExecutionEventEnvelope` now reports an event, delta, or
+item kind it does not know as `unknown-kind` **with** `skipped`: where the
+envelope sat in the stream.
+
+```json
+{
+  "ok": false,
+  "reason": "unknown-kind",
+  "skipped": {
+    "sessionId": "accent_8f2c",
+    "seq": 42,
+    "path": "event.delta.item.kind",
+    "kind": "image"
+  }
+}
+```
+
+A stream reader steps over it: it applies nothing, moves its cursor to `seq`,
+and reads on, without mistaking the frame for a gap. That is what lets a host
+add a kind without breaking the readers that predate it.
+
+- **Only well-formed envelopes are skippable.** A newer item still carries the
+  fields every item shares (`id`, `state`, timestamps, `providerMeta`); without
+  them it is `invalid-payload`. A later patch for an item you skipped names an
+  id you do not hold: skip it too.
+- **Commands are not.** A host refuses a command kind it does not know, since a
+  silently dropped command is worse than a refused one. A client checks a
+  capability before sending a newer command.
+- **Every new kind comes with a capability id** on `/health`, so a client knows
+  it can arrive. Readers older than 0.15 still reject unknown kinds, so until
+  they are gone a host sends a new kind only to a subscriber that asked for it,
+  the way increments wait for `?deltas=append`.
+
 ## The work address and environments
 
 A host owns **Environments**: named templates, each a declared set of variable

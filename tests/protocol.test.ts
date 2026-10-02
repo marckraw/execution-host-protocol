@@ -678,7 +678,16 @@ describe("exhaustive contract fixtures", () => {
           event: { kind: "future-event" },
         }),
       ),
-    ).toEqual({ ok: false, reason: "unknown-kind" });
+    ).toEqual({
+      ok: false,
+      reason: "unknown-kind",
+      skipped: {
+        sessionId: "session-1",
+        seq: 1,
+        path: "event.kind",
+        kind: "future-event",
+      },
+    });
   });
 
   it("rejects bad sequence numbers and invalid conversation item states", () => {
