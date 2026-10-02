@@ -18,6 +18,22 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "projects.v1",
   "projects.v2",
   "environments.v1",
+  /**
+   * The host can send streaming text as `patch.textAppend` increments to a
+   * subscriber that asks with `?deltas=append` (MAR-2218b). Hosts advertised it
+   * before it was named here.
+   */
+  "deltas.append.v1",
+  /**
+   * The host reads `actor` and `commandId` on every command envelope and on the
+   * start request, and records who sent each one (MAR-3633).
+   */
+  "commands.actor.v1",
+  /**
+   * The host echoes `author` and `clientMessageId` on the user `message` items
+   * its commands create, so a client can match its own sends (MAR-3633).
+   */
+  "items.author.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -119,6 +135,29 @@ export interface ExecutionSessionMetadata {
   attributes?: ExecutionMetadataAttributes;
 }
 
+export const EXECUTION_ACTOR_KINDS = ["person", "agent"] as const;
+export type ExecutionActorKind = (typeof EXECUTION_ACTOR_KINDS)[number];
+
+/**
+ * Who sent a command (MAR-3633): a person, or an agent acting on its own.
+ *
+ * `id` is the sending client's own id for them — accent.'s user id, an agent's
+ * handle — and `displayName` the name that client showed when it sent the
+ * command. A host stores both as given and never resolves either: with several
+ * people driving one session through one client, the client is the only party
+ * that knows who they are.
+ *
+ * Not to be confused with a message item's `actor`, which is its role
+ * (`user` or `assistant`); the person behind a user message is its `author`.
+ */
+export interface ExecutionActor {
+  kind: ExecutionActorKind;
+  /** Non-empty, at most 256 characters. */
+  id: string;
+  /** Non-empty, at most 256 characters. */
+  displayName: string;
+}
+
 export type ExecutionConversationItemState = "streaming" | "complete" | "error";
 
 export interface ExecutionProviderMeta {
@@ -207,10 +246,24 @@ export type ExecutionInteractionResponse =
 export type ExecutionConversationItem =
   | (ExecutionConversationItemBase & {
       kind: "message";
+      /** The message's role. Who wrote a user message is its `author`. */
       actor: "user" | "assistant";
       text: string;
       attachments?: ExecutionConversationAttachment[];
       delivery?: ExecutionMessageDelivery;
+      /**
+       * Who sent the command that created this user message, echoed from the
+       * envelope's `actor` by a host advertising `items.author.v1`. Absent on
+       * assistant messages, and on any message whose sender did not say.
+       */
+      author?: ExecutionActor;
+      /**
+       * The `commandId` of the request that created this user message — a
+       * `send-message` or `steer` envelope, or the start request for the
+       * initial message — echoed so a client can match the item to its own
+       * send (`items.author.v1`).
+       */
+      clientMessageId?: string;
     })
   | (ExecutionConversationItemBase & {
       kind: "thinking";
@@ -243,10 +296,18 @@ export type ExecutionConversationItem =
       text: string;
     });
 
+/**
+ * Fields fixed when an item is added. A patch never carries them, and a reader
+ * ignores them if one does: who sent a message, and which send it answers, do
+ * not change after the fact.
+ */
+type ImmutableConversationItemField =
+  "id" | "kind" | "attachments" | "author" | "clientMessageId";
+
 type MutableConversationItemPatch<
   Item extends ExecutionConversationItem = ExecutionConversationItem,
 > = Item extends unknown
-  ? Partial<Omit<Item, "id" | "kind" | "attachments">>
+  ? Partial<Omit<Item, ImmutableConversationItemField>>
   : never;
 
 export type ExecutionConversationItemPatch = MutableConversationItemPatch & {
@@ -442,6 +503,15 @@ export type ExecutionHostCommand =
 export interface ExecutionHostCommandEnvelope {
   protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
   sessionId: string;
+  /**
+   * The client's own id for this command: non-empty, at most 256 characters,
+   * unique within the session (a UUID will do). A retry of the same command
+   * carries the same id. The user message a `send-message` or `steer` creates
+   * echoes it as `clientMessageId` (MAR-3633).
+   */
+  commandId?: string;
+  /** Who sent the command (MAR-3633). Absent means the sender did not say. */
+  actor?: ExecutionActor;
   command: ExecutionHostCommand;
 }
 
@@ -523,6 +593,13 @@ export interface ExecutionStartRequest {
    * this is a name, and the host holds what it stands for.
    */
   environment?: string | null;
+  /**
+   * The client's id for this start, as on a command envelope. The session's
+   * initial user message echoes it as `clientMessageId` (MAR-3633).
+   */
+  commandId?: string;
+  /** Who started the session, and so wrote its initial message (MAR-3633). */
+  actor?: ExecutionActor;
 }
 
 /**
@@ -632,9 +709,36 @@ export interface ExecutionDecodeWarning {
   path: string;
 }
 
+/**
+ * A well-formed event envelope of a kind this reader does not know (MAR-3633).
+ *
+ * Not a broken frame: a host newer than this build sent something it predates.
+ * The envelope cannot be applied, but its place in the stream is certain, so a
+ * reader steps over it — advances its cursor to `seq` — instead of treating it
+ * as lost. That is what lets a host add an event, delta or item kind without
+ * breaking the readers that do not know it.
+ */
+export interface ExecutionSkippedEnvelope {
+  sessionId: string;
+  seq: number;
+  /**
+   * The discriminant that was not recognised: `event.kind`,
+   * `event.delta.kind`, or `event.delta.item.kind`.
+   */
+  path: string;
+  /** Its value, for a log line. */
+  kind: string;
+}
+
 export type ExecutionDecodeResult<T> =
   | { ok: true; value: T; warnings?: ExecutionDecodeWarning[] }
   | {
       ok: false;
       reason: ExecutionDecodeFailureReason;
+      /**
+       * Present only from `decodeExecutionEventEnvelope`, with reason
+       * `unknown-kind`: where the unknown envelope sat, so a stream reader can
+       * skip it and keep its place.
+       */
+      skipped?: ExecutionSkippedEnvelope;
     };

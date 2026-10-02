@@ -1,5 +1,6 @@
 import {
   EXECUTION_PROTOCOL_VERSION,
+  type ExecutionActor,
   type ExecutionConversationItem,
   type ExecutionEnvironmentDeclaration,
   type ExecutionEnvironmentListResponse,
@@ -251,6 +252,61 @@ export const commandFixtures = {
     itemId: "queued-message-1",
   }),
 } satisfies Record<ExecutionHostCommand["kind"], ExecutionHostCommandEnvelope>;
+
+// ---------------------------------------------------------------------------
+// MAR-3633: who sent it. Ids are placeholders in the sending client's own
+// namespace; the host stores them as given.
+// ---------------------------------------------------------------------------
+
+export const personActorFixture = {
+  kind: "person",
+  id: "usr_piotr",
+  displayName: "Piotr",
+} satisfies ExecutionActor;
+
+export const agentActorFixture = {
+  kind: "agent",
+  id: "kuba",
+  displayName: "Kuba",
+} satisfies ExecutionActor;
+
+/**
+ * Every command kind again, each carrying who sent it and the client's id for
+ * it. Derived from `commandFixtures`, so a new command kind is attributed here
+ * the moment it has a fixture there.
+ */
+export const attributedCommandFixtures = Object.fromEntries(
+  Object.entries(commandFixtures).map(([kind, envelope], index) => [
+    kind,
+    {
+      ...envelope,
+      commandId: `command-${index + 1}`,
+      actor: index % 2 === 0 ? personActorFixture : agentActorFixture,
+    },
+  ]),
+) as Record<ExecutionHostCommand["kind"], ExecutionHostCommandEnvelope>;
+
+/** A user message as a host advertising `items.author.v1` echoes it. */
+export const attributedUserMessageFixture = {
+  source: "hand-authored",
+  value: {
+    id: "message-from-piotr",
+    kind: "message",
+    state: "complete",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    providerMeta: {
+      providerId: "claude",
+      providerItemId: null,
+      providerEventType: "user",
+    },
+    actor: "user",
+    text: "Ship the staging banner",
+    delivery: "queued",
+    author: personActorFixture,
+    clientMessageId: "command-1",
+  },
+} satisfies Fixture<ExecutionConversationItem>;
 
 // ---------------------------------------------------------------------------
 // ADR-0011: the work address, the environments contract, project origin.

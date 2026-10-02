@@ -1,8 +1,11 @@
 import {
+  EXECUTION_ACTOR_KINDS,
   EXECUTION_ATTENTION_STATES,
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_SESSION_STATUSES,
   type ExecutionActivitySignal,
+  type ExecutionActor,
+  type ExecutionActorKind,
   type ExecutionAttentionState,
   type ExecutionAutomationConfig,
   type ExecutionCallbackConfig,
@@ -46,6 +49,7 @@ import {
   type ExecutionSessionMetadata,
   type ExecutionSessionStatus,
   type ExecutionSessionWorkspace,
+  type ExecutionSkippedEnvelope,
   type ExecutionTurn,
   type ExecutionTurnFileChange,
   type ExecutionStartConfig,
@@ -53,18 +57,8 @@ import {
   type ExecutionWorkspaceSource,
 } from "./types.js";
 
-const ITEM_KINDS = new Set([
-  "message",
-  "thinking",
-  "tool-call",
-  "tool-result",
-  "approval-request",
-  "input-request",
-  "note",
-]);
 const CONVERSATION_ITEM_FIELD_VALIDATORS = {
   id: isNonEmptyString,
-  kind: (value: unknown) => typeof value === "string" && ITEM_KINDS.has(value),
   state: isItemState,
   createdAt: (value: unknown) => typeof value === "string",
   updatedAt: (value: unknown) => typeof value === "string",
@@ -116,6 +110,27 @@ const PATCH_ONLY_FIELDS = [
 type PatchOnlyField = (typeof PATCH_ONLY_FIELDS)[number];
 const PATCH_ONLY_FIELD_SET = new Set<string>(PATCH_ONLY_FIELDS);
 
+/** The bound on actor ids, display names, and command ids (MAR-3633). */
+const ATTRIBUTION_MAX_LENGTH = 256;
+
+/**
+ * A discriminant this reader does not know, carried up from wherever it sat to
+ * the envelope decoder, which alone knows the envelope's place in the stream
+ * and turns it into `skipped` (MAR-3633).
+ */
+interface UnknownKind {
+  path: string;
+  kind: string;
+}
+
+type KindAwareResult<T> =
+  | ExecutionDecodeResult<T>
+  | { ok: false; reason: "unknown-kind"; unknownKind: UnknownKind };
+
+function unknownKind(path: string, kind: string): KindAwareResult<never> {
+  return { ok: false, reason: "unknown-kind", unknownKind: { path, kind } };
+}
+
 export function encodeExecutionEventEnvelope(
   envelope: ExecutionHostEventEnvelope,
 ): string {
@@ -153,6 +168,14 @@ export function decodeExecutionProtocolDescriptor(
   });
 }
 
+/**
+ * Reads one event envelope.
+ *
+ * An envelope of an event, delta, or item kind this build does not know is
+ * not applied — there is nothing to apply it to — but it is not a broken frame
+ * either: the result is `unknown-kind` with `skipped` saying where it sat, so a
+ * stream reader steps over it and keeps its cursor moving (MAR-3633).
+ */
 export function decodeExecutionEventEnvelope(
   raw: string,
 ): ExecutionDecodeResult<ExecutionHostEventEnvelope> {
@@ -163,7 +186,17 @@ export function decodeExecutionEventEnvelope(
     return failure("invalid-envelope");
   }
   const event = decodeEvent(rawEvent);
-  if (!event.ok) return event;
+  if (!event.ok) {
+    if ("unknownKind" in event) {
+      const skipped: ExecutionSkippedEnvelope = {
+        sessionId,
+        seq,
+        ...event.unknownKind,
+      };
+      return { ok: false, reason: "unknown-kind", skipped };
+    }
+    return event;
+  }
   return success(
     {
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
@@ -184,11 +217,59 @@ export function decodeExecutionCommandEnvelope(
     return failure("invalid-envelope");
   const command = decodeCommand(base.value.command);
   if (!command.ok) return command;
+  const attribution = decodeAttribution(base.value);
+  if (!attribution.ok) return attribution;
   return success({
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     sessionId: base.value.sessionId,
+    ...optionalProperty("commandId", attribution.value.commandId),
+    ...optionalProperty("actor", attribution.value.actor),
     command: command.value,
   });
+}
+
+/**
+ * Who sent a command or a start request, and the client's id for it
+ * (MAR-3633). Both are optional; either one present and unreadable refuses the
+ * request rather than dropping it. A dropped actor would record the command as
+ * anonymous and a dropped id would break the sender's match with its own echo —
+ * both look like success, and both are the outcome the sender did not ask for.
+ */
+function decodeAttribution(
+  raw: Record<string, unknown>,
+): ExecutionDecodeResult<{ commandId?: string; actor?: ExecutionActor }> {
+  if (
+    raw.commandId !== undefined &&
+    !isBoundedString(raw.commandId, ATTRIBUTION_MAX_LENGTH)
+  ) {
+    return failure("invalid-payload");
+  }
+  let actor: ExecutionActor | undefined;
+  if (raw.actor !== undefined) {
+    const decoded = decodeActor(raw.actor);
+    if (!decoded) return failure("invalid-payload");
+    actor = decoded;
+  }
+  return success({
+    ...optionalProperty("commandId", raw.commandId as string | undefined),
+    ...optionalProperty("actor", actor),
+  });
+}
+
+function decodeActor(raw: unknown): ExecutionActor | null {
+  if (
+    !isRecord(raw) ||
+    !(EXECUTION_ACTOR_KINDS as readonly unknown[]).includes(raw.kind) ||
+    !isBoundedString(raw.id, ATTRIBUTION_MAX_LENGTH) ||
+    !isBoundedString(raw.displayName, ATTRIBUTION_MAX_LENGTH)
+  ) {
+    return null;
+  }
+  return {
+    kind: raw.kind as ExecutionActorKind,
+    id: raw.id,
+    displayName: raw.displayName,
+  };
 }
 
 export function decodeExecutionStartRequest(
@@ -214,6 +295,8 @@ export function decodeExecutionStartRequest(
   if (!isOptionalNullableNonEmptyString(base.value.environment)) {
     return failure("invalid-payload");
   }
+  const attribution = decodeAttribution(base.value);
+  if (!attribution.ok) return attribution;
 
   return success({
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
@@ -227,10 +310,12 @@ export function decodeExecutionStartRequest(
       "environment",
       base.value.environment as string | null | undefined,
     ),
+    ...optionalProperty("commandId", attribution.value.commandId),
+    ...optionalProperty("actor", attribution.value.actor),
   });
 }
 
-function decodeEvent(raw: unknown): ExecutionDecodeResult<ExecutionHostEvent> {
+function decodeEvent(raw: unknown): KindAwareResult<ExecutionHostEvent> {
   if (!isRecord(raw) || typeof raw.kind !== "string") {
     return failure("invalid-envelope");
   }
@@ -272,13 +357,11 @@ function decodeEvent(raw: unknown): ExecutionDecodeResult<ExecutionHostEvent> {
     case "heartbeat":
       return success({ kind: "heartbeat" });
     default:
-      return failure("unknown-kind");
+      return unknownKind("event.kind", raw.kind);
   }
 }
 
-function decodeDelta(
-  raw: unknown,
-): ExecutionDecodeResult<ExecutionSessionDelta> {
+function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
   if (!isRecord(raw) || typeof raw.kind !== "string") {
     return failure("invalid-payload");
   }
@@ -338,7 +421,7 @@ function decodeDelta(
       return success({ kind: "session.patch", patch });
     }
     case "conversation.item.add": {
-      const item = decodeConversationItem(raw.item);
+      const item = decodeConversationItem(raw.item, "event.delta.item");
       return item.ok
         ? success(
             { kind: "conversation.item.add", item: item.value },
@@ -423,7 +506,7 @@ function decodeDelta(
         : failure("invalid-payload");
     }
     default:
-      return failure("unknown-kind");
+      return unknownKind("event.delta.kind", raw.kind);
   }
 }
 
@@ -488,13 +571,20 @@ function isTurnFileChangeStatus(
   return value === "added" || value === "modified" || value === "deleted";
 }
 
+/**
+ * Reads one conversation item. `path` names where it sits, for the warnings
+ * about optional fields it had to drop and for an unknown kind, which is
+ * reported rather than rejected: the base fields every item shares are still
+ * required, so only a well-formed item of a newer kind is skippable.
+ */
 function decodeConversationItem(
   raw: unknown,
-): ExecutionDecodeResult<ExecutionConversationItem> {
+  path: string,
+): KindAwareResult<ExecutionConversationItem> {
   if (
     !isRecord(raw) ||
     !CONVERSATION_ITEM_FIELD_VALIDATORS.id(raw.id) ||
-    !CONVERSATION_ITEM_FIELD_VALIDATORS.kind(raw.kind) ||
+    !isNonEmptyString(raw.kind) ||
     !CONVERSATION_ITEM_FIELD_VALIDATORS.state(raw.state) ||
     !CONVERSATION_ITEM_FIELD_VALIDATORS.createdAt(raw.createdAt) ||
     !CONVERSATION_ITEM_FIELD_VALIDATORS.updatedAt(raw.updatedAt) ||
@@ -518,8 +608,25 @@ function decodeConversationItem(
       ) {
         return failure("invalid-payload");
       }
-      const attachments = decodeConversationAttachments(raw.attachments);
-      const delivery = decodeOptionalMessageDelivery(raw.delivery);
+      const attachments = decodeConversationAttachments(
+        raw.attachments,
+        `${path}.attachments`,
+      );
+      const delivery = decodeOptionalMessageDelivery(
+        raw.delivery,
+        `${path}.delivery`,
+      );
+      const author = decodeOptionalField(
+        raw.author,
+        `${path}.author`,
+        decodeActor,
+      );
+      const clientMessageId = decodeOptionalField(
+        raw.clientMessageId,
+        `${path}.clientMessageId`,
+        (value) =>
+          isBoundedString(value, ATTRIBUTION_MAX_LENGTH) ? value : null,
+      );
       return success(
         {
           ...base,
@@ -528,8 +635,15 @@ function decodeConversationItem(
           text: raw.text as string,
           ...optionalProperty("attachments", attachments.value),
           ...optionalProperty("delivery", delivery.value),
+          ...optionalProperty("author", author.value),
+          ...optionalProperty("clientMessageId", clientMessageId.value),
         },
-        [...attachments.warnings, ...delivery.warnings],
+        [
+          ...attachments.warnings,
+          ...delivery.warnings,
+          ...author.warnings,
+          ...clientMessageId.warnings,
+        ],
       );
     }
     case "thinking":
@@ -577,7 +691,10 @@ function decodeConversationItem(
       if (!CONVERSATION_ITEM_FIELD_VALIDATORS.prompt(raw.prompt)) {
         return failure("invalid-payload");
       }
-      const request = decodeOptionalInteractionRequest(raw.request);
+      const request = decodeOptionalInteractionRequest(
+        raw.request,
+        `${path}.request`,
+      );
       return success(
         {
           ...base,
@@ -598,11 +715,34 @@ function decodeConversationItem(
           })
         : failure("invalid-payload");
     default:
-      return failure("unknown-kind");
+      return unknownKind(`${path}.kind`, raw.kind);
   }
 }
 
-function decodeConversationAttachments(raw: unknown): {
+/**
+ * An optional field read tolerantly: absent stays absent, and a value `read`
+ * cannot make sense of is dropped with a warning naming `path` rather than
+ * costing the item it sits on.
+ */
+function decodeOptionalField<T>(
+  raw: unknown,
+  path: string,
+  read: (value: unknown) => T | null,
+): { value: T | undefined; warnings: ExecutionDecodeWarning[] } {
+  if (raw === undefined) return { value: undefined, warnings: [] };
+  const value = read(raw);
+  return value === null
+    ? {
+        value: undefined,
+        warnings: [{ reason: "dropped-invalid-field", path }],
+      }
+    : { value, warnings: [] };
+}
+
+function decodeConversationAttachments(
+  raw: unknown,
+  path: string,
+): {
   value: ExecutionConversationAttachment[] | undefined;
   warnings: ExecutionDecodeWarning[];
 } {
@@ -610,12 +750,7 @@ function decodeConversationAttachments(raw: unknown): {
   if (!Array.isArray(raw)) {
     return {
       value: undefined,
-      warnings: [
-        {
-          reason: "dropped-invalid-field",
-          path: "event.delta.item.attachments",
-        },
-      ],
+      warnings: [{ reason: "dropped-invalid-field", path }],
     };
   }
 
@@ -640,28 +775,23 @@ function decodeConversationAttachments(raw: unknown): {
     } else {
       warnings.push({
         reason: "dropped-invalid-field",
-        path: `event.delta.item.attachments.${index}`,
+        path: `${path}.${index}`,
       });
     }
   }
   return { value, warnings };
 }
 
-function decodeOptionalMessageDelivery(raw: unknown): {
+function decodeOptionalMessageDelivery(
+  raw: unknown,
+  path: string,
+): {
   value: ExecutionMessageDelivery | undefined;
   warnings: ExecutionDecodeWarning[];
 } {
-  if (raw === undefined) return { value: undefined, warnings: [] };
-  if (isMessageDelivery(raw)) return { value: raw, warnings: [] };
-  return {
-    value: undefined,
-    warnings: [
-      {
-        reason: "dropped-invalid-field",
-        path: "event.delta.item.delivery",
-      },
-    ],
-  };
+  return decodeOptionalField(raw, path, (value) =>
+    isMessageDelivery(value) ? value : null,
+  );
 }
 
 function decodeCommand(
@@ -851,23 +981,14 @@ function decodeOptionalSendOptions(
   });
 }
 
-function decodeOptionalInteractionRequest(raw: unknown): {
+function decodeOptionalInteractionRequest(
+  raw: unknown,
+  path: string,
+): {
   value: ExecutionInteractionRequest | undefined;
   warnings: ExecutionDecodeWarning[];
 } {
-  if (raw === undefined) return { value: undefined, warnings: [] };
-  const value = decodeInteractionRequest(raw);
-  return value
-    ? { value, warnings: [] }
-    : {
-        value: undefined,
-        warnings: [
-          {
-            reason: "dropped-invalid-field",
-            path: "event.delta.item.request",
-          },
-        ],
-      };
+  return decodeOptionalField(raw, path, decodeInteractionRequest);
 }
 
 function decodeInteractionRequest(
