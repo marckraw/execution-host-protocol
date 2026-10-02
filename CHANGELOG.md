@@ -1,5 +1,21 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.16.0
+
+### Minor Changes
+
+- 68b2526: One client for an execution host, at `@mrck-labs/execution-host-protocol/client`, with `followSession` (MAR-3638).
+
+  Three clients spoke this protocol — Emergence's never-released one, Convergence's package with Backpack Studio's follow loop beside it, and accent.'s gateway — and none of them loaded where accent. runs: Node executing TypeScript by type stripping, which needs plain JavaScript with explicit extensions from its dependencies. This subpath is built like the root, to ESM and CommonJS JavaScript, and depends on nothing but the contract beside it. The root stays the contract and never imports it; the export check enforces that.
+
+  `createExecutionHostClient({ baseUrl, token })` covers `health()` (the public `/health` with its capabilities, read without the token), `handshake()` (with the token probe: connected, unauthorized, incompatible, or unreachable — never thrown), `projects()`, `start()` (started or exists; a crossed echo is refused, an unreadable workspace echo degrades out loud), `command()` (every envelope carries `actor` and a minted or given `commandId`, checked before sending; accepted or no-session), `snapshot()` (null for a session the host does not have; its parts read by the contract's own decoders, unknown and unreadable entries dropped with warnings), and `events()`, one connection decoded into frames — envelopes, skipped newer kinds, unreadable frames, and the host's `replay` / `caught-up` boundary; frames under other names are ignored, as EventSource does, and a frame past `maxFrameLength` (16 MiB) fails the connection.
+
+  Failures are `ExecutionHostError`s with a `kind` to branch on. The token never leaves the `Authorization` header: one no header could carry is refused when the client is made, without being repeated, and every message built from a failure, or from a host's refusal, has it scrubbed. Requests refuse redirects, timeouts must be positive and are clamped to what a timer holds, and a listener's throw or rejection never reaches the request or the process.
+
+  `followSession(sessionId, { afterSeq, deltas, onEnvelope, onGap, onSkip, onStatus })` follows a session for as long as it is asked to. A finished turn never ends it. It reconnects with `Last-Event-ID` after 1 s doubling to 30 s, indefinitely unless `maxAttempts` is set; a connection that kept a frame or stayed open `healthyAfterMs` (30 s) starts the count over, and one that only answered `caught-up` does not. A connection silent for 90 s is replaced. Handlers are awaited; an envelope whose handler threw is delivered again; `info.cursor` is the cursor to persist in the same write. It drops replayed duplicates, forgives holes the host vouches for (the first frame of a connection, or anything inside a named replay before its `caught-up`), and treats a live hole as loss: `onGap` hears it, may return a refetched snapshot's `lastSeq`, and the stream resumes. Unknown kinds and unreadable frames are stepped over with `onSkip`, the latter with `onGap` too; an envelope about another session never moves the cursor. `stop()` ends it at once — safe to await inside a handler, which is abandoned and sees `info.signal` abort — and `done` resolves with `stopped`, `no-session` (404), `unauthorized` (401/403), `gave-up` or `crashed`, never rejecting.
+
+  The root gains decoders for contract shapes read outside an envelope, which the snapshot reader uses rather than a second copy of the rules: `decodeExecutionConversationItem` (an unknown kind is `unknown-kind`, for a list reader to drop), `decodeExecutionTurn`, `decodeExecutionTurnFileChange`, `decodeExecutionContextWindow`, `decodeExecutionActivitySignal`, and `decodeExecutionSessionMetadata`.
+
 ## 0.15.0
 
 ### Minor Changes
