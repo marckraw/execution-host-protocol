@@ -493,6 +493,7 @@ describe("recorded daemon event contract", () => {
       endedAt: null,
       status: "running",
       summary: null,
+      origin: "user",
     } as const;
     const fileChange = {
       id: "change-1",
