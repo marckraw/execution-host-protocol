@@ -730,6 +730,48 @@ export interface ExecutionProjectListResponse {
 }
 
 /**
+ * A model a provider offers (`GET /v0/providers`): the `slug` a session names
+ * in `config.model` or a patch's `model`, and the efforts it takes.
+ */
+export interface ExecutionProviderModel {
+  slug: string;
+  /** What to call it; the slug when the host sends no label. */
+  label: string;
+  /** The effort it runs with when none is named; null when the host names none. */
+  defaultEffort: string | null;
+  /**
+   * The effort ids it takes: its own `effortOptions`, or else its provider's
+   * `effortLevels`, or none when the host says neither.
+   */
+  efforts: string[];
+}
+
+/**
+ * A provider a host serves (`GET /v0/providers`), the catalogue a session's
+ * model and effort are checked against (MAR-3662). `available` and
+ * `authenticated` are absent when the host does not say, which is not the same
+ * as `false`.
+ */
+export interface ExecutionProvider {
+  id: string;
+  /** What to call it; the id when the host sends no label. */
+  label: string;
+  /** Installed on the host. */
+  available?: boolean;
+  /** Signed in: with `available`, it can serve a turn now. */
+  authenticated?: boolean;
+  /** The efforts the provider takes as a whole (`features.effortLevels`): what its default model takes. */
+  effortLevels: string[];
+  models: ExecutionProviderModel[];
+}
+
+export interface ExecutionProviderListResponse {
+  /** Absent on hosts that served the catalogue before the payload was contracted. */
+  protocolVersion?: typeof EXECUTION_PROTOCOL_VERSION;
+  providers: ExecutionProvider[];
+}
+
+/**
  * A named template on a host: declared variable NAMES, never their values.
  * Values live in one file per environment on the box and never cross this wire
  * — a payload carrying a `values` field is rejected outright, not sanitised,

@@ -36,6 +36,9 @@ import {
   type ExecutionProject,
   type ExecutionProjectEnvironmentRef,
   type ExecutionProjectListResponse,
+  type ExecutionProvider,
+  type ExecutionProviderListResponse,
+  type ExecutionProviderModel,
   type ExecutionProtocolDescriptor,
   type ExecutionResearchEvidencePack,
   type ExecutionResearchEvidenceSource,
@@ -1523,6 +1526,109 @@ export function decodeExecutionProjectListResponse(
   });
 }
 
+/**
+ * Reads the answer to `GET /v0/providers`: the providers a host serves, their
+ * models, and the efforts each takes (MAR-3671). Entries are read strictly where
+ * a session's selection depends on them — a provider needs an `id`, a model a
+ * `slug`, an effort an `id` — and fields beyond what is named here are
+ * ignored. A model's `efforts` are its own `effortOptions`, or else its
+ * provider's `features.effortLevels`; `available` and `authenticated` stay
+ * absent when the host does not say, never guessed `false`.
+ */
+export function decodeExecutionProviderListResponse(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionProviderListResponse> {
+  if (!isRecord(raw) || !Array.isArray(raw.providers)) {
+    return failure("invalid-payload");
+  }
+  if (
+    raw.protocolVersion !== undefined &&
+    raw.protocolVersion !== EXECUTION_PROTOCOL_VERSION
+  ) {
+    return failure("unsupported-protocol-version");
+  }
+
+  const providers: ExecutionProvider[] = [];
+  for (const entry of raw.providers) {
+    const provider = decodeExecutionProvider(entry);
+    if (!provider) return failure("invalid-payload");
+    providers.push(provider);
+  }
+
+  return success({
+    ...optionalProperty(
+      "protocolVersion",
+      raw.protocolVersion as typeof EXECUTION_PROTOCOL_VERSION | undefined,
+    ),
+    providers,
+  });
+}
+
+function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
+  if (
+    !isRecord(raw) ||
+    !isNonEmptyString(raw.id) ||
+    !isOptionalString(raw.label) ||
+    !isOptionalBoolean(raw.available) ||
+    !isOptionalBoolean(raw.authenticated) ||
+    !(raw.models === undefined || Array.isArray(raw.models)) ||
+    !(raw.features === undefined || isRecord(raw.features))
+  ) {
+    return null;
+  }
+  const levels = isRecord(raw.features) ? raw.features.effortLevels : undefined;
+  if (levels !== undefined && !isStringArray(levels)) return null;
+  const effortLevels = levels ?? [];
+
+  const models: ExecutionProviderModel[] = [];
+  for (const entry of raw.models ?? []) {
+    const model = decodeExecutionProviderModel(entry, effortLevels);
+    if (!model) return null;
+    models.push(model);
+  }
+
+  return {
+    id: raw.id,
+    label: raw.label ?? raw.id,
+    ...optionalProperty("available", raw.available as boolean | undefined),
+    ...optionalProperty(
+      "authenticated",
+      raw.authenticated as boolean | undefined,
+    ),
+    effortLevels,
+    models,
+  };
+}
+
+function decodeExecutionProviderModel(
+  raw: unknown,
+  providerEffortLevels: string[],
+): ExecutionProviderModel | null {
+  if (
+    !isRecord(raw) ||
+    !isNonEmptyString(raw.slug) ||
+    !isOptionalString(raw.label) ||
+    !isOptionalNullableNonEmptyString(raw.defaultEffort) ||
+    !(raw.effortOptions === undefined || Array.isArray(raw.effortOptions))
+  ) {
+    return null;
+  }
+  let efforts = providerEffortLevels;
+  if (raw.effortOptions !== undefined) {
+    efforts = [];
+    for (const option of raw.effortOptions as unknown[]) {
+      if (!isRecord(option) || !isNonEmptyString(option.id)) return null;
+      efforts.push(option.id);
+    }
+  }
+  return {
+    slug: raw.slug,
+    label: raw.label ?? raw.slug,
+    defaultEffort: (raw.defaultEffort as string | null | undefined) ?? null,
+    efforts: [...efforts],
+  };
+}
+
 function decodeExecutionProject(raw: unknown): ExecutionProject | null {
   if (
     !isRecord(raw) ||
@@ -2086,6 +2192,9 @@ function isNullableString(value: unknown): value is string | null {
 }
 function isOptionalNullableString(value: unknown): boolean {
   return value === undefined || isNullableString(value);
+}
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
 }
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";

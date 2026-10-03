@@ -1,5 +1,6 @@
 import {
   decodeExecutionProjectListResponse,
+  decodeExecutionProviderListResponse,
   decodeExecutionSessionPatchRequest,
   decodeExecutionSessionPatchResponse,
   decodeExecutionSessionWorkspace,
@@ -14,6 +15,7 @@ import {
   type ExecutionHostCommand,
   type ExecutionHostCommandEnvelope,
   type ExecutionProject,
+  type ExecutionProvider,
   type ExecutionSessionPatchRequest,
   type ExecutionSessionWorkspace,
   type ExecutionStartRequest,
@@ -127,6 +129,16 @@ export type ExecutionSessionPatchResult =
     }
   | { status: "no-session"; sessionId: string };
 
+/**
+ * `deleted` — the host tore the session down: its provider stopped, its
+ * workspace and log gone. `no-session` — the host has no session by that id
+ * (404): torn down already, or never there.
+ */
+export interface ExecutionDeleteSessionResult {
+  status: "deleted" | "no-session";
+  sessionId: string;
+}
+
 export interface ExecutionHostClient {
   readonly baseUrl: string;
   /** `GET /health`, unauthenticated. Throws `ExecutionHostError` when unreadable. */
@@ -139,6 +151,13 @@ export interface ExecutionHostClient {
   handshake(options?: ExecutionRequestOptions): Promise<ExecutionHostHandshake>;
   /** The Projects the host advertises (`GET /v0/projects`). */
   projects(options?: ExecutionRequestOptions): Promise<ExecutionProject[]>;
+  /**
+   * The providers the host serves, with the models and efforts each offers
+   * (`GET /v0/providers`): the catalogue a session's model and effort are
+   * checked against. Takes the health timeout, not the request one — it is a
+   * read of what the host already knows.
+   */
+  providers(options?: ExecutionRequestOptions): Promise<ExecutionProvider[]>;
   /** Starts a session with its first turn. The request's `commandId` is minted when absent. */
   start(
     request: ExecutionStartRequest,
@@ -163,6 +182,17 @@ export interface ExecutionHostClient {
     patch: ExecutionSessionPatchRequest,
     options?: ExecutionRequestOptions,
   ): Promise<ExecutionSessionPatchResult>;
+  /**
+   * Tears a session down (`DELETE /v0/execution/sessions/:id`): the provider
+   * stops, the workspace and the log go, and the streams following it end —
+   * a follower that reconnects hears 404, `no-session`. Deleting a session the
+   * host does not have is `no-session`, not an error, so a retry after a lost
+   * answer is safe. Any other refusal throws an `ExecutionHostError`.
+   */
+  deleteSession(
+    sessionId: string,
+    options?: ExecutionRequestOptions,
+  ): Promise<ExecutionDeleteSessionResult>;
   /** The session as the host has it now, or null when it has none by that id. */
   snapshot(
     sessionId: string,
@@ -170,7 +200,12 @@ export interface ExecutionHostClient {
   ): Promise<ExecutionSessionSnapshot | null>;
   /**
    * One connection to the session's event stream, decoded but not sequenced.
-   * Most readers want `followSession`.
+   * Most readers want `followSession`. When the caller's `signal` aborts the
+   * iteration ends, it does not throw — the same as `followSession`, whose
+   * `done` says `stopped`. A caller that must tell an abort from the host
+   * closing the stream checks `signal.aborted` once the loop ends; anything
+   * else that ends it (the host closing, a break in the connection, the idle
+   * timeout) is not an abort and is as the stream reported it.
    */
   events(
     sessionId: string,
@@ -243,7 +278,7 @@ export function createExecutionHostClient(
     operation: string,
     path: string,
     init: {
-      method: "GET" | "POST" | "PATCH";
+      method: "GET" | "POST" | "PATCH" | "DELETE";
       body?: string;
       authenticated: boolean;
       timeoutMs: number;
@@ -420,6 +455,32 @@ export function createExecutionHostClient(
         },
       ),
 
+    providers: (requestOptions = {}) =>
+      request(
+        "providers",
+        "/v0/providers",
+        {
+          method: "GET",
+          authenticated: true,
+          timeoutMs: requestOptions.timeoutMs ?? healthTimeoutMs,
+          signal: requestOptions.signal,
+        },
+        async (response, body) => {
+          if (!response.ok) throw await refusal("providers", response);
+          const decoded = decodeExecutionProviderListResponse(
+            await body.json(),
+          );
+          if (!decoded.ok) {
+            throw new ExecutionHostError(
+              "malformed",
+              `the catalogue is unreadable (${decoded.reason})`,
+              { operation: "providers", status: response.status },
+            );
+          }
+          return decoded.value.providers;
+        },
+      ),
+
     start: async (startRequest, requestOptions = {}) => {
       const commandId = commandIdFor(startRequest.commandId);
       const sessionId = startRequest.config.sessionId;
@@ -548,6 +609,27 @@ export function createExecutionHostClient(
         },
       );
     },
+
+    deleteSession: (sessionId, requestOptions = {}) =>
+      request(
+        "delete session",
+        sessionPath(sessionId),
+        {
+          method: "DELETE",
+          authenticated: true,
+          timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+          signal: requestOptions.signal,
+        },
+        async (response): Promise<ExecutionDeleteSessionResult> => {
+          if (response.status === 404) {
+            await response.body?.cancel().catch(() => {});
+            return { status: "no-session", sessionId };
+          }
+          if (!response.ok) throw await refusal("delete session", response);
+          await response.body?.cancel().catch(() => {});
+          return { status: "deleted", sessionId };
+        },
+      ),
 
     snapshot: (sessionId, requestOptions = {}) =>
       request(

@@ -236,9 +236,11 @@ await follow.stop();
 
 `health()` reads the public `/health` (capabilities included) without the
 token; `handshake()` adds the token probe and never throws. `projects()`,
-`snapshot()` (null for a session the host does not have), `patchSession()` (a
-session's title, or the model and effort its next turn runs on) and `events()`
-— one connection, decoded but not sequenced — cover the rest. A refusal is an
+`providers()` (the catalogue: each provider, its models and the efforts each
+takes), `snapshot()` (null for a session the host does not have),
+`patchSession()` (a session's title, or the model and effort its next turn runs
+on), `deleteSession()` (teardown) and `events()` — one connection, decoded but
+not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
 `not-found`, `http`, `malformed`), the status, and the host's own words.
 
@@ -311,6 +313,43 @@ that names neither is read as before, with the first frame of each connection
 carrying the rule alone. Frames under any other name are not read at all, as
 EventSource ignores the names nobody listens for, and a frame longer than
 `maxFrameLength` (16 MiB) fails the connection rather than grow without end.
+
+**The catalogue** is `GET /v0/providers`, read by `providers()` into
+`ExecutionProvider[]` (`decodeExecutionProviderListResponse` in the root reads
+the body). It is what a session's `model` and `effort` are checked against, so a
+picker can offer only what the host will take. A provider has an `id`, a
+`label`, `available` and `authenticated` (absent when the host does not say,
+which is not `false`), the `effortLevels` it takes as a whole, and its
+`models`: each a `slug` (what `config.model` and a patch's `model` name), a
+`label`, a `defaultEffort` and its `efforts` — the model's own `effortOptions`,
+or else its provider's `effortLevels`, which is also what a provider's default
+model takes. A provider or model with no `id` or `slug`, or an effort without an
+`id`, makes the catalogue `malformed` rather than a picker offering a guess.
+
+**Teardown** is `deleteSession(sessionId)`, `DELETE /v0/execution/sessions/:id`:
+the host stops the provider, drops the workspace and the log, and ends the
+streams following the session, so a follower that reconnects hears 404 and
+`done` says `no-session`. It answers `deleted`, or `no-session` for a session the
+host does not have — torn down already, or never there — so retrying after a
+lost answer is safe. Anything else is an `ExecutionHostError`.
+
+**Command ids are always sent.** `start()` and `command()` mint one when the
+caller gives none, and the answer names it. The protocol calls sending one
+always safe — a host that predates them ignores it — so there is no
+`commandId: null` to ask for none: a caller that wanted a request without an id
+would be guarding against a host the contract says does not exist, and the
+answer's `commandId` would have to become `string | null` for everyone. `null`
+is refused, as any id the host would refuse is. A caller that keeps its own ids
+passes them, and reuses one to retry.
+
+**Aborting `events()` ends it quietly.** When the caller's `signal` aborts, the
+iteration finishes; it does not throw. That is the intended contract, and it
+matches `followSession`, whose `done` says `stopped` for the same abort. Check
+`signal.aborted` after the loop to tell an abort from the host closing the
+stream — a stream the host closes, breaks or leaves idle past `idleTimeoutMs`
+ends as it always did, and is not an abort. (Requests such as `snapshot()` are
+different: they are one answer awaited, and a caller's abort rejects them with
+the abort, as `fetch` does.)
 
 ## The work address and environments
 
