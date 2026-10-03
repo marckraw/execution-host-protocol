@@ -58,6 +58,13 @@ export interface StubHost {
   healthStatus: number;
   metaStatus: number;
   projectsBody: unknown;
+  /** The answer to `GET /v0/providers`; agents-daemon's catalogue by default. */
+  providersBody: unknown;
+  providersStatus: number;
+  /** The sessions a `DELETE` was sent for, in order, found or not. */
+  deleteRequests: string[];
+  /** Status a `DELETE` of a session the host has answers with. */
+  deleteStatus: number;
   startRequests: Array<Record<string, unknown>>;
   startStatus: number;
   startBody: ((request: Record<string, unknown>) => unknown) | null;
@@ -117,6 +124,10 @@ export function createStubHost(): StubHost {
     healthStatus: 200,
     metaStatus: 200,
     projectsBody: { projects: [] },
+    providersBody: PROVIDERS_BODY,
+    providersStatus: 200,
+    deleteRequests: [],
+    deleteStatus: 200,
     startRequests: [],
     startStatus: 201,
     startBody: null,
@@ -204,6 +215,9 @@ export function createStubHost(): StubHost {
       if (!authorized) return json({ error: "Unauthorized" }, 401);
       if (path === "/v0/meta") return json({ providers: [] }, host.metaStatus);
       if (path === "/v0/projects") return json(host.projectsBody);
+      if (path === "/v0/providers") {
+        return json(host.providersBody, host.providersStatus);
+      }
 
       if (path === "/v0/execution/sessions" && method === "POST") {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -306,6 +320,26 @@ export function createStubHost(): StubHost {
           status: 200,
           headers: { "Content-Type": "text/event-stream" },
         });
+      }
+
+      if (method === "DELETE") {
+        host.deleteRequests.push(sessionId);
+        if (!host.sessions.has(sessionId)) {
+          return json({ error: `Session not found: ${sessionId}` }, 404);
+        }
+        if (host.deleteStatus !== 200) {
+          return json({ error: "Teardown failed" }, host.deleteStatus);
+        }
+        // The host forgets the session and ends the streams following it:
+        // a follower that reconnects hears 404.
+        host.sessions.delete(sessionId);
+        host.snapshots.delete(sessionId);
+        for (const stream of [...streams]) {
+          if (stream.sessionId !== sessionId) continue;
+          stream.detach();
+          stream.controller.close();
+        }
+        return json({ deleted: true });
       }
 
       if (method === "PATCH") {
@@ -415,3 +449,42 @@ export async function waitFor(condition: () => boolean, timeoutMs = 2_000) {
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
 }
+
+/**
+ * The shape of agents-daemon's `GET /v0/providers`, as accent.'s gateway reads
+ * it (MAR-3655): `models` carry their own `effortOptions`, a provider with none
+ * says what it takes in `features.effortLevels`, and both carry fields this
+ * client does not read, on purpose.
+ */
+export const PROVIDERS_BODY = {
+  providers: [
+    {
+      id: "claude",
+      label: "Claude",
+      available: true,
+      authenticated: true,
+      features: { effortLevels: ["low", "medium", "high"], resume: true },
+      models: [
+        {
+          slug: "claude-opus-5-5",
+          label: "Opus 5.5",
+          defaultEffort: "medium",
+          effortOptions: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+          ],
+          contextWindow: 200000,
+        },
+        { slug: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+      ],
+    },
+    {
+      id: "codex",
+      label: "Codex",
+      available: true,
+      authenticated: false,
+      models: [],
+    },
+  ],
+};

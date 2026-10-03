@@ -13,6 +13,7 @@ export {
   createExecutionHostClient,
   type ExecutionCommandOptions,
   type ExecutionCommandResult,
+  type ExecutionDeleteSessionResult,
   type ExecutionHostClient,
   type ExecutionHostClientOptions,
   type ExecutionRequestOptions,

@@ -648,14 +648,16 @@ describe("listeners, redirects and timeouts", () => {
     await all.health();
     await all.handshake();
     await all.projects();
+    await all.providers();
     await all.start(startRequest("session-new"));
     await all.command("session-1", { kind: "stop" });
     await all.snapshot("session-1");
     for await (const frame of all.events("session-1")) {
       if (frame.type === "caught-up") break;
     }
+    await all.deleteSession("session-1");
 
-    expect(host.redirectModes.length).toBeGreaterThanOrEqual(8);
+    expect(host.redirectModes.length).toBeGreaterThanOrEqual(10);
     expect(new Set(host.redirectModes)).toEqual(new Set(["error"]));
   });
 
