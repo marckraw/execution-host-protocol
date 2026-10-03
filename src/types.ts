@@ -1,3 +1,5 @@
+import type { HarnessEvidence } from "./harness-evidence.js";
+
 export const EXECUTION_PROTOCOL_VERSION = 1 as const;
 
 export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
@@ -41,6 +43,22 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * snapshot, and tells followers with a `session.patch` carrying both.
    */
   "sessions.modelSelection.v1",
+  /**
+   * The resident session (MAR-3679): the host keeps one provider process per
+   * session, so the agent's own work outlives its answer. The session reports
+   * `answered` while tasks it started still run, `runningTasks` on
+   * `session.patch`, each turn's `origin`, and `agentRunId` and `taskId` on
+   * the items a subagent or a task produced.
+   */
+  "sessions.resident.v1",
+  /**
+   * The host sends the harness's own record of a session as `evidence` deltas
+   * (MAR-3679): agent runs, tasks, hooks, retries and turn accounting, in
+   * Convergence's `HarnessEvidence` model.
+   */
+  "evidence.v1",
+  /** The host takes `stop-task`: one task stopped, the session left running (MAR-3679). */
+  "commands.stopTask.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -52,9 +70,22 @@ export interface ExecutionProtocolDescriptor {
   capabilities: ExecutionProtocolCapability[];
 }
 
+/**
+ * Where a session is. `running` — a turn is in progress. `answered` — the
+ * agent has answered, but tasks it started (a background command, a subagent)
+ * still run; `runningTasks` says how many, and when they finish the agent may
+ * open a turn of its own (MAR-3679). `completed` and `failed` — the last turn
+ * ended so.
+ *
+ * A session is **settled** when its status is `completed` or `failed`, no task
+ * of its runs (`runningTasks` is 0), and nothing is queued for it. Only then
+ * does its attention become `finished`: an answer with work still running is
+ * not the end of it.
+ */
 export const EXECUTION_SESSION_STATUSES = [
   "idle",
   "running",
+  "answered",
   "completed",
   "failed",
 ] as const;
@@ -180,6 +211,19 @@ export interface ExecutionConversationItemBase {
   createdAt: string;
   updatedAt: string;
   providerMeta: ExecutionProviderMeta;
+  /**
+   * The agent run (a subagent) whose work this item is: the `id` its
+   * `agent.started` evidence named, or the one `agent.identified` renamed it
+   * to — which a host patches in. Absent for the main agent's own items
+   * (MAR-3679).
+   */
+  agentRunId?: string;
+  /**
+   * The task that produced this item: the `taskId` of its `task.changed`
+   * evidence. Absent for items no task produced. A host may learn it after the
+   * item was added, and patch it in (MAR-3679).
+   */
+  taskId?: string;
 }
 
 /** Persisted attachment metadata. Bytes are fetched from the owning host. */
@@ -342,6 +386,14 @@ export type ExecutionConversationItemPatch = MutableConversationItemPatch & {
 };
 
 export type ExecutionTurnStatus = "running" | "completed" | "errored";
+
+/**
+ * Who opened a turn (MAR-3679). `user` — a person's message. `harness` — the
+ * provider opened it by itself, as Claude Code does when a background task it
+ * started finishes and it reports back.
+ */
+export const EXECUTION_TURN_ORIGINS = ["user", "harness"] as const;
+export type ExecutionTurnOrigin = (typeof EXECUTION_TURN_ORIGINS)[number];
 export type ExecutionTurnFileChangeStatus = "added" | "modified" | "deleted";
 
 export interface ExecutionTurn {
@@ -352,6 +404,8 @@ export interface ExecutionTurn {
   endedAt: string | null;
   status: ExecutionTurnStatus;
   summary: string | null;
+  /** Fixed when the turn is added: a `turn.patch` never carries it. */
+  origin: ExecutionTurnOrigin;
 }
 
 export interface ExecutionTurnFileChange {
@@ -394,6 +448,13 @@ export type ExecutionSessionDelta =
         model?: string | null;
         /** The reasoning effort those turns run with; null is the model's default. */
         effort?: string | null;
+        /**
+         * How many tasks the session's agent started that still run: a
+         * background command, a subagent (MAR-3679). With status `answered`
+         * it is what the agent is still doing after its answer; a session is
+         * settled only once it is 0.
+         */
+        runningTasks?: number;
         updatedAt?: string;
       };
     }
@@ -413,6 +474,18 @@ export type ExecutionSessionDelta =
       kind: "turn.fileChanges.add";
       turnId: string;
       fileChanges: ExecutionTurnFileChange[];
+    }
+  | {
+      /**
+       * One fact from the harness's record of the session (MAR-3679), in
+       * Convergence's model: `HarnessEvidenceService.apply(sessionId, turnId,
+       * evidence)` takes the delta's two fields as they are. `turnId` is the
+       * turn it belongs to, null for one that belongs to none (a process
+       * ending between turns).
+       */
+      kind: "evidence";
+      turnId: string | null;
+      evidence: HarnessEvidence;
     };
 
 export type ExecutionHostEvent =
@@ -517,6 +590,11 @@ export type ExecutionHostCommand =
     }
   | { kind: "interrupt"; expectedProviderTurnId?: string }
   | { kind: "cancel-queued"; itemId: string }
+  /**
+   * Stops one task — a background command, a subagent — by the `taskId` its
+   * evidence named, without interrupting the session or its turn (MAR-3679).
+   */
+  | { kind: "stop-task"; taskId: string }
   | { kind: "stop" };
 
 export interface ExecutionHostCommandEnvelope {

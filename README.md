@@ -191,6 +191,108 @@ add a kind without breaking the readers that predate it.
   they are gone a host sends a new kind only to a subscriber that asked for it,
   the way increments wait for `?deltas=append`.
 
+## The events
+
+An event envelope carries one event; a `delta` carries one change to the
+session's record.
+
+| Event                | Carries                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `delta`              | one of the deltas below                                                                                        |
+| `status`             | the session's status: `idle`, `running`, `answered`, `completed` or `failed`                                   |
+| `attention`          | what the session needs: `none`, `needs-input`, `needs-approval`, `finished` or `failed`                        |
+| `continuation-token` | the provider's token for resuming the conversation                                                             |
+| `context-window`     | how full the context window is, or why that is unknown                                                         |
+| `activity`           | what the agent is doing now: `streaming`, `thinking`, `compacting`, `waiting-approval`, `tool:<name>`, or null |
+| `heartbeat`          | nothing; the host is there                                                                                     |
+
+| Delta                     | Carries                                                                                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session.patch`           | `status`, `attention`, `activity`, `contextWindow`, `continuationToken`, `prUrl`, `roomId`, `model`, `effort`, `runningTasks`, `updatedAt` — whichever changed |
+| `conversation.item.add`   | a new item, with `agentRunId` and `taskId` when a subagent or a task produced it                                                                               |
+| `conversation.item.patch` | an item's changed fields, or `textAppend`                                                                                                                      |
+| `turn.add`                | a new turn, with its `origin`                                                                                                                                  |
+| `turn.patch`              | a turn's `endedAt`, `status` or `summary`                                                                                                                      |
+| `turn.fileChanges.add`    | the files a turn changed                                                                                                                                       |
+| `evidence`                | one fact of the harness's record — `turnId` and `evidence`                                                                                                     |
+
+Commands: `send-message`, `approve`, `deny`, `steer`, `interrupt`,
+`cancel-queued`, `stop-task` and `stop`.
+
+## Resident sessions: answered, settled, and the agent's own work
+
+On a host advertising `sessions.resident.v1` (protocol 0.19, MAR-3679) a
+session keeps one provider process for its whole life, so the agent's work can
+outlive its answer: a test run it backgrounded, a subagent it sent off.
+
+- **`answered`** sits between `running` and `completed`. The agent has
+  answered, but tasks it started still run. `session.patch` carries
+  `runningTasks`, how many; the host sends it whenever the count changes, 0
+  included. A session's snapshot carries it too (0 when the host does not
+  say).
+- **A turn has an `origin`.** `user` — a person's message opened it. `harness`
+  — the provider opened it by itself, as Claude Code does when a background
+  task finishes and it reports back. It is required on every turn, and fixed
+  when the turn is added.
+- **Settled** is `completed` or `failed`, with `runningTasks` at 0 and nothing
+  queued. Attention `finished` comes only then: an answer with work still
+  running is not the end of it, and neither is one with a message waiting
+  behind it.
+- **`stop-task`** (`{ kind: "stop-task", taskId }`, `commands.stopTask.v1`)
+  stops one task, by the `taskId` its evidence named, and leaves the session
+  and its turn running.
+
+### Evidence
+
+On a host advertising `evidence.v1`, an `evidence` delta carries one fact of
+the harness's record of the session:
+
+```json
+{
+  "kind": "evidence",
+  "turnId": "turn-3",
+  "evidence": {
+    "kind": "task.changed",
+    "taskId": "task-b7x2",
+    "at": "2026-10-03T21:40:00.000Z",
+    "patch": { "status": "completed", "endedSummary": "212 tests passed" }
+  }
+}
+```
+
+`evidence` is Convergence's `HarnessEvidence`, unchanged and under its own
+names (`marckraw/convergence`, `harness-evidence.types.ts`; MAR-2869), so
+Convergence applies a remote session's evidence as it applies its own:
+`HarnessEvidenceService.apply(sessionId, delta.turnId, delta.evidence)`.
+`turnId` is null for a fact that belongs to no turn, such as a process ending
+between turns. The members:
+
+- **Agent runs** — `agent.started`, `agent.identified`, `agent.changed`,
+  `agent.ended`, keyed by `spawnedByItemId`, the item that spawned the run; and
+  `process.ended`, which settles every run and task still open.
+- **Tasks** — `task.changed`: one patch per change, start, progress and end
+  alike, carrying `status`, `description`, `endedSummary` and the rest of what
+  changed.
+- **The harness** — `harness.hook`, `harness.retry`, `harness.compaction`,
+  `harness.denial`, `harness.rateLimit`, `harness.init`, `harness.mcpStatus`;
+  and `harness.unknown`, an event family the model keeps without modelling.
+- **Turn accounting** — `turn.accounting`: the result subtype, usage, cost,
+  permission denials and subagent stats of the turn named by `turnId`.
+
+An item a subagent or a task produced says so: `agentRunId` names the run (its
+`agent.started` id, or the id `agent.identified` renamed it to), `taskId` the
+task. Both are absent for the main agent's own items, and a host patches either
+in when it learns it after the item was added.
+
+- **Strict about the model.** Every field `HarnessEvidence` names is checked,
+  optional ones included, because a fact applied with a field dropped is a
+  projection wrong without saying so: one present with the wrong shape is
+  `invalid-payload`. The `unknown`-typed fields (`usage`, `payload`, …) are
+  required keys whose value is the harness's own; send null for none. Fields
+  the model does not name are ignored.
+- **A newer fact is skipped.** An evidence kind this build does not know is
+  `unknown-kind`, at `event.delta.evidence.kind`, and a follower steps over it.
+
 ## The client
 
 Three clients spoke this protocol, each with what the others lacked (MAR-3638):

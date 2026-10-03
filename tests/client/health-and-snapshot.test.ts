@@ -117,6 +117,7 @@ const turn = {
   endedAt: "2026-10-02T10:01:00.000Z",
   status: "completed",
   summary: null,
+  origin: "user",
 };
 const fileChange = {
   id: "change-1",
@@ -138,6 +139,7 @@ const snapshot = {
   providerId: "claude",
   commandable: true,
   status: "completed",
+  runningTasks: 0,
   attention: "finished",
   activity: null,
   metadata: { source: { surface: "accent" } },
