@@ -61,6 +61,7 @@ describe("contract shapes read outside an envelope (MAR-3638)", () => {
       endedAt: null,
       status: "running",
       summary: null,
+      origin: "user",
     };
     expect(decodeExecutionTurn(turn)).toEqual({ ok: true, value: turn });
     expect(decodeExecutionTurn({ ...turn, sequence: 0 }).ok).toBe(false);

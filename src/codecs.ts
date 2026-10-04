@@ -1,8 +1,10 @@
+import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
   EXECUTION_ACTOR_KINDS,
   EXECUTION_ATTENTION_STATES,
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_SESSION_STATUSES,
+  EXECUTION_TURN_ORIGINS,
   type ExecutionActivitySignal,
   type ExecutionActor,
   type ExecutionActorKind,
@@ -78,6 +80,8 @@ const CONVERSATION_ITEM_FIELD_VALIDATORS = {
   prompt: (value: unknown) => typeof value === "string",
   level: isNoteLevel,
   delivery: isMessageDelivery,
+  agentRunId: isNonEmptyString,
+  taskId: isNonEmptyString,
 } satisfies Record<string, (value: unknown) => boolean>;
 type ConversationItemField = keyof typeof CONVERSATION_ITEM_FIELD_VALIDATORS;
 
@@ -105,6 +109,8 @@ const PATCH_FIELDS = [
   "prompt",
   "level",
   "delivery",
+  "agentRunId",
+  "taskId",
 ] as const satisfies readonly ConversationItemField[];
 type PatchField = (typeof PATCH_FIELDS)[number];
 const PATCH_FIELD_SET = new Set<string>(PATCH_FIELDS);
@@ -526,6 +532,12 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
         }
         patch.effort = raw.patch.effort;
       }
+      if (raw.patch.runningTasks !== undefined) {
+        if (!isNonNegativeInteger(raw.patch.runningTasks)) {
+          return failure("invalid-payload");
+        }
+        patch.runningTasks = raw.patch.runningTasks;
+      }
       if (raw.patch.updatedAt !== undefined) {
         if (typeof raw.patch.updatedAt !== "string")
           return failure("invalid-payload");
@@ -618,6 +630,25 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
           })
         : failure("invalid-payload");
     }
+    case "evidence": {
+      if (
+        !(raw.turnId === null || isNonEmptyString(raw.turnId)) ||
+        !isRecord(raw.evidence)
+      ) {
+        return failure("invalid-payload");
+      }
+      const evidence = decodeHarnessEvidence(raw.evidence);
+      if (!evidence.ok) {
+        return evidence.reason === "unknown-kind"
+          ? unknownKind("event.delta.evidence.kind", String(raw.evidence.kind))
+          : evidence;
+      }
+      return success({
+        kind: "evidence",
+        turnId: raw.turnId,
+        evidence: evidence.value,
+      });
+    }
     default:
       return unknownKind("event.delta.kind", raw.kind);
   }
@@ -643,11 +674,21 @@ function decodeTurn(raw: unknown): ExecutionTurn | null {
     typeof raw.startedAt !== "string" ||
     (raw.endedAt !== null && typeof raw.endedAt !== "string") ||
     !isTurnStatus(raw.status) ||
-    (raw.summary !== null && typeof raw.summary !== "string")
+    (raw.summary !== null && typeof raw.summary !== "string") ||
+    !(EXECUTION_TURN_ORIGINS as readonly unknown[]).includes(raw.origin)
   ) {
     return null;
   }
-  return raw as unknown as ExecutionTurn;
+  return {
+    id: raw.id,
+    sessionId: raw.sessionId,
+    sequence: raw.sequence as number,
+    startedAt: raw.startedAt,
+    endedAt: raw.endedAt as string | null,
+    status: raw.status,
+    summary: raw.summary as string | null,
+    origin: raw.origin as ExecutionTurn["origin"],
+  };
 }
 
 function decodeTurnFileChange(raw: unknown): ExecutionTurnFileChange | null {
@@ -705,6 +746,16 @@ function decodeConversationItem(
   ) {
     return failure("invalid-payload");
   }
+  // Which agent run or task produced the item (MAR-3679): optional on every
+  // kind, and dropped with a warning rather than costing the item.
+  const agentRunId = decodeOptionalField(
+    raw.agentRunId,
+    `${path}.agentRunId`,
+    (value) => (isNonEmptyString(value) ? value : null),
+  );
+  const taskId = decodeOptionalField(raw.taskId, `${path}.taskId`, (value) =>
+    isNonEmptyString(value) ? value : null,
+  );
   const base: ExecutionConversationItemBase = {
     id: raw.id as string,
     kind: raw.kind as string,
@@ -712,7 +763,24 @@ function decodeConversationItem(
     createdAt: raw.createdAt as string,
     updatedAt: raw.updatedAt as string,
     providerMeta: raw.providerMeta as ExecutionProviderMeta,
+    ...optionalProperty("agentRunId", agentRunId.value),
+    ...optionalProperty("taskId", taskId.value),
   };
+  const item = decodeConversationItemOfKind(raw, base, path);
+  return item.ok
+    ? success(item.value, [
+        ...agentRunId.warnings,
+        ...taskId.warnings,
+        ...(item.warnings ?? []),
+      ])
+    : item;
+}
+
+function decodeConversationItemOfKind(
+  raw: Record<string, unknown>,
+  base: ExecutionConversationItemBase,
+  path: string,
+): KindAwareResult<ExecutionConversationItem> {
   switch (raw.kind) {
     case "message": {
       if (
@@ -828,7 +896,7 @@ function decodeConversationItem(
           })
         : failure("invalid-payload");
     default:
-      return unknownKind(`${path}.kind`, raw.kind);
+      return unknownKind(`${path}.kind`, base.kind);
   }
 }
 
@@ -954,6 +1022,10 @@ function decodeCommand(
   if (raw.kind === "cancel-queued") {
     if (!isNonEmptyString(raw.itemId)) return failure("invalid-payload");
     return success({ kind: "cancel-queued", itemId: raw.itemId });
+  }
+  if (raw.kind === "stop-task") {
+    if (!isNonEmptyString(raw.taskId)) return failure("invalid-payload");
+    return success({ kind: "stop-task", taskId: raw.taskId });
   }
   if (raw.kind !== "send-message") return failure("unknown-kind");
   if (typeof raw.text !== "string") return failure("invalid-payload");
@@ -2214,6 +2286,9 @@ function isStringArray(value: unknown): value is string[] {
 }
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 function isItemState(
   value: unknown,

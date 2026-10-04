@@ -53,6 +53,11 @@ export interface ExecutionSessionSnapshot {
   /** Whether the host will take commands for it now. */
   commandable: boolean;
   status: ExecutionSessionStatus;
+  /**
+   * Tasks the session's agent started that still run (MAR-3679), as
+   * `session.patch` reports them; 0 when the host did not say.
+   */
+  runningTasks: number;
   attention: ExecutionAttentionState;
   activity: ExecutionActivitySignal;
   metadata: ExecutionSessionMetadata | null;
@@ -161,6 +166,11 @@ export function decodeExecutionSessionSnapshot(
       status: field<ExecutionSessionStatus>("status", "idle", (value) =>
         oneOf(EXECUTION_SESSION_STATUSES, value),
       ),
+      runningTasks: field<number>("runningTasks", 0, (value) =>
+        Number.isSafeInteger(value) && (value as number) >= 0
+          ? { ok: true, value: value as number }
+          : { ok: false },
+      ),
       attention: field<ExecutionAttentionState>("attention", "none", (value) =>
         oneOf(EXECUTION_ATTENTION_STATES, value),
       ),
@@ -224,10 +234,7 @@ function readTurns(
       });
       return;
     }
-    const { fileChanges: rawChanges, ...record } =
-      turn.value as ExecutionTurn & {
-        fileChanges?: unknown;
-      };
+    const rawChanges = (entry as { fileChanges?: unknown }).fileChanges;
     const fileChanges: ExecutionTurnFileChange[] = [];
     if (Array.isArray(rawChanges)) {
       rawChanges.forEach((change, changeIndex) => {
@@ -246,7 +253,7 @@ function readTurns(
         path: `turns.${index}.fileChanges`,
       });
     }
-    turns.push({ ...record, fileChanges });
+    turns.push({ ...turn.value, fileChanges });
   });
   return turns.sort((left, right) => left.sequence - right.sequence);
 }
