@@ -293,6 +293,54 @@ in when it learns it after the item was added.
 - **A newer fact is skipped.** An evidence kind this build does not know is
   `unknown-kind`, at `event.delta.evidence.kind`, and a follower steps over it.
 
+## Host identity, devices, and start requirements
+
+On a host advertising `host.profile.v1`, authenticated `GET /v0/host` returns
+an `ExecutionHostProfile` directly (no envelope). `decodeExecutionHostProfile`
+in the package root reads it; the shared client's `host()` fetches and decodes
+it with the bearer token and the health timeout.
+
+The profile names the host (`id`, `label`), its `platform` (`os`, `arch`,
+`osVersion`), probed `traits` and `toolchains`, and when those facts were
+checked (`checkedAt`). OS, architecture and trait ids are open strings. A host
+with no device tools reports empty traits and toolchains and may omit
+`devices`; the reader never infers tools from the OS. A toolchain has an `id`,
+`version`, and optional `build`.
+
+Device capabilities advertise probed inventories:
+
+- `devices.iosSimulator.v1`: `devices.iosSimulator` has `runtimes` (each an
+  `id`, `name`, `version`), `deviceTypes` (ids), and `slots`.
+- `devices.androidEmulator.v1`: `devices.androidEmulator` has `systemImages`
+  (each an `id`, positive integer `apiLevel`, `abi`), `avds` (names), and
+  `slots`.
+
+Each `slots` contains non-negative integer `inUse` and `max` (a non-negative
+integer, or null when no limit is reported). These are a snapshot, not a
+reservation. Absent inventories are unknown, not fabricated empty inventories.
+Unknown fields are ignored; malformed known fields, even in optional device
+inventories or toolchain builds, make the profile unreadable.
+
+**Authenticated only.** `/health` advertises the capability ids, never the
+profile or device inventory. `health()` and `handshake()` keep their existing
+requests; callers fetch a profile explicitly with `host()`. An older host's
+404 is `ExecutionHostError` of kind `not-found`, never an empty profile.
+
+**A start says what it needs.** `ExecutionStartRequest.requires?: string[]`
+names traits at the top level, for example `requires: ["ios.simulator"]`.
+Absent or empty requires none. Present requirements must be an array of
+non-empty strings; an invalid one is `invalid-payload`, never dropped.
+Unknown trait ids remain intact for the host to decide.
+
+A host advertising `host.profile.v1` checks every required trait against its
+profile before preparing a workspace or starting a provider, and refuses a
+missing trait with a readable `400`, for example
+`Missing required host traits: ios.simulator`. The client surfaces its reason
+as an `ExecutionHostError`. The host is authoritative: a cached profile may
+be stale. A client must check `host.profile.v1` before relying on `requires`,
+since hosts predating this addition may ignore it. Device allocation and
+probing are the host implementation's work, outside this package.
+
 ## The client
 
 Three clients spoke this protocol, each with what the others lacked (MAR-3638):

@@ -8,12 +8,14 @@ import {
   encodeExecutionSessionPatchRequest,
   encodeExecutionStartRequest,
 } from "../codecs.js";
+import { decodeExecutionHostProfile } from "../host-profile.js";
 import {
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionActor,
   type ExecutionDecodeWarning,
   type ExecutionHostCommand,
   type ExecutionHostCommandEnvelope,
+  type ExecutionHostProfile,
   type ExecutionProject,
   type ExecutionProvider,
   type ExecutionSessionPatchRequest,
@@ -149,6 +151,12 @@ export interface ExecutionHostClient {
    * throws, except for the caller's own abort.
    */
   handshake(options?: ExecutionRequestOptions): Promise<ExecutionHostHandshake>;
+  /**
+   * Authenticated `GET /v0/host`: identity, traits and device inventory
+   * (`host.profile.v1`, MAR-3699). Uses the health timeout. An older host's
+   * 404 is an `ExecutionHostError`, not an empty profile.
+   */
+  host(options?: ExecutionRequestOptions): Promise<ExecutionHostProfile>;
   /** The Projects the host advertises (`GET /v0/projects`). */
   projects(options?: ExecutionRequestOptions): Promise<ExecutionProject[]>;
   /**
@@ -228,6 +236,7 @@ const DEFAULT_HEALTH_TIMEOUT_MS = 15_000;
  * A client for one execution host — agents-daemon's HTTP API — in plain
  * JavaScript with no dependencies beyond the protocol it ships with, so it
  * loads anywhere `fetch` does: Node 20+, Bun, browsers, Electron, React Native.
+ * Facade: typed host operations share one transport and refusal boundary.
  */
 export function createExecutionHostClient(
   options: ExecutionHostClientOptions,
@@ -431,6 +440,29 @@ export function createExecutionHostClient(
           : await probeMeta(requestOptions);
       return evaluateExecutionHostHandshake(parsed, failure, meta);
     },
+
+    host: (requestOptions = {}) =>
+      request(
+        "host",
+        "/v0/host",
+        {
+          method: "GET",
+          authenticated: true,
+          timeoutMs: requestOptions.timeoutMs ?? healthTimeoutMs,
+          signal: requestOptions.signal,
+        },
+        async (response, body) => {
+          if (!response.ok) throw await refusal("host", response);
+          const decoded = decodeExecutionHostProfile(await body.json());
+          if (!decoded.ok) {
+            throw new ExecutionHostError("malformed", decoded.reason, {
+              operation: "host",
+              status: response.status,
+            });
+          }
+          return decoded.value;
+        },
+      ),
 
     projects: (requestOptions = {}) =>
       request(

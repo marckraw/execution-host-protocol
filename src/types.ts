@@ -59,6 +59,12 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "evidence.v1",
   /** The host takes `stop-task`: one task stopped, the session left running (MAR-3679). */
   "commands.stopTask.v1",
+  /** Authenticated `GET /v0/host` and trait requirements on session starts (MAR-3699). */
+  "host.profile.v1",
+  /** The host reports its probed iOS Simulator inventory (MAR-3699). */
+  "devices.iosSimulator.v1",
+  /** The host reports its probed Android Emulator inventory (MAR-3699). */
+  "devices.androidEmulator.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -68,6 +74,60 @@ export type ExecutionProtocolCapability =
 export interface ExecutionProtocolDescriptor {
   version: typeof EXECUTION_PROTOCOL_VERSION;
   capabilities: ExecutionProtocolCapability[];
+}
+
+export interface ExecutionHostPlatform {
+  /** Open to operating systems this reader does not yet know. */
+  os: "linux" | "darwin" | (string & {});
+  /** Open to architectures this reader does not yet know. */
+  arch: "x64" | "arm64" | (string & {});
+  osVersion: string | null;
+}
+
+export interface ExecutionHostToolchain {
+  id: string;
+  version: string;
+  build?: string;
+}
+
+export interface ExecutionHostDeviceSlots {
+  /** Non-negative integer, or null when no limit is reported. */
+  max: number | null;
+  /** Non-negative integer. Inventory is a snapshot, not a reservation. */
+  inUse: number;
+}
+
+export interface ExecutionHostIosSimulator {
+  runtimes: { id: string; name: string; version: string }[];
+  deviceTypes: string[];
+  slots: ExecutionHostDeviceSlots;
+}
+
+export interface ExecutionHostAndroidEmulator {
+  systemImages: { id: string; apiLevel: number; abi: string }[];
+  avds: string[];
+  slots: ExecutionHostDeviceSlots;
+}
+
+/**
+ * A host's identity and probed tools: the body of authenticated `GET /v0/host`
+ * (`host.profile.v1`, MAR-3699). Never part of public `/health`.
+ *
+ * Traits are open ids such as `xcode`, `ios.simulator` and `android.emulator`,
+ * which a session start may require. Device inventories are optional: absence
+ * makes no claim about installed devices. `checkedAt` is when the probe ran.
+ */
+export interface ExecutionHostProfile {
+  id: string;
+  label: string;
+  platform: ExecutionHostPlatform;
+  traits: string[];
+  toolchains: ExecutionHostToolchain[];
+  devices?: {
+    iosSimulator?: ExecutionHostIosSimulator;
+    androidEmulator?: ExecutionHostAndroidEmulator;
+  };
+  checkedAt: string;
 }
 
 /**
@@ -678,6 +738,13 @@ export interface ExecutionStartRequest {
   protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
   providerId: string;
   config: ExecutionStartConfig;
+  /**
+   * Traits this session needs, such as `ios.simulator` (MAR-3699). A host
+   * advertising `host.profile.v1` checks all of them before starting, and
+   * refuses a missing trait with a readable 400. Absent or empty means none.
+   * Older hosts may ignore this field; check the capability before relying on it.
+   */
+  requires?: string[];
   metadata?: ExecutionSessionMetadata | null;
   workspace?: ExecutionWorkspaceSource;
   callback?: ExecutionCallbackConfig;

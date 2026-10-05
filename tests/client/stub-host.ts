@@ -3,6 +3,7 @@ import {
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
 } from "../../src/index.js";
+import { linuxHostProfileFixture } from "../fixtures/host-profile-fixtures.js";
 
 /**
  * A stub execution host behind a fake `fetch`: the routes agents-daemon serves
@@ -57,6 +58,9 @@ export interface StubHost {
   healthBody: unknown;
   healthStatus: number;
   metaStatus: number;
+  hostBody: unknown;
+  hostStatus: number;
+  hostRequests: Array<{ authorization: string | null }>;
   projectsBody: unknown;
   /** The answer to `GET /v0/providers`; agents-daemon's catalogue by default. */
   providersBody: unknown;
@@ -123,6 +127,9 @@ export function createStubHost(): StubHost {
     healthBody: HEALTH_BODY,
     healthStatus: 200,
     metaStatus: 200,
+    hostBody: linuxHostProfileFixture,
+    hostStatus: 200,
+    hostRequests: [],
     projectsBody: { projects: [] },
     providersBody: PROVIDERS_BODY,
     providersStatus: 200,
@@ -213,6 +220,10 @@ export function createStubHost(): StubHost {
         return json(host.healthBody, host.healthStatus);
       }
       if (!authorized) return json({ error: "Unauthorized" }, 401);
+      if (path === "/v0/host") {
+        host.hostRequests.push({ authorization: headers.get("Authorization") });
+        return json(host.hostBody, host.hostStatus);
+      }
       if (path === "/v0/meta") return json({ providers: [] }, host.metaStatus);
       if (path === "/v0/projects") return json(host.projectsBody);
       if (path === "/v0/providers") {

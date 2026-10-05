@@ -13,6 +13,7 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.decodeExecutionCommandEnvelope, "function");
   assert.equal(typeof loaded.decodeExecutionSessionPatchRequest, "function");
   assert.equal(typeof loaded.decodeExecutionProviderListResponse, "function");
+  assert.equal(typeof loaded.decodeExecutionHostProfile, "function");
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");
   // The root is the contract: the client is reachable only by its subpath.
   assert.equal(loaded.createExecutionHostClient, undefined);
@@ -33,6 +34,7 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof client.followSession, "function");
   assert.equal(typeof client.patchSession, "function");
   assert.equal(typeof client.providers, "function");
+  assert.equal(typeof client.host, "function");
   assert.equal(typeof client.deleteSession, "function");
 }
 
