@@ -302,6 +302,14 @@ export function decodeExecutionStartRequest(
     return failure("invalid-envelope");
   const config = decodeStartConfig(base.value.config);
   if (!config.ok) return config;
+  // Dropping a malformed requirement would start work on a host the caller
+  // did not ask for. Unknown trait ids stay intact for the host to decide.
+  if (
+    base.value.requires !== undefined &&
+    !isStringArray(base.value.requires)
+  ) {
+    return failure("invalid-payload");
+  }
   const metadata = decodeOptionalMetadata(base.value.metadata);
   if (!metadata.ok) return metadata;
   const workspace = decodeOptionalWorkspace(base.value.workspace);
@@ -323,6 +331,10 @@ export function decodeExecutionStartRequest(
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     providerId: base.value.providerId,
     config: config.value,
+    ...optionalProperty(
+      "requires",
+      base.value.requires as string[] | undefined,
+    ),
     ...optionalProperty("metadata", metadata.value),
     ...optionalProperty("workspace", workspace.value),
     ...optionalProperty("callback", callback.value),
