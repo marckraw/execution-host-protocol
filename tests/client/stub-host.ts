@@ -71,6 +71,8 @@ export interface StubHost {
   deleteStatus: number;
   startRequests: Array<Record<string, unknown>>;
   startStatus: number;
+  /** What a start refused by `startStatus` answers with. */
+  startRefusal: unknown;
   startBody: ((request: Record<string, unknown>) => unknown) | null;
   commandRequests: Array<{ sessionId: string; body: Record<string, unknown> }>;
   commandStatus: number;
@@ -137,6 +139,7 @@ export function createStubHost(): StubHost {
     deleteStatus: 200,
     startRequests: [],
     startStatus: 201,
+    startRefusal: { error: "Provider claude failed to start" },
     startBody: null,
     commandRequests: [],
     commandStatus: 202,
@@ -238,10 +241,7 @@ export function createStubHost(): StubHost {
           return json({ error: `Session already exists: ${sessionId}` }, 409);
         }
         if (host.startStatus !== 201) {
-          return json(
-            { error: "Provider claude failed to start" },
-            host.startStatus,
-          );
+          return json(host.startRefusal, host.startStatus);
         }
         host.sessions.add(sessionId);
         return json(

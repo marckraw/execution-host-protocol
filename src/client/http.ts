@@ -46,6 +46,55 @@ export class ExecutionHostError extends Error {
   }
 }
 
+/**
+ * `requirements-unenforced`: the host does not advertise `start.requires.v1`,
+ * so it might ignore `requires` and start anyway; nothing was sent.
+ * `requirements-unmet`: the host refused the start because it lacks traits.
+ */
+export type ExecutionStartRequirementsErrorCode =
+  "requirements-unenforced" | "requirements-unmet";
+
+/**
+ * A start whose `requires` this host cannot be trusted with (MAR-3725): one a
+ * caller can branch on to say "this host can't run iOS work", without reading
+ * the host's prose. Either way, no session was started.
+ */
+export class ExecutionStartRequirementsError extends Error {
+  readonly code: ExecutionStartRequirementsErrorCode;
+  readonly operation = "start";
+  /** What the start required. */
+  readonly requires: string[];
+  /** The traits the host said it lacks; null when it was never asked. */
+  readonly missingTraits: string[] | null;
+  /** The host's status for its refusal; null when nothing was sent. */
+  readonly status: number | null;
+  /** Safe to show: the host's words, or why nothing was sent. */
+  readonly reason: string;
+
+  constructor(
+    code: ExecutionStartRequirementsErrorCode,
+    reason: string,
+    details: {
+      requires: string[];
+      missingTraits?: string[] | null;
+      status?: number | null;
+    },
+  ) {
+    const status = details.status ?? null;
+    super(
+      `start failed: ${status === null ? code : `HTTP ${status}`}: ${reason}`,
+    );
+    this.name = "ExecutionStartRequirementsError";
+    this.code = code;
+    this.requires = [...details.requires];
+    this.missingTraits = details.missingTraits
+      ? [...details.missingTraits]
+      : null;
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
 export function kindOfStatus(status: number): ExecutionHostErrorKind {
   if (status === 401 || status === 403) return "auth";
   if (status === 404) return "not-found";
@@ -102,20 +151,33 @@ export async function reasonOf(
   response: Response,
   scrub: Scrub,
 ): Promise<string> {
+  return reasonOfText(await refusalText(response), response.status, scrub);
+}
+
+/** A refusal's body, or nothing when it cannot be read. */
+export async function refusalText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    // Unreadable: the status speaks for it.
+    return "";
+  }
+}
+
+/** `reasonOf`, for a body already read. */
+export function reasonOfText(
+  body: string,
+  status: number,
+  scrub: Scrub,
+): string {
   // Scrubbed before it is cut, so a cut never leaves the start of a token.
-  const reason = scrub(await rawReasonOf(response));
+  const reason = scrub(rawReasonOf(body, status));
   return reason.length > MAX_REASON_LENGTH
     ? `${reason.slice(0, MAX_REASON_LENGTH)}…`
     : reason;
 }
 
-async function rawReasonOf(response: Response): Promise<string> {
-  let body = "";
-  try {
-    body = await response.text();
-  } catch {
-    // Unreadable: the status speaks for it.
-  }
+function rawReasonOf(body: string, status: number): string {
   try {
     const parsed: unknown = JSON.parse(body);
     if (typeof parsed === "object" && parsed !== null) {
@@ -132,7 +194,7 @@ async function rawReasonOf(response: Response): Promise<string> {
     // Not JSON: its text says it.
   }
   const text = body.trim();
-  return text === "" ? `HTTP ${response.status}` : text;
+  return text === "" ? `HTTP ${status}` : text;
 }
 
 export function joinUrl(baseUrl: string, path: string): string {

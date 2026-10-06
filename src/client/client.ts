@@ -8,7 +8,10 @@ import {
   encodeExecutionSessionPatchRequest,
   encodeExecutionStartRequest,
 } from "../codecs.js";
-import { decodeExecutionHostProfile } from "../host-profile.js";
+import {
+  decodeExecutionHostProfile,
+  decodeExecutionStartRequirementsRefusal,
+} from "../host-profile.js";
 import {
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionActor,
@@ -29,6 +32,7 @@ import {
 } from "./follow.js";
 import {
   evaluateExecutionHostHandshake,
+  hostEnforcesStartRequirements,
   parseExecutionHostHealth,
   type ExecutionHostHandshake,
   type ExecutionHostHealth,
@@ -36,11 +40,14 @@ import {
 } from "./health.js";
 import {
   ExecutionHostError,
+  ExecutionStartRequirementsError,
   failureOf,
   joinUrl,
   kindOfStatus,
   positiveMs,
   reasonOf,
+  reasonOfText,
+  refusalText,
   scrubberFor,
   seconds,
   startDeadline,
@@ -86,6 +93,14 @@ export interface ExecutionRequestOptions {
   signal?: AbortSignal;
   /** Overrides the client's timeout for this request. */
   timeoutMs?: number;
+}
+
+export interface ExecutionHostProfileOptions extends ExecutionRequestOptions {
+  /**
+   * Hears what the profile had to drop to be read — an unreadable toolchain,
+   * runtime or device family, each at its path — so a drop is never silent.
+   */
+  onWarnings?(warnings: ExecutionDecodeWarning[]): void;
 }
 
 export interface ExecutionCommandOptions extends ExecutionRequestOptions {
@@ -154,9 +169,11 @@ export interface ExecutionHostClient {
   /**
    * Authenticated `GET /v0/host`: identity, traits and device inventory
    * (`host.profile.v1`, MAR-3699). Uses the health timeout. An older host's
-   * 404 is an `ExecutionHostError`, not an empty profile.
+   * 404 is an `ExecutionHostError`, not an empty profile. An unreadable
+   * inventory entry is dropped and told to `onWarnings`; an unreadable
+   * identity or platform is `malformed`, naming the field (MAR-3725).
    */
-  host(options?: ExecutionRequestOptions): Promise<ExecutionHostProfile>;
+  host(options?: ExecutionHostProfileOptions): Promise<ExecutionHostProfile>;
   /** The Projects the host advertises (`GET /v0/projects`). */
   projects(options?: ExecutionRequestOptions): Promise<ExecutionProject[]>;
   /**
@@ -166,7 +183,14 @@ export interface ExecutionHostClient {
    * read of what the host already knows.
    */
   providers(options?: ExecutionRequestOptions): Promise<ExecutionProvider[]>;
-  /** Starts a session with its first turn. The request's `commandId` is minted when absent. */
+  /**
+   * Starts a session with its first turn. The request's `commandId` is minted
+   * when absent. A start that `requires` traits first reads `/health`, and is
+   * refused here, unsent, with an `ExecutionStartRequirementsError` when the
+   * host does not advertise `start.requires.v1`; the host's own refusal of a
+   * trait it lacks is the same error (MAR-3725). Without `requires`, nothing
+   * changes: one request, as before.
+   */
   start(
     request: ExecutionStartRequest,
     options?: ExecutionRequestOptions,
@@ -455,10 +479,16 @@ export function createExecutionHostClient(
           if (!response.ok) throw await refusal("host", response);
           const decoded = decodeExecutionHostProfile(await body.json());
           if (!decoded.ok) {
-            throw new ExecutionHostError("malformed", decoded.reason, {
-              operation: "host",
-              status: response.status,
-            });
+            throw new ExecutionHostError(
+              "malformed",
+              decoded.path === undefined
+                ? decoded.reason
+                : `${decoded.reason} at ${decoded.path}`,
+              { operation: "host", status: response.status },
+            );
+          }
+          if (decoded.warnings?.length) {
+            notify(requestOptions.onWarnings, decoded.warnings);
           }
           return decoded.value;
         },
@@ -516,6 +546,19 @@ export function createExecutionHostClient(
     start: async (startRequest, requestOptions = {}) => {
       const commandId = commandIdFor(startRequest.commandId);
       const sessionId = startRequest.config.sessionId;
+      const requires = startRequest.requires ?? [];
+      // A host that predates `requires` drops it and starts anyway, so the
+      // only safe place to refuse is here, before it is sent (MAR-3725).
+      if (requires.length > 0) {
+        const probed = await health({ signal: requestOptions.signal });
+        if (!hostEnforcesStartRequirements(probed)) {
+          throw new ExecutionStartRequirementsError(
+            "requirements-unenforced",
+            `the host does not advertise start.requires.v1, so it could start without ${requires.join(", ")}; nothing was sent`,
+            { requires },
+          );
+        }
+      }
       return request(
         "start",
         "/v0/execution/sessions",
@@ -531,7 +574,36 @@ export function createExecutionHostClient(
             await response.body?.cancel().catch(() => {});
             return { status: "exists", sessionId, commandId };
           }
-          if (!response.ok) throw await refusal("start", response);
+          if (!response.ok) {
+            const text = await refusalText(response);
+            const reason = reasonOfText(
+              text,
+              response.status,
+              connection.scrub,
+            );
+            const unmet = decodeExecutionStartRequirementsRefusal(
+              parseOrNull(text),
+            );
+            if (unmet.ok) {
+              throw new ExecutionStartRequirementsError(
+                "requirements-unmet",
+                reason,
+                {
+                  requires,
+                  missingTraits: unmet.value.missingTraits,
+                  status: response.status,
+                },
+              );
+            }
+            throw new ExecutionHostError(
+              kindOfStatus(response.status),
+              reason,
+              {
+                operation: "start",
+                status: response.status,
+              },
+            );
+          }
           const echo = await body.json();
           const echoed = isRecord(echo) ? echo.sessionId : undefined;
           // An answer about another session is not an answer about this one,
@@ -736,6 +808,14 @@ function randomCommandId(): string {
   if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
   // Unique within a session is all a command id needs to be.
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function parseOrNull(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

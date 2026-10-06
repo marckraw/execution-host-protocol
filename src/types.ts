@@ -59,12 +59,19 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "evidence.v1",
   /** The host takes `stop-task`: one task stopped, the session left running (MAR-3679). */
   "commands.stopTask.v1",
-  /** Authenticated `GET /v0/host` and trait requirements on session starts (MAR-3699). */
+  /** Authenticated `GET /v0/host`: the host's identity and probed tools (MAR-3699). */
   "host.profile.v1",
   /** The host reports its probed iOS Simulator inventory (MAR-3699). */
   "devices.iosSimulator.v1",
   /** The host reports its probed Android Emulator inventory (MAR-3699). */
   "devices.androidEmulator.v1",
+  /**
+   * The host checks a start's `requires` against its traits before preparing
+   * anything, and refuses one it cannot meet with `requirements-unmet`
+   * (MAR-3725). A host without it may ignore `requires` and start anyway, so
+   * the shared client refuses such a start itself, before sending it.
+   */
+  "start.requires.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -103,8 +110,23 @@ export interface ExecutionHostIosSimulator {
   slots: ExecutionHostDeviceSlots;
 }
 
+export interface ExecutionHostAndroidSystemImage {
+  /** The SDK package path, e.g. `system-images;android-36.1;google_apis;arm64-v8a`. */
+  id: string;
+  /**
+   * A positive number: the platform's API level with its minor level when it
+   * has one (`36`, `36.1`), as the SDK repository's `api-level` names it. A
+   * preview image carries the level it builds on, and its `codename`. Read
+   * `id` for the exact package; as a number, `37.0` is `37`.
+   */
+  apiLevel: number;
+  /** A preview's codename (`CANARY`, `Baklava`); absent on a stable release. */
+  codename?: string;
+  abi: string;
+}
+
 export interface ExecutionHostAndroidEmulator {
-  systemImages: { id: string; apiLevel: number; abi: string }[];
+  systemImages: ExecutionHostAndroidSystemImage[];
   avds: string[];
   slots: ExecutionHostDeviceSlots;
 }
@@ -116,6 +138,9 @@ export interface ExecutionHostAndroidEmulator {
  * Traits are open ids such as `xcode`, `ios.simulator` and `android.emulator`,
  * which a session start may require. Device inventories are optional: absence
  * makes no claim about installed devices. `checkedAt` is when the probe ran.
+ *
+ * It carries no `protocolVersion`: the version is negotiated once, on
+ * `/health`, and the profile grows by capability ids (MAR-3725).
  */
 export interface ExecutionHostProfile {
   id: string;
@@ -128,6 +153,21 @@ export interface ExecutionHostProfile {
     androidEmulator?: ExecutionHostAndroidEmulator;
   };
   checkedAt: string;
+}
+
+/** The `code` of a host's refusal of a start whose `requires` it cannot meet. */
+export const EXECUTION_START_REQUIREMENTS_UNMET = "requirements-unmet";
+
+/**
+ * The body of a host's refusal of a start whose `requires` it cannot meet
+ * (`start.requires.v1`, MAR-3725), sent with a 400 before anything is
+ * prepared. `code` is what a client branches on; `error` is for a person.
+ */
+export interface ExecutionStartRequirementsRefusal {
+  error: string;
+  code: typeof EXECUTION_START_REQUIREMENTS_UNMET;
+  /** The required traits this host does not have; never empty. */
+  missingTraits: string[];
 }
 
 /**
@@ -740,9 +780,10 @@ export interface ExecutionStartRequest {
   config: ExecutionStartConfig;
   /**
    * Traits this session needs, such as `ios.simulator` (MAR-3699). A host
-   * advertising `host.profile.v1` checks all of them before starting, and
-   * refuses a missing trait with a readable 400. Absent or empty means none.
-   * Older hosts may ignore this field; check the capability before relying on it.
+   * advertising `start.requires.v1` checks all of them before starting, and
+   * refuses a missing trait with an `ExecutionStartRequirementsRefusal`.
+   * Absent or empty means none. A host without that capability may ignore
+   * this field, so the shared client refuses to send it there (MAR-3725).
    */
   requires?: string[];
   metadata?: ExecutionSessionMetadata | null;
@@ -982,6 +1023,11 @@ export type ExecutionDecodeResult<T> =
   | {
       ok: false;
       reason: ExecutionDecodeFailureReason;
+      /**
+       * Present only from `decodeExecutionHostProfile`: the field that made
+       * the whole answer unreadable, such as `platform.os` (MAR-3725).
+       */
+      path?: string;
       /**
        * Present only from `decodeExecutionEventEnvelope`, with reason
        * `unknown-kind`: where the unknown envelope sat, so a stream reader can

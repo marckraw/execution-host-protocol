@@ -307,19 +307,40 @@ with no device tools reports empty traits and toolchains and may omit
 `devices`; the reader never infers tools from the OS. A toolchain has an `id`,
 `version`, and optional `build`.
 
+The profile carries no `protocolVersion`, unlike the provider list. The
+version is negotiated once, on `/health`, whose descriptor already gates the
+endpoint, and the profile grows by capability ids such as the device ones
+below. A `protocolVersion` a host sends anyway is an unknown field, ignored.
+
 Device capabilities advertise probed inventories:
 
 - `devices.iosSimulator.v1`: `devices.iosSimulator` has `runtimes` (each an
   `id`, `name`, `version`), `deviceTypes` (ids), and `slots`.
 - `devices.androidEmulator.v1`: `devices.androidEmulator` has `systemImages`
-  (each an `id`, positive integer `apiLevel`, `abi`), `avds` (names), and
+  (each an `id`, `apiLevel`, optional `codename`, `abi`), `avds` (names), and
   `slots`.
+
+A system image's `id` is its SDK package path, e.g.
+`system-images;android-36.1;google_apis;arm64-v8a`. `apiLevel` is a positive
+number, the level the Android SDK repository gives it: `36`, or `36.1` for a
+minor release. A preview carries the level it builds on and its `codename`
+(`CANARY`), and an extension image (`android-36-ext19`) the level it extends.
+As a number `37.0` reads `37`; the `id` is the exact package.
 
 Each `slots` contains non-negative integer `inUse` and `max` (a non-negative
 integer, or null when no limit is reported). These are a snapshot, not a
 reservation. Absent inventories are unknown, not fabricated empty inventories.
-Unknown fields are ignored; malformed known fields, even in optional device
-inventories or toolchain builds, make the profile unreadable.
+
+**One bad entry costs only itself.** The host's identity and platform (`id`,
+`label`, `platform.os`, `platform.arch`, `platform.osVersion`, `checkedAt`),
+and the `traits` and `toolchains` arrays themselves, are strict: one unreadable
+is `invalid-payload`, with the field at the result's `path`, and `host()`
+throws `malformed` naming it. The inventory degrades: an unreadable trait,
+toolchain, runtime, device type, system image or AVD is dropped, and so is a
+device family whose lists or `slots` cannot be read, or a `devices` that is
+not an object. Each drop is a `dropped-invalid-field` warning at its path
+(`toolchains.0`, `devices.iosSimulator`), heard by `host({ onWarnings })`.
+A drop can only under-claim; it never invents a tool.
 
 **Authenticated only.** `/health` advertises the capability ids, never the
 profile or device inventory. `health()` and `handshake()` keep their existing
@@ -332,14 +353,37 @@ Absent or empty requires none. Present requirements must be an array of
 non-empty strings; an invalid one is `invalid-payload`, never dropped.
 Unknown trait ids remain intact for the host to decide.
 
-A host advertising `host.profile.v1` checks every required trait against its
-profile before preparing a workspace or starting a provider, and refuses a
-missing trait with a readable `400`, for example
-`Missing required host traits: ios.simulator`. The client surfaces its reason
-as an `ExecutionHostError`. The host is authoritative: a cached profile may
-be stale. A client must check `host.profile.v1` before relying on `requires`,
-since hosts predating this addition may ignore it. Device allocation and
-probing are the host implementation's work, outside this package.
+**Only a host that says so enforces it.** A host predating `requires` drops
+it, as it drops any unknown field, and starts the session anyway. So
+enforcement has its own capability id, `start.requires.v1`, apart from
+`host.profile.v1`: serving a profile is not checking a start. A host
+advertising it checks every required trait against its profile before
+preparing a workspace or starting a provider. It refuses a missing one with a
+`400` whose body is an `ExecutionStartRequirementsRefusal`:
+
+```json
+{
+  "error": "Missing required host traits: ios.simulator",
+  "code": "requirements-unmet",
+  "missingTraits": ["ios.simulator"]
+}
+```
+
+`code` is what a client branches on; `error` is for a person. The host is
+authoritative: a cached profile may be stale.
+
+The shared client makes this mechanical. `start()` with a non-empty
+`requires` first reads `/health`. When the host does not advertise
+`start.requires.v1`, it throws `ExecutionStartRequirementsError` with
+`code: "requirements-unenforced"`, and the start is never sent. The host's
+coded refusal is the same error with `code: "requirements-unmet"`, its
+`missingTraits` and `status`. Either way no session started, and a caller can
+say "this host can't run iOS work" without reading prose. Any other refusal
+stays an `ExecutionHostError`. A start without `requires` is unchanged: one
+request, no probe. `hostEnforcesStartRequirements(health)` asks the same
+question of a `health()` or `handshake()` result ahead of time. Device
+allocation and probing are the host implementation's work, outside this
+package.
 
 ## The client
 
@@ -392,7 +436,10 @@ takes), `snapshot()` (null for a session the host does not have),
 on), `deleteSession()` (teardown) and `events()` — one connection, decoded but
 not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
-`not-found`, `http`, `malformed`), the status, and the host's own words.
+`not-found`, `http`, `malformed`), the status, and the host's own words. The
+one exception is a start whose `requires` the host cannot be trusted with:
+`ExecutionStartRequirementsError` (see
+[start requirements](#host-identity-devices-and-start-requirements)).
 
 **The token** goes in the `Authorization` header and nowhere else. One no
 header could carry — a line break, a control character, anything outside ASCII

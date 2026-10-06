@@ -1,5 +1,12 @@
 import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
+  isNonEmptyString,
+  isNonNegativeInteger,
+  isPositiveInteger,
+  isRecord,
+  isStringArray,
+} from "./guards.js";
+import {
   EXECUTION_ACTOR_KINDS,
   EXECUTION_ATTENTION_STATES,
   EXECUTION_PROTOCOL_VERSION,
@@ -2262,14 +2269,8 @@ function parseBase(
   return success(parsed);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function isOptionalRecord(value: unknown): boolean {
   return value === undefined || isRecord(value);
-}
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
 }
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
@@ -2292,15 +2293,6 @@ function isOptionalSelectionId(value: unknown): boolean {
     value === null ||
     isBoundedString(value, MODEL_SELECTION_MAX_LENGTH)
   );
-}
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(isNonEmptyString);
-}
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1;
-}
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 function isItemState(
   value: unknown,
