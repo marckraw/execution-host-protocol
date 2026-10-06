@@ -155,6 +155,90 @@ The host answers with the selection the next turn will run on:
   `model` and `effort`; a host that does not report them leaves both absent,
   which is not the same as reporting the defaults.
 
+## Files beside images
+
+A `send-message` and a start's `config` carry `inlineAttachments`: an array of
+`ExecutionInlineAttachment`, each an image or, on a host advertising
+`attachments.inline-file.v1`, a file (MAR-3783):
+
+```json
+[
+  {
+    "kind": "image",
+    "name": "diagram.png",
+    "mimeType": "image/png",
+    "sizeBytes": 3,
+    "dataBase64": "AQID"
+  },
+  {
+    "kind": "file",
+    "name": "notes.pdf",
+    "mimeType": "application/pdf",
+    "sizeBytes": 3,
+    "dataBase64": "AQID"
+  }
+]
+```
+
+The decoders read both kinds. A `kind` they do not know fails the whole
+command or start (`invalid-payload`); it is never dropped, since a message
+delivered without part of what was sent with it is worse than a refused one.
+
+**What a host promises under `attachments.inline-file.v1`.**
+
+- It keeps each file for that session only, and tells the agent where to
+  read it.
+- It never opens, unpacks, runs or renders a file. What the agent does with
+  it is the agent's turn, like anything else it reads.
+- `name` and `mimeType` are the sender's words, trusted for nothing: not as a
+  path, not as a type.
+- The file goes when the session is torn down.
+
+A host without the id refuses the whole command, text included, with a `400`,
+so a person's message would be lost with the file.
+
+**The limits**, for images and files together, are agents-daemon's image
+limits, exported as constants:
+
+| Constant                                       | Limit                            |
+| ---------------------------------------------- | -------------------------------- |
+| `EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT`       | 4 attachments a command or start |
+| `EXECUTION_INLINE_ATTACHMENT_MAX_BYTES`        | 10 MiB each, decoded             |
+| `EXECUTION_INLINE_ATTACHMENTS_MAX_TOTAL_BYTES` | 20 MiB together, decoded         |
+
+`dataBase64` is padded standard base64, and `sizeBytes` is exactly the length
+it decodes to. A host refuses the whole command past any of them.
+`checkExecutionInlineAttachments(attachments)` checks all of this without
+decoding a byte, and says how many entries are files; a problem names the
+entry by its `index`, never by its name.
+
+**The shared client never sends a file to a host that has not said it takes
+one.** `command()` with a `send-message`, and `start()`, check
+`inlineAttachments` first; past a limit, or malformed, they throw an
+`ExecutionInlineAttachmentsError` (codes `invalid`, `too-many`, `too-large`,
+`size-mismatch`, `total-too-large`) and send nothing. That holds for images
+too: the host would have refused them whole. Then a request carrying a
+`kind: "file"` entry reads `/health`, within the health timeout or the
+caller's `timeoutMs` when shorter (a start with `requires` shares the one
+read). A host that does not advertise the id, or whose descriptor is
+unreadable, is refused here, unsent, with code `files-unsupported`; a failed
+probe is its `ExecutionHostError` with `operation: "health"`. A request
+without a file is unchanged: no probe, one request, the same bytes.
+`hostTakesInlineFiles(health)` asks the question ahead of time.
+
+**No error carries a file.** The client's own refusals name an entry by index.
+A host's refusal may quote a file's name (agents-daemon's do), and a
+transport's error the body being sent, so for a request carrying a file the
+client carries neither: an `ExecutionHostError` keeps its `kind` and `status`
+but its `reason` is the client's own sentence and it has no `cause`, and a
+`requirements-unmet` start keeps `missingTraits` but not the host's `error`. A
+caller's own abort is handed back as it came.
+
+One race is left: a host rolled back between the probe and the send refuses
+the command with its `400`, as above. Nothing is half-delivered: the caller
+gets that `400` as an `ExecutionHostError`, and can send the text again
+without the file.
+
 ## New kinds without breaking old readers
 
 Readers have always ignored unknown _fields_; an unknown _kind_ used to fail the
@@ -588,6 +672,10 @@ which is not `false`), the `effortLevels` it takes as a whole, and its
 or else its provider's `effortLevels`, which is also what a provider's default
 model takes. A provider or model with no `id` or `slug`, or an effort without an
 `id`, makes the catalogue `malformed` rather than a picker offering a guess.
+A provider's `attachmentKinds` are the kinds it takes (`features.attachmentKinds`,
+in the host's own words: `image`, `pdf`); absent when the host does not say, or
+says it in a shape this build cannot read, which is unknown, not none
+(MAR-3783).
 
 **Teardown** is `deleteSession(sessionId)`, `DELETE /v0/execution/sessions/:id`:
 the host stops the provider, drops the workspace and the log, and ends the

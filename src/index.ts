@@ -1,3 +1,4 @@
+export * from "./attachments.js";
 export * from "./codecs.js";
 export * from "./harness-evidence-codecs.js";
 export * from "./harness-evidence.js";

@@ -20,6 +20,8 @@ for (const loaded of [commonJs, esModule]) {
   );
   assert.equal(loaded.EXECUTION_START_REQUIREMENTS_UNMET, "requirements-unmet");
   assert.equal(typeof loaded.confirmsExecutionStartRequirements, "function");
+  assert.equal(typeof loaded.checkExecutionInlineAttachments, "function");
+  assert.equal(loaded.EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT, 4);
   // Shared guards are internal to the contract.
   assert.equal(loaded.isRecord, undefined);
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");
@@ -35,6 +37,8 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof loaded.ExecutionHostError, "function");
   assert.equal(typeof loaded.ExecutionStartRequirementsError, "function");
   assert.equal(typeof loaded.hostEnforcesStartRequirements, "function");
+  assert.equal(typeof loaded.ExecutionInlineAttachmentsError, "function");
+  assert.equal(typeof loaded.hostTakesInlineFiles, "function");
   assert.equal(typeof loaded.decodeExecutionSessionSnapshot, "function");
   const client = loaded.createExecutionHostClient({
     baseUrl: "http://127.0.0.1:1",

@@ -35,7 +35,7 @@ import {
   type ExecutionHostCommandEnvelope,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
-  type ExecutionInlineImageAttachment,
+  type ExecutionInlineAttachment,
   type ExecutionInteractionFormField,
   type ExecutionInteractionQuestion,
   type ExecutionInteractionRequest,
@@ -1051,7 +1051,7 @@ function decodeCommand(
   if (typeof raw.text !== "string") return failure("invalid-payload");
   if (raw.attachments !== undefined && !Array.isArray(raw.attachments))
     return failure("invalid-payload");
-  const inlineAttachments = decodeOptionalInlineImageAttachments(
+  const inlineAttachments = decodeOptionalInlineAttachments(
     raw.inlineAttachments,
   );
   if (!inlineAttachments.ok) return inlineAttachments;
@@ -1421,7 +1421,7 @@ function decodeStartConfig(
     return failure("invalid-payload");
   const permissionConfig = decodeOptionalPermissionConfig(raw.permissionConfig);
   if (!permissionConfig.ok) return permissionConfig;
-  const inlineAttachments = decodeOptionalInlineImageAttachments(
+  const inlineAttachments = decodeOptionalInlineAttachments(
     raw.inlineAttachments,
   );
   if (!inlineAttachments.ok) return inlineAttachments;
@@ -1665,6 +1665,12 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
   const levels = isRecord(raw.features) ? raw.features.effortLevels : undefined;
   if (levels !== undefined && !isStringArray(levels)) return null;
   const effortLevels = levels ?? [];
+  // Optional and read tolerantly (MAR-3783): an older host never sent it,
+  // and a shape this build cannot read is not worth the whole catalogue.
+  const kinds = isRecord(raw.features)
+    ? raw.features.attachmentKinds
+    : undefined;
+  const attachmentKinds = isStringArray(kinds) ? [...kinds] : undefined;
 
   const models: ExecutionProviderModel[] = [];
   for (const entry of raw.models ?? []) {
@@ -1683,6 +1689,7 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
     ),
     effortLevels,
     models,
+    ...optionalProperty("attachmentKinds", attachmentKinds),
   };
 }
 
@@ -2026,17 +2033,22 @@ function decodeOptionalPermissionConfig(
   });
 }
 
-function decodeOptionalInlineImageAttachments(
+/**
+ * Images, and files beside them (MAR-3783). A `kind` this build does not know
+ * fails the whole list, as a host refuses the whole command: dropping one
+ * would deliver a message without part of what was sent with it.
+ */
+function decodeOptionalInlineAttachments(
   raw: unknown,
-): ExecutionDecodeResult<ExecutionInlineImageAttachment[] | undefined> {
+): ExecutionDecodeResult<ExecutionInlineAttachment[] | undefined> {
   if (raw === undefined) return success(undefined);
   if (!Array.isArray(raw)) return failure("invalid-payload");
 
-  const attachments: ExecutionInlineImageAttachment[] = [];
+  const attachments: ExecutionInlineAttachment[] = [];
   for (const item of raw) {
     if (
       !isRecord(item) ||
-      item.kind !== "image" ||
+      (item.kind !== "image" && item.kind !== "file") ||
       !isNonEmptyString(item.name) ||
       !isNonEmptyString(item.mimeType) ||
       !Number.isSafeInteger(item.sizeBytes) ||
@@ -2046,7 +2058,7 @@ function decodeOptionalInlineImageAttachments(
       return failure("invalid-payload");
     }
     attachments.push({
-      kind: "image",
+      kind: item.kind,
       name: item.name,
       mimeType: item.mimeType,
       sizeBytes: item.sizeBytes as number,
