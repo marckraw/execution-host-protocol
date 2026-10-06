@@ -1,3 +1,4 @@
+import { isRecord } from "./guards.js";
 import type { ExecutionDecodeResult } from "./types.js";
 
 /**
@@ -6,9 +7,16 @@ import type { ExecutionDecodeResult } from "./types.js";
  * workspace, no session, and nothing remembered afterwards. The prompt is data
  * the caller may not trust; the host runs it as nothing more.
  *
- * The body is agents-daemon's route as it already is: `{ providerId, model,
- * effort?, prompt, timeoutMs? }`, answered with `{ text }`.
+ * The body is agents-daemon's route as it already is — `{ providerId, model,
+ * effort?, prompt, timeoutMs? }`, answered with `{ text }` — plus one required
+ * field, `contract: "oneshot.v1"`. A daemon released before `oneshot.v1` reads
+ * the body strictly and refuses a field it does not know, so it refuses the
+ * request rather than run an untrusted prompt with its tools on, whatever its
+ * `/health` said a moment before.
  */
+
+/** The value of a one-shot request's `contract`: the promise it is asked under. */
+export const EXECUTION_ONESHOT_CONTRACT = "oneshot.v1";
 
 /** The longest prompt, in UTF-16 code units (JavaScript string length). */
 export const EXECUTION_ONESHOT_PROMPT_MAX_LENGTH = 65_536;
@@ -26,6 +34,11 @@ export const EXECUTION_ONESHOT_DEFAULT_TIMEOUT_MS = 45_000;
 const ONESHOT_ID_MAX_LENGTH = 256;
 
 export interface ExecutionOneShotRequest {
+  /**
+   * Always `oneshot.v1`. A host that accepts it keeps the `oneshot.v1` promise
+   * for this call; a request without it is not a `oneshot.v1` request.
+   */
+  contract: typeof EXECUTION_ONESHOT_CONTRACT;
   /** The provider the host answers with: `claude`, `codex`, … */
   providerId: string;
   /** The model it runs, as the host's catalogue names it. */
@@ -72,6 +85,7 @@ export interface ExecutionOneShotRefusal {
 }
 
 const ONESHOT_REQUEST_FIELDS: ReadonlySet<string> = new Set([
+  "contract",
   "providerId",
   "model",
   "effort",
@@ -88,6 +102,7 @@ export function encodeExecutionOneShotRequest(
   request: ExecutionOneShotRequest,
 ): string {
   return JSON.stringify({
+    contract: request.contract,
     providerId: request.providerId,
     model: request.model,
     ...(request.effort === undefined ? {} : { effort: request.effort }),
@@ -102,7 +117,8 @@ export function encodeExecutionOneShotRequest(
  * Reads the body of `POST /v0/oneshot`, as a host does. Strict, unlike the
  * protocol's readers of answers: a field this build does not know is refused,
  * not ignored, because a one-shot that silently dropped what a newer caller
- * asked for would answer a different question.
+ * asked for would answer a different question. `contract` must be exactly
+ * `oneshot.v1`.
  */
 export function decodeExecutionOneShotRequest(
   raw: string,
@@ -116,6 +132,7 @@ export function decodeExecutionOneShotRequest(
   if (
     !isRecord(value) ||
     !Object.keys(value).every((field) => ONESHOT_REQUEST_FIELDS.has(field)) ||
+    value.contract !== EXECUTION_ONESHOT_CONTRACT ||
     !isOneShotId(value.providerId) ||
     !isOneShotId(value.model) ||
     !(value.effort === undefined || isOneShotId(value.effort)) ||
@@ -127,6 +144,7 @@ export function decodeExecutionOneShotRequest(
   return {
     ok: true,
     value: {
+      contract: EXECUTION_ONESHOT_CONTRACT,
       providerId: value.providerId,
       model: value.model,
       ...(value.effort === undefined ? {} : { effort: value.effort }),
@@ -198,8 +216,4 @@ function isOneShotTimeout(value: unknown): value is number {
     value >= 1 &&
     value <= EXECUTION_ONESHOT_TIMEOUT_MAX_MS
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

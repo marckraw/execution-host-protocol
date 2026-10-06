@@ -102,6 +102,7 @@ describe("oneShot", () => {
     expect(host.oneShotRequests).toEqual([
       {
         body: JSON.stringify({
+          contract: "oneshot.v1",
           providerId: "claude",
           model: "claude-haiku-4-5-20251001",
           effort: "low",
@@ -119,6 +120,7 @@ describe("oneShot", () => {
     await client().oneShot(ASK);
 
     expect(JSON.parse(host.oneShotRequests[0]!.body)).toEqual({
+      contract: "oneshot.v1",
       providerId: "claude",
       model: "claude-haiku-4-5-20251001",
       prompt: PROMPT,
@@ -162,6 +164,28 @@ describe("oneShot", () => {
       expect(requests).toEqual([{ method: "GET", path: "/health" }]);
     });
 
+    it.each([
+      "oneshot.v2",
+      "oneshot.v10",
+      "oneshot.v1 ",
+      " oneshot.v1",
+      "Oneshot.v1",
+      "oneshot",
+    ])("is refused when it advertises only the near miss %j", async (near) => {
+      host.healthBody = {
+        ...HEALTH_BODY,
+        executionProtocol: {
+          ...HEALTH_BODY.executionProtocol,
+          capabilities: [...HEALTH_BODY.executionProtocol.capabilities, near],
+        },
+      };
+
+      const error = await failureOf(client().oneShot(ASK));
+
+      expect(error).toMatchObject({ code: "unsupported", sent: false });
+      expect(requests).toEqual([{ method: "GET", path: "/health" }]);
+    });
+
     it("is a health error, unsent, when /health cannot be read", async () => {
       host.healthStatus = 503;
 
@@ -170,6 +194,43 @@ describe("oneShot", () => {
       expect(error).toBeInstanceOf(ExecutionHostError);
       expect(error).toMatchObject({ operation: "health", status: 503 });
       expect(host.oneShotRequests).toEqual([]);
+    });
+  });
+
+  describe("a host released before oneshot.v1 that advertises it anyway", () => {
+    // Rolled back between the probe and the POST, or lying: only the body's
+    // `contract` stands between the prompt and a route with tools on.
+    it("refuses the request on its contract, and never runs the prompt", async () => {
+      host.oneShotRoute = "released";
+
+      const error = await failureOf(client().oneShot(ASK));
+
+      expect(error).toBeInstanceOf(ExecutionOneShotError);
+      expect(error).toMatchObject({
+        code: "rejected",
+        status: 400,
+        sent: true,
+      });
+      expect(host.oneShotRequests).toHaveLength(1);
+      expect(host.oneShotRuns).toEqual([]);
+    });
+
+    it("runs a request without the contract: the stub is the released route", async () => {
+      host.oneShotRoute = "released";
+
+      // What a client without the field would send.
+      const response = await host.fetch("https://host.test/v0/oneshot", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${host.token}` },
+        body: JSON.stringify({
+          providerId: "claude",
+          model: ASK.model,
+          prompt: PROMPT,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(host.oneShotRuns).toEqual([PROMPT]);
     });
   });
 
@@ -183,7 +244,8 @@ describe("oneShot", () => {
       // The code wins where the host gave a known one.
       [503, "busy", "busy"],
       // Uncoded, the status says it: agents-daemon's route as it is.
-      [404, null, "provider-unknown"],
+      // A 404 with no code is no route — a proxy's, or a host without it.
+      [404, null, "unsupported"],
       [422, null, "provider-unavailable"],
       [503, null, "provider-unavailable"],
       [429, null, "busy"],
@@ -215,6 +277,36 @@ describe("oneShot", () => {
         expect(host.oneShotRequests).toHaveLength(1);
       },
     );
+
+    it("reads a refusal's body to 64 KiB and no further", async () => {
+      let sent = 0;
+      let cancelled = false;
+      // A finite refusal, 1 MiB long, that would be read whole without a cap.
+      const chunk = new TextEncoder().encode("x".repeat(16 * 1024));
+      const long = () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (sent >= 1024 * 1024) return controller.close();
+              sent += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 503 },
+        );
+
+      const error = await failureOf(client(answering(long)).oneShot(ASK));
+
+      expect(error).toMatchObject({
+        code: "provider-unavailable",
+        status: 503,
+      });
+      expect(cancelled).toBe(true);
+      expect(sent).toBeLessThanOrEqual(64 * 1024 + 3 * chunk.byteLength);
+    });
 
     it("is provider-unknown for a provider the host does not have", async () => {
       const error = await failureOf(
@@ -343,6 +435,8 @@ describe("oneShot", () => {
       ["a fractional timeout", { timeoutMs: 1.5 }],
       ["a timeout past 120 s", { timeoutMs: 120_001 }],
       ["a timeout that is not a number", { timeoutMs: "5000" as never }],
+      ["tools it does not take", { tools: ["Bash"] } as never],
+      ["a workspace it does not take", { workspace: "/srv/app" } as never],
     ])("%s", async (_case, change) => {
       const error = await failureOf(
         client().oneShot({ ...ASK, prompt: `${PROMPT} BLUEBIRD`, ...change }),
@@ -365,6 +459,34 @@ describe("oneShot", () => {
     });
   });
 
+  it("lets the caller's abort end the /health probe, and sends nothing", async () => {
+    const controller = new AbortController();
+    const reason = new Error("navigated away");
+    const stalled: typeof globalThis.fetch = (input, init) =>
+      String(input).endsWith("/health")
+        ? new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(init.signal!.reason),
+            );
+            setTimeout(() => controller.abort(reason), 5);
+          })
+        : host.fetch(input, init);
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test/",
+      token: host.token,
+      fetch: counting(stalled),
+      // Short, so a probe deaf to the caller fails as a timeout, not a hang.
+      healthTimeoutMs: 200,
+    });
+
+    const error = await failureOf(
+      connection.oneShot({ ...ASK, signal: controller.signal }),
+    );
+
+    expect(error).toBe(reason);
+    expect(requests).toEqual([{ method: "GET", path: "/health" }]);
+  });
+
   it("rethrows the caller's abort as it came", async () => {
     const controller = new AbortController();
     const reason = new Error("navigated away");
@@ -378,6 +500,31 @@ describe("oneShot", () => {
     );
 
     expect(error).toBe(reason);
+  });
+
+  it("says a broken connection in its own words, whatever fetch quoted", async () => {
+    // A fetch whose own error quotes the request it failed to send.
+    const quoting: typeof globalThis.fetch = (input, init) =>
+      String(input).endsWith("/v0/oneshot")
+        ? Promise.reject(
+            Object.assign(
+              new TypeError(`fetch failed sending ${String(init?.body)}`),
+              { cause: new Error(`socket closed after ${String(init?.body)}`) },
+            ),
+          )
+        : host.fetch(input, init);
+
+    const error = await failureOf(client(quoting).oneShot(ASK));
+
+    expect(error).toBeInstanceOf(ExecutionHostError);
+    expect(error).toMatchObject({
+      kind: "network",
+      operation: "oneshot",
+      status: null,
+      reason: "the connection to the host failed",
+    });
+    expect((error as Error).cause).toBeUndefined();
+    expect(everythingIn(error)).not.toContain("BLUEBIRD");
   });
 
   it("is a network error, quoting no prompt, when the host cannot be reached", async () => {

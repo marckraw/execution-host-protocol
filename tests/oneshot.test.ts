@@ -12,6 +12,7 @@ import {
 } from "../src/index.js";
 
 const REQUEST = {
+  contract: "oneshot.v1" as const,
   providerId: "codex",
   model: "gpt-5.5",
   prompt: "Name this session",
@@ -26,16 +27,17 @@ describe("one-shot requests", () => {
     expect(
       encodeExecutionOneShotRequest({
         timeoutMs: 30_000,
+        contract: "oneshot.v1",
         prompt: "Name this session",
         effort: "low",
         model: "gpt-5.5",
         providerId: "codex",
       }),
     ).toBe(
-      '{"providerId":"codex","model":"gpt-5.5","effort":"low","prompt":"Name this session","timeoutMs":30000}',
+      '{"contract":"oneshot.v1","providerId":"codex","model":"gpt-5.5","effort":"low","prompt":"Name this session","timeoutMs":30000}',
     );
     expect(encodeExecutionOneShotRequest(REQUEST)).toBe(
-      '{"providerId":"codex","model":"gpt-5.5","prompt":"Name this session"}',
+      '{"contract":"oneshot.v1","providerId":"codex","model":"gpt-5.5","prompt":"Name this session"}',
     );
   });
 
@@ -48,6 +50,7 @@ describe("one-shot requests", () => {
 
   it("takes the caps exactly", () => {
     const atCaps = {
+      contract: "oneshot.v1",
       providerId: "p".repeat(256),
       model: "m".repeat(256),
       effort: "e".repeat(256),
@@ -60,8 +63,18 @@ describe("one-shot requests", () => {
   it.each<[string, Record<string, unknown>]>([
     ["a field it does not know", { ...REQUEST, tools: ["Bash"] }],
     ["a session", { ...REQUEST, sessionId: "session-1" }],
-    ["no provider", { model: "gpt-5.5", prompt: "hi" }],
-    ["no prompt", { providerId: "codex", model: "gpt-5.5" }],
+    ["no provider", { contract: "oneshot.v1", model: "gpt-5.5", prompt: "hi" }],
+    [
+      "no prompt",
+      { contract: "oneshot.v1", providerId: "codex", model: "gpt-5.5" },
+    ],
+    [
+      "no contract: the route as released, not a oneshot.v1 request",
+      { providerId: "codex", model: "gpt-5.5", prompt: "hi" },
+    ],
+    ["another contract", { ...REQUEST, contract: "oneshot.v2" }],
+    ["a near-miss contract", { ...REQUEST, contract: "oneshot.v1 " }],
+    ["a null contract", { ...REQUEST, contract: null }],
     ["a blank prompt", { ...REQUEST, prompt: "  \n" }],
     [
       "a prompt over the cap",

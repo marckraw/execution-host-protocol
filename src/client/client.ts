@@ -10,12 +10,6 @@ import {
 } from "../codecs.js";
 import { decodeExecutionHostProfile } from "../host-profile.js";
 import {
-  decodeExecutionOneShotRequest,
-  decodeExecutionOneShotResponse,
-  encodeExecutionOneShotRequest,
-  EXECUTION_ONESHOT_DEFAULT_TIMEOUT_MS,
-} from "../oneshot.js";
-import {
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionActor,
   type ExecutionDecodeWarning,
@@ -56,12 +50,14 @@ import { notify } from "./listeners.js";
 import {
   ExecutionOneShotError,
   ONESHOT_ANSWER_MAX_BYTES,
-  ONESHOT_GRACE_MS,
   ONESHOT_REFUSAL_MAX_BYTES,
+  oneShotBody,
+  oneShotDeadlineMs,
   oneShotFailure,
   oneShotRefusal,
-  parseOrNull,
+  oneShotUnreachable,
   readAtMost,
+  readOneShotAnswer,
   type ExecutionOneShotOptions,
   type ExecutionOneShotResult,
 } from "./oneshot.js";
@@ -252,9 +248,11 @@ export interface ExecutionHostClient {
    * before anything is sent. Then it reads `/health` (the health timeout; a
    * failed probe is its `ExecutionHostError`, operation `health`), and a host
    * that does not advertise `oneshot.v1` is refused here, unsent, as
-   * `ExecutionOneShotError` code `unsupported`. Every refusal after that is
-   * an `ExecutionOneShotError` too; only a host that cannot be reached is an
-   * `ExecutionHostError`. No error carries the prompt, the answer or the token.
+   * `ExecutionOneShotError` code `unsupported`. The body always carries
+   * `contract: "oneshot.v1"`, which a host released before the id refuses
+   * whatever its `/health` said. Every refusal is an `ExecutionOneShotError`
+   * too; only a host that cannot be reached is an `ExecutionHostError`, in the
+   * client's own words. No error carries the prompt, the answer or the token.
    */
   oneShot(options: ExecutionOneShotOptions): Promise<ExecutionOneShotResult>;
 }
@@ -753,23 +751,9 @@ export function createExecutionHostClient(
         followOptions,
       ),
 
-    oneShot: async ({ provider, signal, ...asked }) => {
-      const body = encodeExecutionOneShotRequest({
-        providerId: provider,
-        model: asked.model,
-        ...(asked.effort === undefined ? {} : { effort: asked.effort }),
-        prompt: asked.prompt,
-        ...(asked.timeoutMs === undefined
-          ? {}
-          : { timeoutMs: asked.timeoutMs }),
-      });
-      // Checked here, where the mistake is, rather than refused by the host;
-      // the message never repeats the prompt.
-      if (!decodeExecutionOneShotRequest(body).ok) {
-        throw new TypeError(
-          "A one-shot names a provider and a model, each an id of 1 to 256 characters that is not blank, an effort only as such an id, a prompt that is not blank and at most 65536 characters, and a timeoutMs only as a whole number of milliseconds from 1 to 120000",
-        );
-      }
+    oneShot: async (oneShotOptions) => {
+      const body = oneShotBody(oneShotOptions);
+      const { signal } = oneShotOptions;
       // A host that serves the route without advertising `oneshot.v1` has
       // not promised to run the prompt as nothing more than a prompt, so the
       // only safe place to refuse is here, before it is sent (MAR-3775).
@@ -783,9 +767,7 @@ export function createExecutionHostClient(
           { sent: false },
         );
       }
-      const timeoutMs =
-        (asked.timeoutMs ?? EXECUTION_ONESHOT_DEFAULT_TIMEOUT_MS) +
-        ONESHOT_GRACE_MS;
+      const timeoutMs = oneShotDeadlineMs(oneShotOptions.timeoutMs);
       try {
         return await request(
           "oneshot",
@@ -817,15 +799,15 @@ export function createExecutionHostClient(
                 `it is longer than ${ONESHOT_ANSWER_MAX_BYTES} bytes`,
               );
             }
-            const decoded = decodeExecutionOneShotResponse(parseOrNull(text));
-            if (!decoded.ok) {
+            const decoded = readOneShotAnswer(text);
+            if (decoded === null) {
               throw oneShotFailure(
                 "malformed",
                 response.status,
                 "it has no text, or text longer than 65536 characters",
               );
             }
-            return decoded.value;
+            return decoded;
           },
         );
       } catch (error) {
@@ -841,6 +823,13 @@ export function createExecutionHostClient(
             null,
             `no answer within ${seconds(timeoutMs)}`,
           );
+        }
+        if (
+          error instanceof ExecutionHostError &&
+          error.kind === "network" &&
+          !signal?.aborted
+        ) {
+          throw oneShotUnreachable();
         }
         throw error;
       }

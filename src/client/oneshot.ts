@@ -1,7 +1,13 @@
 import {
   decodeExecutionOneShotRefusal,
+  decodeExecutionOneShotRequest,
+  decodeExecutionOneShotResponse,
+  encodeExecutionOneShotRequest,
+  EXECUTION_ONESHOT_CONTRACT,
+  EXECUTION_ONESHOT_DEFAULT_TIMEOUT_MS,
   type ExecutionOneShotRefusalCode,
 } from "../oneshot.js";
+import { ExecutionHostError } from "./http.js";
 
 export interface ExecutionOneShotOptions {
   /** The provider the host answers with: `claude`, `codex`, … */
@@ -26,7 +32,8 @@ export interface ExecutionOneShotResult {
 
 /**
  * `unsupported`: the host does not advertise `oneshot.v1`, or its descriptor
- * is unreadable; nothing was sent.
+ * is unreadable, and nothing was sent; or it answered 404 with no code, as a
+ * host without the route, or a proxy, does.
  * `provider-unknown`, `provider-unavailable`, `busy`, `failed`: the host's
  * refusal, by its code or else its status.
  * `timed-out`: the host's 504, or no answer before the client's deadline.
@@ -49,7 +56,7 @@ export class ExecutionOneShotError extends Error {
   readonly operation = "oneshot";
   /** The host's status; null when it gave none, or nothing was sent. */
   readonly status: number | null;
-  /** False only for `unsupported`: the prompt never left the client. */
+  /** False when the client refused it before sending: the prompt never left. */
   readonly sent: boolean;
   readonly reason: string;
 
@@ -82,10 +89,8 @@ export const ONESHOT_REFUSAL_MAX_BYTES = 64 * 1024;
 /** How long past the provider's timeout the client waits for the host. */
 export const ONESHOT_GRACE_MS = 10_000;
 
-const REASONS: Record<
-  Exclude<ExecutionOneShotErrorCode, "unsupported">,
-  string
-> = {
+const REASONS: Record<ExecutionOneShotErrorCode, string> = {
+  unsupported: "the host has no one-shot route",
   "provider-unknown": "the host has no such provider",
   "provider-unavailable": "the provider cannot answer one-shots now",
   busy: "the host is answering as many one-shots as it will",
@@ -98,19 +103,20 @@ const REASONS: Record<
 /**
  * What a refusal means: the host's code where it gave a known one, else its
  * status. A 401 or 403 is the token's, whatever the body says — it may be a
- * proxy's.
+ * proxy's. A 404 with no code is no route, not an unknown provider: a host
+ * with the route names its 404.
  */
 export function oneShotRefusal(
   status: number,
   body: string,
 ): ExecutionOneShotError {
-  let code: Exclude<ExecutionOneShotErrorCode, "unsupported" | "malformed">;
+  let code: Exclude<ExecutionOneShotErrorCode, "malformed">;
   const coded =
     status === 401 || status === 403
       ? null
       : decodeExecutionOneShotRefusal(parseOrNull(body));
   if (coded?.ok) code = coded.value.code;
-  else if (status === 404) code = "provider-unknown";
+  else if (status === 404) code = "unsupported";
   else if (status === 422 || status === 503) code = "provider-unavailable";
   else if (status === 429) code = "busy";
   else if (status === 504) code = "timed-out";
@@ -120,6 +126,19 @@ export function oneShotRefusal(
     status,
     sent: true,
   });
+}
+
+/**
+ * A one-shot that never reached the host, in the client's own words. Not the
+ * transport's: a `fetch` may quote the request it failed to send, prompt and
+ * all, so neither its message nor the error itself is carried.
+ */
+export function oneShotUnreachable(): ExecutionHostError {
+  return new ExecutionHostError(
+    "network",
+    "the connection to the host failed",
+    { operation: "oneshot" },
+  );
 }
 
 export function oneShotFailure(
@@ -169,7 +188,60 @@ export async function readAtMost(
   return new TextDecoder().decode(bytes);
 }
 
-export function parseOrNull(text: string): unknown {
+/** The answer in a 2xx body, or null when it is not one. */
+export function readOneShotAnswer(text: string): ExecutionOneShotResult | null {
+  const decoded = decodeExecutionOneShotResponse(parseOrNull(text));
+  return decoded.ok ? decoded.value : null;
+}
+
+const ONESHOT_OPTIONS: ReadonlySet<string> = new Set([
+  "provider",
+  "model",
+  "effort",
+  "prompt",
+  "timeoutMs",
+  "signal",
+]);
+
+/**
+ * The body of a one-shot, always under `contract: "oneshot.v1"`, or a
+ * `TypeError` before anything is sent. An option it does not know is refused,
+ * not dropped: a caller who passed `tools` must learn it asked for nothing.
+ * No message repeats the prompt.
+ */
+export function oneShotBody(options: ExecutionOneShotOptions): string {
+  const unknown = Object.keys(options).filter(
+    (key) => !ONESHOT_OPTIONS.has(key),
+  );
+  if (unknown.length > 0) {
+    throw new TypeError(
+      `A one-shot takes provider, model, effort, prompt, timeoutMs and signal, and nothing else; it has no ${unknown.join(", ")}`,
+    );
+  }
+  const body = encodeExecutionOneShotRequest({
+    contract: EXECUTION_ONESHOT_CONTRACT,
+    providerId: options.provider,
+    model: options.model,
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
+    prompt: options.prompt,
+    ...(options.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: options.timeoutMs }),
+  });
+  if (!decodeExecutionOneShotRequest(body).ok) {
+    throw new TypeError(
+      "A one-shot names a provider and a model, each an id of 1 to 256 characters that is not blank, an effort only as such an id, a prompt that is not blank and at most 65536 characters, and a timeoutMs only as a whole number of milliseconds from 1 to 120000",
+    );
+  }
+  return body;
+}
+
+/** How long the client waits: the provider's time, then the host's grace. */
+export function oneShotDeadlineMs(timeoutMs: number | undefined): number {
+  return (timeoutMs ?? EXECUTION_ONESHOT_DEFAULT_TIMEOUT_MS) + ONESHOT_GRACE_MS;
+}
+
+function parseOrNull(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
   } catch {

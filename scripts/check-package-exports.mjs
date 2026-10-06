@@ -15,7 +15,6 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.decodeExecutionProviderListResponse, "function");
   assert.equal(typeof loaded.decodeExecutionHostProfile, "function");
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");
-  assert.equal(typeof loaded.decodeExecutionOneShotResponse, "function");
   // The root is the contract: the client is reachable only by its subpath.
   assert.equal(loaded.createExecutionHostClient, undefined);
 }
@@ -26,7 +25,6 @@ const esModuleClient = await import(`${packageName}/client`);
 for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof loaded.createExecutionHostClient, "function");
   assert.equal(typeof loaded.ExecutionHostError, "function");
-  assert.equal(typeof loaded.ExecutionOneShotError, "function");
   assert.equal(typeof loaded.decodeExecutionSessionSnapshot, "function");
   const client = loaded.createExecutionHostClient({
     baseUrl: "http://127.0.0.1:1",
@@ -38,6 +36,21 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof client.providers, "function");
   assert.equal(typeof client.host, "function");
   assert.equal(typeof client.deleteSession, "function");
+}
+
+// One-shots (MAR-3775): the contract at the root, the method and its error on
+// the client.
+for (const loaded of [commonJs, esModule]) {
+  assert.equal(typeof loaded.decodeExecutionOneShotResponse, "function");
+  assert.equal(loaded.EXECUTION_ONESHOT_CONTRACT, "oneshot.v1");
+}
+for (const loaded of [commonJsClient, esModuleClient]) {
+  assert.equal(typeof loaded.ExecutionOneShotError, "function");
+  const client = loaded.createExecutionHostClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "check",
+    fetch: async () => new Response(null, { status: 503 }),
+  });
   assert.equal(typeof client.oneShot, "function");
 }
 

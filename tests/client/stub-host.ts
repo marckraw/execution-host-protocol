@@ -95,6 +95,15 @@ export interface StubHost {
   oneShotCode: string | null;
   /** The answer to a one-shot; by default a line naming what was asked. */
   oneShotAnswer: ((request: Record<string, unknown>) => unknown) | null;
+  /**
+   * `released`: the route as agents-daemon ships it before `oneshot.v1` —
+   * a strict schema of `providerId`, `model`, `effort`, `prompt` and
+   * `timeoutMs` that answers 400 to any other field, `contract` included,
+   * and runs whatever it accepts with tools on. Whatever `/health` says.
+   */
+  oneShotRoute: "oneshot.v1" | "released";
+  /** The prompts the host actually ran. */
+  oneShotRuns: string[];
 }
 
 const encoder = new TextEncoder();
@@ -162,6 +171,8 @@ export function createStubHost(): StubHost {
     oneShotStatus: 200,
     oneShotCode: null,
     oneShotAnswer: null,
+    oneShotRoute: "oneshot.v1",
+    oneShotRuns: [],
 
     emit(event, sessionId = "session-1") {
       const envelope: ExecutionHostEventEnvelope = {
@@ -252,7 +263,10 @@ export function createStubHost(): StubHost {
           body: raw,
           authorization: headers.get("Authorization"),
         });
-        const decoded = decodeExecutionOneShotRequest(raw);
+        const decoded =
+          host.oneShotRoute === "released"
+            ? releasedOneShotSchema(raw)
+            : decodeExecutionOneShotRequest(raw);
         if (!decoded.ok) return json({ error: "Validation error" }, 400);
         const { providerId, model, effort, prompt } = decoded.value;
         if (host.oneShotStatus !== 200) {
@@ -270,6 +284,7 @@ export function createStubHost(): StubHost {
             404,
           );
         }
+        host.oneShotRuns.push(prompt);
         return json(
           host.oneShotAnswer?.({ ...decoded.value }) ?? {
             text: `${providerId}/${model}/${effort ?? "default"} read ${prompt.length} characters`,
@@ -431,6 +446,51 @@ export function createStubHost(): StubHost {
     },
   };
   return host;
+}
+
+/**
+ * agents-daemon's `oneShotRequestSchema` as released (`src/routes/validation.ts`
+ * on master): `z.object({...}).strict()`, so a field it does not know is a 400.
+ */
+function releasedOneShotSchema(raw: string):
+  | {
+      ok: true;
+      value: {
+        providerId: string;
+        model: string;
+        effort?: string;
+        prompt: string;
+      };
+    }
+  | { ok: false } {
+  const body = JSON.parse(raw) as Record<string, unknown>;
+  const known = new Set([
+    "providerId",
+    "model",
+    "effort",
+    "prompt",
+    "timeoutMs",
+  ]);
+  const id = (value: unknown) =>
+    typeof value === "string" && value.trim() !== "";
+  if (
+    !Object.keys(body).every((field) => known.has(field)) ||
+    !id(body.providerId) ||
+    !id(body.model) ||
+    !(body.effort === undefined || id(body.effort)) ||
+    !id(body.prompt)
+  ) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    value: body as {
+      providerId: string;
+      model: string;
+      effort?: string;
+      prompt: string;
+    },
+  };
 }
 
 function abortError(signal: AbortSignal): unknown {
