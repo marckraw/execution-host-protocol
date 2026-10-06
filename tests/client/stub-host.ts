@@ -1,8 +1,8 @@
 import {
-  checkExecutionInlineAttachments,
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
+  checkExecutionInlineAttachments,
   type ExecutionInlineAttachment,
 } from "../../src/index.js";
 import { linuxHostProfileFixture } from "../fixtures/host-profile-fixtures.js";
