@@ -46,6 +46,79 @@ export class ExecutionHostError extends Error {
   }
 }
 
+/**
+ * `requirements-unenforced`: the host does not advertise `start.requires.v1`,
+ * or its descriptor is unreadable, so it might ignore `requires` and start
+ * anyway; nothing was sent.
+ * `requirements-unmet`: the host refused the start because it lacks traits.
+ * `requirements-unconfirmed`: the host's 201, or its 409 for a session it
+ * already has, does not echo the traits it checked, so the session may run
+ * without them. After a 201 the client tries to delete it; see
+ * `sessionDeleted`.
+ */
+export type ExecutionStartRequirementsErrorCode =
+  "requirements-unenforced" | "requirements-unmet" | "requirements-unconfirmed";
+
+/**
+ * A start whose `requires` this host cannot be trusted with (MAR-3725): one a
+ * caller can branch on to say "this host can't run iOS work", without reading
+ * the host's prose. Not an `ExecutionHostError`: a caller converting errors
+ * checks for both. Unenforced or unmet, no session started. Unconfirmed, one
+ * runs or ran: `sessionId` names it, and `sessionDeleted` says what became
+ * of it.
+ */
+export class ExecutionStartRequirementsError extends Error {
+  readonly code: ExecutionStartRequirementsErrorCode;
+  readonly operation = "start";
+  /** What the start required. */
+  readonly requires: string[];
+  /**
+   * The required traits the host said it lacks: only ones in `requires`,
+   * never the host's own words. Null when it was not asked, or named none.
+   */
+  readonly missingTraits: string[] | null;
+  /** The host's status for its answer; null when nothing was sent. */
+  readonly status: number | null;
+  /** The session the host started or holds without confirming; null otherwise. */
+  readonly sessionId: string | null;
+  /**
+   * Unconfirmed after a 201, which created the session: true when the client
+   * deleted it (or the host no longer had it), false when deleting failed
+   * and it may still run. Null otherwise, a 409 included: that session is
+   * older than the request, and the client leaves it alone.
+   */
+  readonly sessionDeleted: boolean | null;
+  /** Safe to show: the host's words, or why nothing was sent. */
+  readonly reason: string;
+
+  constructor(
+    code: ExecutionStartRequirementsErrorCode,
+    reason: string,
+    details: {
+      requires: string[];
+      missingTraits?: string[] | null;
+      status?: number | null;
+      sessionId?: string | null;
+      sessionDeleted?: boolean | null;
+    },
+  ) {
+    const status = details.status ?? null;
+    super(
+      `start failed: ${status === null ? code : `HTTP ${status}`}: ${reason}`,
+    );
+    this.name = "ExecutionStartRequirementsError";
+    this.code = code;
+    this.requires = [...details.requires];
+    this.missingTraits = details.missingTraits
+      ? [...details.missingTraits]
+      : null;
+    this.status = status;
+    this.sessionId = details.sessionId ?? null;
+    this.sessionDeleted = details.sessionDeleted ?? null;
+    this.reason = reason;
+  }
+}
+
 export function kindOfStatus(status: number): ExecutionHostErrorKind {
   if (status === 401 || status === 403) return "auth";
   if (status === 404) return "not-found";
@@ -102,20 +175,38 @@ export async function reasonOf(
   response: Response,
   scrub: Scrub,
 ): Promise<string> {
+  return reasonOfText(await refusalText(response), response.status, scrub);
+}
+
+/** A refusal's body, or nothing when it cannot be read. */
+export async function refusalText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    // Unreadable: the status speaks for it.
+    return "";
+  }
+}
+
+/** `reasonOf`, for a body already read. */
+export function reasonOfText(
+  body: string,
+  status: number,
+  scrub: Scrub,
+): string {
+  return boundedReason(rawReasonOf(body, status), scrub);
+}
+
+/** A host's words made safe to carry: the token out, then cut to length. */
+export function boundedReason(text: string, scrub: Scrub): string {
   // Scrubbed before it is cut, so a cut never leaves the start of a token.
-  const reason = scrub(await rawReasonOf(response));
+  const reason = scrub(text);
   return reason.length > MAX_REASON_LENGTH
     ? `${reason.slice(0, MAX_REASON_LENGTH)}…`
     : reason;
 }
 
-async function rawReasonOf(response: Response): Promise<string> {
-  let body = "";
-  try {
-    body = await response.text();
-  } catch {
-    // Unreadable: the status speaks for it.
-  }
+function rawReasonOf(body: string, status: number): string {
   try {
     const parsed: unknown = JSON.parse(body);
     if (typeof parsed === "object" && parsed !== null) {
@@ -132,7 +223,7 @@ async function rawReasonOf(response: Response): Promise<string> {
     // Not JSON: its text says it.
   }
   const text = body.trim();
-  return text === "" ? `HTTP ${response.status}` : text;
+  return text === "" ? `HTTP ${status}` : text;
 }
 
 export function joinUrl(baseUrl: string, path: string): string {

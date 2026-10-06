@@ -76,6 +76,17 @@ export function parseExecutionHostHealth(
 }
 
 /**
+ * Whether the host checks a start's `requires` before starting
+ * (`start.requires.v1`, MAR-3725). A host that does not may ignore them and
+ * start anyway, so `start()` will not send them there.
+ */
+export function hostEnforcesStartRequirements(
+  health: Pick<ExecutionHostHealth, "capabilities">,
+): boolean {
+  return health.capabilities.includes("start.requires.v1");
+}
+
+/**
  * `connected` — the host answered, speaks a protocol this client knows, and
  * accepted the token. `unauthorized` — it answered and refused the token, or
  * there is none. `incompatible` — it answered in a version this client does
