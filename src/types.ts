@@ -65,6 +65,12 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "devices.iosSimulator.v1",
   /** The host reports its probed Android Emulator inventory (MAR-3699). */
   "devices.androidEmulator.v1",
+  /**
+   * The host answers `POST /v0/oneshot`: one answer to one prompt from one of
+   * its providers, with no tools, no workspace, no session, and nothing kept
+   * afterwards (MAR-3775).
+   */
+  "oneshot.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];

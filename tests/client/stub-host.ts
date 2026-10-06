@@ -1,4 +1,5 @@
 import {
+  decodeExecutionOneShotRequest,
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
@@ -83,6 +84,17 @@ export interface StubHost {
   sessions: Set<string>;
   snapshots: Map<string, unknown>;
   token: string;
+  /** Every one-shot request: its body exactly as sent, and its token. */
+  oneShotRequests: Array<{ body: string; authorization: string | null }>;
+  /**
+   * Status the next one-shots answer with. A refusal quotes the prompt and the
+   * token on purpose, as no host should, to show neither reaches an error.
+   */
+  oneShotStatus: number;
+  /** The `code` a refusal carries; null sends none. */
+  oneShotCode: string | null;
+  /** The answer to a one-shot; by default a line naming what was asked. */
+  oneShotAnswer: ((request: Record<string, unknown>) => unknown) | null;
 }
 
 const encoder = new TextEncoder();
@@ -146,6 +158,10 @@ export function createStubHost(): StubHost {
     sessions: new Set(["session-1"]),
     snapshots: new Map(),
     token: "stub-token",
+    oneShotRequests: [],
+    oneShotStatus: 200,
+    oneShotCode: null,
+    oneShotAnswer: null,
 
     emit(event, sessionId = "session-1") {
       const envelope: ExecutionHostEventEnvelope = {
@@ -228,6 +244,37 @@ export function createStubHost(): StubHost {
       if (path === "/v0/projects") return json(host.projectsBody);
       if (path === "/v0/providers") {
         return json(host.providersBody, host.providersStatus);
+      }
+
+      if (path === "/v0/oneshot" && method === "POST") {
+        const raw = String(init?.body);
+        host.oneShotRequests.push({
+          body: raw,
+          authorization: headers.get("Authorization"),
+        });
+        const decoded = decodeExecutionOneShotRequest(raw);
+        if (!decoded.ok) return json({ error: "Validation error" }, 400);
+        const { providerId, model, effort, prompt } = decoded.value;
+        if (host.oneShotStatus !== 200) {
+          return json(
+            {
+              error: `Refused ${prompt} for Bearer ${host.token}`,
+              ...(host.oneShotCode === null ? {} : { code: host.oneShotCode }),
+            },
+            host.oneShotStatus,
+          );
+        }
+        if (providerId !== "claude" && providerId !== "codex") {
+          return json(
+            { error: "Provider was not found", code: "provider-unknown" },
+            404,
+          );
+        }
+        return json(
+          host.oneShotAnswer?.({ ...decoded.value }) ?? {
+            text: `${providerId}/${model}/${effort ?? "default"} read ${prompt.length} characters`,
+          },
+        );
       }
 
       if (path === "/v0/execution/sessions" && method === "POST") {
