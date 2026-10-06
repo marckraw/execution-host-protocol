@@ -369,6 +369,11 @@ they do not know, so they refuse the request instead, whatever their `/health`
 said. A `oneshot.v1` host may go on taking requests without the field for the
 callers that already send them; those calls are not under the promise.
 
+What `contract` does not protect against: a host that ignores fields it does
+not know instead of refusing them, and a host that advertises `oneshot.v1`
+falsely. Either would take the request and run the prompt as it pleases, and
+the answer carries no proof of who wrote it or how.
+
 **Caps.** The prompt is not blank and at most 65,536 characters
 (`EXECUTION_ONESHOT_PROMPT_MAX_LENGTH`); the answer's `text` is at most 65,536
 characters (`EXECUTION_ONESHOT_TEXT_MAX_LENGTH`) and may be empty. Characters
@@ -382,13 +387,14 @@ a one-shot never silently answers a different question than it was asked.
 **Refusals** are a status and a body `{ error, code }`
 (`decodeExecutionOneShotRefusal`):
 
-| Status | `code`                 | Meaning                                                               |
-| ------ | ---------------------- | --------------------------------------------------------------------- |
-| 404    | `provider-unknown`     | The host has no provider by that id. Always sent with its `code`.     |
-| 503    | `provider-unavailable` | The provider is not installed, not signed in, or answers no one-shot. |
-| 429    | `busy`                 | The host is answering as many one-shots as it will.                   |
-| 504    | `timed-out`            | The provider did not answer within `timeoutMs`.                       |
-| 502    | `failed`               | The provider failed to answer.                                        |
+| Status | `code`                 | Meaning                                                                              |
+| ------ | ---------------------- | ------------------------------------------------------------------------------------ |
+| 404    | `provider-unknown`     | The host has no provider by that id. Always sent with its `code`.                    |
+| 503    | `provider-unavailable` | The provider is not installed, not signed in, or answers no one-shot.                |
+| 429    | `busy`                 | The host is answering as many one-shots as it will.                                  |
+| 504    | `timed-out`            | The provider did not answer within `timeoutMs`.                                      |
+| 502    | `failed`               | The provider failed to answer.                                                       |
+| 400    | `rejected`             | The host will not take the body: a field it does not know, or a value out of bounds. |
 
 A host's `error` is for its own logs. It never echoes the prompt or the
 answer, and the client does not repeat it either way.

@@ -67,6 +67,8 @@ export interface ExecutionOneShotResponse {
  * - `busy` (429): it is answering as many one-shots as it will.
  * - `timed-out` (504): the provider did not answer within `timeoutMs`.
  * - `failed` (502): the provider failed to answer.
+ * - `rejected` (400): it will not take the body — a field it does not know,
+ *   or a value out of bounds.
  */
 export const EXECUTION_ONESHOT_REFUSAL_CODES = [
   "provider-unknown",
@@ -74,6 +76,7 @@ export const EXECUTION_ONESHOT_REFUSAL_CODES = [
   "busy",
   "timed-out",
   "failed",
+  "rejected",
 ] as const;
 export type ExecutionOneShotRefusalCode =
   (typeof EXECUTION_ONESHOT_REFUSAL_CODES)[number];

@@ -51,11 +51,10 @@ import {
   ExecutionOneShotError,
   ONESHOT_ANSWER_MAX_BYTES,
   ONESHOT_REFUSAL_MAX_BYTES,
-  oneShotBody,
-  oneShotDeadlineMs,
   oneShotFailure,
   oneShotRefusal,
   oneShotUnreachable,
+  prepareOneShot,
   readAtMost,
   readOneShotAnswer,
   type ExecutionOneShotOptions,
@@ -752,8 +751,12 @@ export function createExecutionHostClient(
       ),
 
     oneShot: async (oneShotOptions) => {
-      const body = oneShotBody(oneShotOptions);
-      const { signal } = oneShotOptions;
+      // Every option read once, here, before anything is awaited.
+      const {
+        body,
+        deadlineMs: timeoutMs,
+        signal,
+      } = prepareOneShot(oneShotOptions);
       // A host that serves the route without advertising `oneshot.v1` has
       // not promised to run the prompt as nothing more than a prompt, so the
       // only safe place to refuse is here, before it is sent (MAR-3775).
@@ -767,7 +770,6 @@ export function createExecutionHostClient(
           { sent: false },
         );
       }
-      const timeoutMs = oneShotDeadlineMs(oneShotOptions.timeoutMs);
       try {
         return await request(
           "oneshot",

@@ -46,7 +46,8 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   /**
    * The host answers `POST /v0/oneshot`: one answer to one prompt from one of
    * its providers, with no tools, no workspace, no session, and nothing kept
-   * afterwards. It takes only requests that carry `contract: "oneshot.v1"`
+   * afterwards. The shared client always sends `contract: "oneshot.v1"`, and
+   * a host that accepts a request carrying it keeps that promise for the call
    * (MAR-3775).
    */
   "oneshot.v1",

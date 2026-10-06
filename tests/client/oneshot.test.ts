@@ -257,6 +257,10 @@ describe("oneShot", () => {
       // A code this build does not know is no code at all.
       [503, "melted", "provider-unavailable"],
       [400, "melted", "rejected"],
+      // A body the host will not take (agents-daemon #174), and the code
+      // winning over a status that would read otherwise.
+      [400, "rejected", "rejected"],
+      [503, "rejected", "rejected"],
       // A 401 is the token's, whatever the body claims: it may be a proxy's.
       [401, "busy", "rejected"],
       [403, null, "rejected"],
@@ -314,6 +318,45 @@ describe("oneShot", () => {
       );
 
       expect(error).toMatchObject({ code: "provider-unknown", status: 404 });
+    });
+
+    it("sends and waits by the options as they were at the call, whatever changes during the probe", async () => {
+      vi.useFakeTimers();
+      const options: ExecutionOneShotOptions = { ...ASK, timeoutMs: 1_000 };
+      let sent: unknown = null;
+      const meddling: typeof globalThis.fetch = (input, init) => {
+        if (String(input).endsWith("/health")) {
+          // The caller changes its object while /health is read.
+          options.timeoutMs = 3_600_000;
+          options.prompt = "something else entirely";
+          options.provider = "codex";
+          return host.fetch(input, init);
+        }
+        if (String(input).endsWith("/v0/oneshot")) {
+          sent = JSON.parse(String(init?.body));
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          });
+        }
+        return host.fetch(input, init);
+      };
+
+      const pending = failureOf(client(meddling).oneShot(options));
+      await vi.advanceTimersByTimeAsync(10_999);
+      expect(requests).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await pending;
+
+      expect(sent).toMatchObject({
+        providerId: "claude",
+        prompt: PROMPT,
+        timeoutMs: 1_000,
+      });
+      // The call's 1 s plus the grace, not the changed hour.
+      expect(error).toMatchObject({ code: "timed-out", status: null });
+      expect((error as Error).message).toContain("11 s");
     });
 
     it("is timed-out, with no status, when the host does not answer in time", async () => {

@@ -37,11 +37,12 @@ export interface ExecutionOneShotResult {
  * `provider-unknown`, `provider-unavailable`, `busy`, `failed`: the host's
  * refusal, by its code or else its status.
  * `timed-out`: the host's 504, or no answer before the client's deadline.
- * `rejected`: any other refusal (a 400, a 401, …); `status` says which.
+ * `rejected`: the host's 400 coded so — it will not take the body — or any
+ * other refusal (an uncoded 400, a 401, …); `status` says which.
  * `malformed`: a 2xx that is not a one-shot's answer, or is over the cap.
  */
 export type ExecutionOneShotErrorCode =
-  "unsupported" | ExecutionOneShotRefusalCode | "rejected" | "malformed";
+  "unsupported" | ExecutionOneShotRefusalCode | "malformed";
 
 /**
  * A one-shot that gave no answer (MAR-3775), with a code a caller branches on.
@@ -203,13 +204,26 @@ const ONESHOT_OPTIONS: ReadonlySet<string> = new Set([
   "signal",
 ]);
 
+/** A one-shot as asked, read from the caller's options once. */
+export interface PreparedOneShot {
+  /** The body, always under `contract: "oneshot.v1"`. */
+  body: string;
+  /** How long the client waits: the provider's time, then the host's grace. */
+  deadlineMs: number;
+  signal: AbortSignal | undefined;
+}
+
 /**
- * The body of a one-shot, always under `contract: "oneshot.v1"`, or a
- * `TypeError` before anything is sent. An option it does not know is refused,
- * not dropped: a caller who passed `tools` must learn it asked for nothing.
- * No message repeats the prompt.
+ * Reads every option once, before anything is awaited, so the body, the
+ * deadline and the signal are all the call's: a caller changing its options
+ * object while `/health` is read changes nothing. A `TypeError` before
+ * anything is sent for a value the protocol refuses, or an option it does not
+ * know — refused, not dropped: a caller who passed `tools` must learn it asked
+ * for nothing. No message repeats the prompt.
  */
-export function oneShotBody(options: ExecutionOneShotOptions): string {
+export function prepareOneShot(
+  options: ExecutionOneShotOptions,
+): PreparedOneShot {
   const unknown = Object.keys(options).filter(
     (key) => !ONESHOT_OPTIONS.has(key),
   );
@@ -218,27 +232,26 @@ export function oneShotBody(options: ExecutionOneShotOptions): string {
       `A one-shot takes provider, model, effort, prompt, timeoutMs and signal, and nothing else; it has no ${unknown.join(", ")}`,
     );
   }
+  const { provider, model, effort, prompt, timeoutMs, signal } = options;
   const body = encodeExecutionOneShotRequest({
     contract: EXECUTION_ONESHOT_CONTRACT,
-    providerId: options.provider,
-    model: options.model,
-    ...(options.effort === undefined ? {} : { effort: options.effort }),
-    prompt: options.prompt,
-    ...(options.timeoutMs === undefined
-      ? {}
-      : { timeoutMs: options.timeoutMs }),
+    providerId: provider,
+    model,
+    ...(effort === undefined ? {} : { effort }),
+    prompt,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
   if (!decodeExecutionOneShotRequest(body).ok) {
     throw new TypeError(
       "A one-shot names a provider and a model, each an id of 1 to 256 characters that is not blank, an effort only as such an id, a prompt that is not blank and at most 65536 characters, and a timeoutMs only as a whole number of milliseconds from 1 to 120000",
     );
   }
-  return body;
-}
-
-/** How long the client waits: the provider's time, then the host's grace. */
-export function oneShotDeadlineMs(timeoutMs: number | undefined): number {
-  return (timeoutMs ?? EXECUTION_ONESHOT_DEFAULT_TIMEOUT_MS) + ONESHOT_GRACE_MS;
+  return {
+    body,
+    deadlineMs:
+      (timeoutMs ?? EXECUTION_ONESHOT_DEFAULT_TIMEOUT_MS) + ONESHOT_GRACE_MS,
+    signal,
+  };
 }
 
 function parseOrNull(text: string): unknown {

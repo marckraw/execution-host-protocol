@@ -155,6 +155,7 @@ describe("one-shot refusals", () => {
       "busy",
       "timed-out",
       "failed",
+      "rejected",
     ]);
   });
 

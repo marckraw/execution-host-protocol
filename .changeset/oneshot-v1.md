@@ -9,8 +9,8 @@ the id refuses that field, so it never runs the prompt, even if its `/health`
 changed after the client read it. The root
 gains the request, answer and refusal types, their codecs, the caps (65,536
 characters of prompt and of answer, 120 s of provider time) and the refusal
-codes `provider-unknown`, `provider-unavailable`, `busy`, `timed-out` and
-`failed`.
+codes `provider-unknown`, `provider-unavailable`, `busy`, `timed-out`, `failed`
+and `rejected`.
 
 The client gains `oneShot({ provider, model, effort?, prompt, timeoutMs?, signal? })`,
 which resolves `{ text }`. It reads `/health` first and refuses a host that does
