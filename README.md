@@ -297,8 +297,9 @@ in when it learns it after the item was added.
 
 On a host advertising `host.profile.v1`, authenticated `GET /v0/host` returns
 an `ExecutionHostProfile` directly (no envelope). `decodeExecutionHostProfile`
-in the package root reads it; the shared client's `host()` fetches and decodes
-it with the bearer token and the health timeout.
+in the package root reads it. The shared client's `host()` fetches and decodes
+it with the bearer token and the health timeout, and returns
+`{ profile, warnings }`.
 
 The profile names the host (`id`, `label`), its `platform` (`os`, `arch`,
 `osVersion`), probed `traits` and `toolchains`, and when those facts were
@@ -307,19 +308,63 @@ with no device tools reports empty traits and toolchains and may omit
 `devices`; the reader never infers tools from the OS. A toolchain has an `id`,
 `version`, and optional `build`.
 
+The profile carries no `protocolVersion`, unlike the provider list. The
+version is negotiated once, on `/health`, whose descriptor already gates the
+endpoint, and the profile grows by capability ids such as the device ones
+below. A `protocolVersion` a host sends anyway is an unknown field, ignored.
+
 Device capabilities advertise probed inventories:
 
 - `devices.iosSimulator.v1`: `devices.iosSimulator` has `runtimes` (each an
   `id`, `name`, `version`), `deviceTypes` (ids), and `slots`.
 - `devices.androidEmulator.v1`: `devices.androidEmulator` has `systemImages`
-  (each an `id`, positive integer `apiLevel`, `abi`), `avds` (names), and
-  `slots`.
+  (each an `id`, `apiLevel`, optional `apiMinor`, optional `codename`, `abi`),
+  `avds` (names), and `slots`.
 
-Each `slots` contains non-negative integer `inUse` and `max` (a non-negative
-integer, or null when no limit is reported). These are a snapshot, not a
+A system image's `id` is its SDK package path, e.g.
+`system-images;android-36.1;google_apis;arm64-v8a`, and it is the exact name.
+The Android SDK repository's `<api-level>` is a string (`36`, `36.1`, `37.0`,
+`36x`), which a host splits into integers and never sends as a float.
+`apiLevel` is the positive integer major level, and `apiMinor` the minor level
+when the repository names one: `36.1` is `apiLevel: 36, apiMinor: 1`, `37.0`
+is `37` and `0`, and `36` has no `apiMinor`. A float would read `37.0` as
+`37` and `36.10` as `36.1`. A 0.20.0 reader, which requires an integer
+`apiLevel`, still reads such a profile and ignores the two new fields.
+
+- **A preview** carries the level it builds on and its `codename` (`CANARY`,
+  `CinnamonBun`). An image with a `codename` is not a release of its
+  `apiLevel`. The repository calls four images `37.1`: the stable release and
+  three previews, which `codename` and `id` tell apart.
+- **An extension image** (`android-36-ext19`, `36x` in the repository)
+  reports the level it extends, `apiLevel: 36` with no `apiMinor`. Its
+  extension stays in the `id`.
+
+Each `slots` contains `inUse` and `max`. `inUse` is a non-negative safe
+integer; `max` is one too, or null when no limit is reported. These are a snapshot, not a
 reservation. Absent inventories are unknown, not fabricated empty inventories.
-Unknown fields are ignored; malformed known fields, even in optional device
-inventories or toolchain builds, make the profile unreadable.
+
+**One bad entry costs only itself.** The host's identity and platform (`id`,
+`label`, `platform.os`, `platform.arch`, `platform.osVersion`, `checkedAt`),
+and the `traits` and `toolchains` arrays themselves, are strict: one unreadable
+is `invalid-payload`, with the field at the result's `path`, and `host()`
+throws `malformed` naming it. The inventory degrades: an unreadable trait,
+toolchain, runtime, device type, system image or AVD is dropped, and so is a
+device family whose lists or `slots` cannot be read, or a `devices` that is
+not an object. Each drop is a `dropped-invalid-field` warning at its path
+(`toolchains.0`, `devices.iosSimulator`). `host()` returns the warnings beside
+the profile, and the client's `onWarnings` hears them as
+`{ operation: "host", sessionId: null, warnings }`. A drop can only
+under-claim, so a caller treats an absence the warnings explain as unknown,
+not as none: a Mac whose Xcode entry was unreadable may well have Xcode.
+
+The reader is bounded, so a hostile body costs little. Each string is 1 to
+256 characters (`osVersion` may be empty). A list is read to its 1024th
+entry, and the rest are named once as `dropped-excess-entries` at the list's
+path (`traits`). At most 64 dropped entries are named; past that, later
+entries go unnamed. A dropped `devices` or device family, and a cut list,
+are always named, so a lost family never hides behind the cap. There are at
+most eight such warnings. When 64 entries have been named, treat every absent
+entry as unknown.
 
 **Authenticated only.** `/health` advertises the capability ids, never the
 profile or device inventory. `health()` and `handshake()` keep their existing
@@ -332,14 +377,79 @@ Absent or empty requires none. Present requirements must be an array of
 non-empty strings; an invalid one is `invalid-payload`, never dropped.
 Unknown trait ids remain intact for the host to decide.
 
-A host advertising `host.profile.v1` checks every required trait against its
-profile before preparing a workspace or starting a provider, and refuses a
-missing trait with a readable `400`, for example
-`Missing required host traits: ios.simulator`. The client surfaces its reason
-as an `ExecutionHostError`. The host is authoritative: a cached profile may
-be stale. A client must check `host.profile.v1` before relying on `requires`,
-since hosts predating this addition may ignore it. Device allocation and
-probing are the host implementation's work, outside this package.
+**Only a host that says so enforces it.** A host predating `requires` drops
+it, as it drops any unknown field, and starts the session anyway. So
+enforcement has its own capability id, `start.requires.v1`, apart from
+`host.profile.v1`: serving a profile is not checking a start. A host
+advertising it does three things:
+
+- It checks every required trait against its profile before preparing a
+  workspace or starting a provider.
+- It refuses a missing trait with a `400` whose body is an
+  `ExecutionStartRequirementsRefusal`:
+
+  ```json
+  {
+    "error": "Missing required host traits: ios.simulator",
+    "code": "requirements-unmet",
+    "missingTraits": ["ios.simulator"]
+  }
+  ```
+
+  `code` is what a client branches on; `error` is for a person. A client
+  honours the code only on a `400`.
+
+- It echoes `requires` (`ExecutionStartRequirementsEcho`). On its `201`,
+  beside `sessionId`, it echoes the traits it checked for this start. On its
+  `409` for a session it already has, it echoes the traits that session was
+  checked against: `[]` when it was started without any. So enforcement is
+  not taken on `/health`'s word: a process that dropped `requires` behind a
+  `/health` listing the id, or a rollback between the probe and the start,
+  answers without the echo. `confirmsExecutionStartRequirements` reads
+  it. The echo should hold trait ids only; an entry that is
+  not one is ignored, not held against the host.
+
+The host is authoritative: a cached profile may be stale.
+
+The shared client makes this mechanical. `start()` with a non-empty
+`requires` first reads `/health`, within the health timeout or the caller's
+`timeoutMs` when shorter. A probe that fails is that request's
+`ExecutionHostError`, with `operation: "health"`, and nothing is sent. Every
+other outcome is an `ExecutionStartRequirementsError`, whose `code` says
+which:
+
+- `requirements-unenforced`: the host does not advertise `start.requires.v1`,
+  or its descriptor is unreadable. The start is never sent.
+- `requirements-unmet`: the host's coded `400`. `missingTraits` keeps only
+  traits the start required (null when the host named none of them), and
+  `reason` is the host's `error`, or the decoder's own sentence, scrubbed and
+  cut.
+- `requirements-unconfirmed`: an answer that does not echo every required
+  trait. `sessionId` names the session, and `sessionDeleted` says what
+  became of it:
+  - After a `201`, this request created the session, so the client makes a
+    best-effort delete before throwing. Nothing older is lost, and an
+    unfollowed session no longer holds a host's place while its turn runs.
+    `sessionDeleted` is `true` when the delete worked (or the host no longer
+    had the session), and `false` when it failed and the session may still
+    run. The delete runs outside the caller's signal, since cleanup is not
+    the caller's to cancel. It does take the start's request timeout (the
+    caller's `timeoutMs`, else the client's `requestTimeoutMs`, 60 s by
+    default), so against a host that stops answering it can add up to that
+    much to a failed `start()`. `status` is the status the host gave (`201`,
+    or any other success).
+  - After a `409`, the session is older than this request, so the client
+    leaves it alone (`sessionDeleted: null`). A retry therefore never adopts
+    an unconfirmed session as `exists`.
+
+This error is not an `ExecutionHostError`, so a caller converting errors
+checks for both. Any other refusal stays an `ExecutionHostError`. A
+`requires` that is not an array of non-empty strings is a `TypeError`, thrown
+before anything is sent. A start without `requires` is unchanged: one
+request, no probe, the same bytes. `hostEnforcesStartRequirements(health)`
+asks the question ahead of time, of a `health()` result or a handshake's
+`.health`. Device allocation and probing are the host implementation's work,
+outside this package.
 
 ## One-shots: one answer, no tools
 
@@ -485,7 +595,10 @@ on), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above) and
 `events()` — one connection, decoded but
 not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
-`not-found`, `http`, `malformed`), the status, and the host's own words.
+`not-found`, `http`, `malformed`), the status, and the host's own words. The
+one exception is a start whose `requires` the host cannot be trusted with:
+`ExecutionStartRequirementsError` (see
+[start requirements](#host-identity-devices-and-start-requirements)).
 
 **The token** goes in the `Authorization` header and nowhere else. One no
 header could carry — a line break, a control character, anything outside ASCII

@@ -8,7 +8,12 @@ import {
   encodeExecutionSessionPatchRequest,
   encodeExecutionStartRequest,
 } from "../codecs.js";
-import { decodeExecutionHostProfile } from "../host-profile.js";
+import { isStringArray } from "../guards.js";
+import {
+  confirmsExecutionStartRequirements,
+  decodeExecutionHostProfile,
+  decodeExecutionStartRequirementsRefusal,
+} from "../host-profile.js";
 import {
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionActor,
@@ -29,6 +34,7 @@ import {
 } from "./follow.js";
 import {
   evaluateExecutionHostHandshake,
+  hostEnforcesStartRequirements,
   parseExecutionHostHealth,
   type ExecutionHostHandshake,
   type ExecutionHostHealth,
@@ -36,11 +42,15 @@ import {
 } from "./health.js";
 import {
   ExecutionHostError,
+  boundedReason,
+  ExecutionStartRequirementsError,
   failureOf,
   joinUrl,
   kindOfStatus,
   positiveMs,
   reasonOf,
+  reasonOfText,
+  refusalText,
   scrubberFor,
   seconds,
   startDeadline,
@@ -85,20 +95,39 @@ export interface ExecutionHostClientOptions {
   /** Mints the command id of a request sent without one. Default `crypto.randomUUID()`. */
   createCommandId?: () => string;
   /**
-   * Hears what a start echo or a snapshot had to drop to be read, so a drop is
-   * never silent. Envelopes' own warnings reach `followSession`'s `onEnvelope`.
+   * Hears what a start echo, a snapshot or a host profile had to drop to be
+   * read, so a drop is never silent. Envelopes' own warnings reach
+   * `followSession`'s `onEnvelope`.
    */
-  onWarnings?(notice: {
-    operation: "start" | "snapshot";
-    sessionId: string;
-    warnings: ExecutionDecodeWarning[];
-  }): void;
+  onWarnings?(notice: ExecutionWarningsNotice): void;
 }
+
+/**
+ * What a read had to drop. A host profile belongs to no session, so its
+ * notice's `sessionId` is null (MAR-3725).
+ */
+export type ExecutionWarningsNotice =
+  | {
+      operation: "start" | "snapshot";
+      sessionId: string;
+      warnings: ExecutionDecodeWarning[];
+    }
+  | { operation: "host"; sessionId: null; warnings: ExecutionDecodeWarning[] };
 
 export interface ExecutionRequestOptions {
   signal?: AbortSignal;
   /** Overrides the client's timeout for this request. */
   timeoutMs?: number;
+}
+
+/**
+ * A host profile and what had to be dropped to read it (MAR-3725). A profile
+ * with warnings under-claims: a host whose Xcode entry was unreadable may
+ * have Xcode, so a caller treats a warned absence as unknown, not as none.
+ */
+export interface ExecutionHostProfileReading {
+  profile: ExecutionHostProfile;
+  warnings: ExecutionDecodeWarning[];
 }
 
 export interface ExecutionCommandOptions extends ExecutionRequestOptions {
@@ -167,9 +196,12 @@ export interface ExecutionHostClient {
   /**
    * Authenticated `GET /v0/host`: identity, traits and device inventory
    * (`host.profile.v1`, MAR-3699). Uses the health timeout. An older host's
-   * 404 is an `ExecutionHostError`, not an empty profile.
+   * 404 is an `ExecutionHostError`, not an empty profile. An unreadable
+   * inventory entry is dropped, returned in `warnings` and told to the
+   * client's `onWarnings`; an unreadable identity or platform is `malformed`,
+   * naming the field (MAR-3725).
    */
-  host(options?: ExecutionRequestOptions): Promise<ExecutionHostProfile>;
+  host(options?: ExecutionRequestOptions): Promise<ExecutionHostProfileReading>;
   /** The Projects the host advertises (`GET /v0/projects`). */
   projects(options?: ExecutionRequestOptions): Promise<ExecutionProject[]>;
   /**
@@ -179,7 +211,16 @@ export interface ExecutionHostClient {
    * read of what the host already knows.
    */
   providers(options?: ExecutionRequestOptions): Promise<ExecutionProvider[]>;
-  /** Starts a session with its first turn. The request's `commandId` is minted when absent. */
+  /**
+   * Starts a session with its first turn. The request's `commandId` is minted
+   * when absent. A start that `requires` traits first reads `/health`
+   * (within the health timeout, or the caller's when shorter), and is refused
+   * here, unsent, with an `ExecutionStartRequirementsError` when the host
+   * does not advertise `start.requires.v1`. The host's own 400 coded
+   * `requirements-unmet`, and a 201 that does not echo the traits, are the
+   * same error (MAR-3725). A failed probe is its `ExecutionHostError`, with
+   * operation `health`. Without `requires`, nothing changes: one request.
+   */
   start(
     request: ExecutionStartRequest,
     options?: ExecutionRequestOptions,
@@ -456,6 +497,30 @@ export function createExecutionHostClient(
     }
   };
 
+  const deleteSession = (
+    sessionId: string,
+    requestOptions: ExecutionRequestOptions = {},
+  ): Promise<ExecutionDeleteSessionResult> =>
+    request(
+      "delete session",
+      sessionPath(sessionId),
+      {
+        method: "DELETE",
+        authenticated: true,
+        timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+        signal: requestOptions.signal,
+      },
+      async (response): Promise<ExecutionDeleteSessionResult> => {
+        if (response.status === 404) {
+          await response.body?.cancel().catch(() => {});
+          return { status: "no-session", sessionId };
+        }
+        if (!response.ok) throw await refusal("delete session", response);
+        await response.body?.cancel().catch(() => {});
+        return { status: "deleted", sessionId };
+      },
+    );
+
   return {
     baseUrl,
 
@@ -493,12 +558,23 @@ export function createExecutionHostClient(
           if (!response.ok) throw await refusal("host", response);
           const decoded = decodeExecutionHostProfile(await body.json());
           if (!decoded.ok) {
-            throw new ExecutionHostError("malformed", decoded.reason, {
+            throw new ExecutionHostError(
+              "malformed",
+              decoded.path === undefined
+                ? decoded.reason
+                : `${decoded.reason} at ${decoded.path}`,
+              { operation: "host", status: response.status },
+            );
+          }
+          const warnings = decoded.warnings ?? [];
+          if (warnings.length > 0) {
+            notify(options.onWarnings, {
               operation: "host",
-              status: response.status,
+              sessionId: null,
+              warnings,
             });
           }
-          return decoded.value;
+          return { profile: decoded.value, warnings };
         },
       ),
 
@@ -554,7 +630,33 @@ export function createExecutionHostClient(
     start: async (startRequest, requestOptions = {}) => {
       const commandId = commandIdFor(startRequest.commandId);
       const sessionId = startRequest.config.sessionId;
-      return request(
+      const requires: unknown = startRequest.requires ?? [];
+      // Checked here, where the mistake is: a host would refuse it, and one
+      // predating `requires` would ignore it.
+      if (!isStringArray(requires)) {
+        throw new TypeError("requires must be an array of non-empty trait ids");
+      }
+      // A host that predates `requires` drops it and starts anyway, so the
+      // only safe place to refuse is here, before it is sent (MAR-3725).
+      if (requires.length > 0) {
+        const probed = await health({
+          signal: requestOptions.signal,
+          timeoutMs: Math.min(
+            healthTimeoutMs,
+            requestOptions.timeoutMs ?? healthTimeoutMs,
+          ),
+        });
+        if (!hostEnforcesStartRequirements(probed)) {
+          throw new ExecutionStartRequirementsError(
+            "requirements-unenforced",
+            probed.executionProtocolValid
+              ? `the host does not advertise start.requires.v1, so it could start without ${requires.join(", ")}; nothing was sent`
+              : `the host's protocol descriptor is unreadable, so it cannot be trusted to check ${requires.join(", ")}; nothing was sent`,
+            { requires },
+          );
+        }
+      }
+      const answer = await request(
         "start",
         "/v0/execution/sessions",
         {
@@ -564,12 +666,67 @@ export function createExecutionHostClient(
           timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
           signal: requestOptions.signal,
         },
-        async (response, body): Promise<ExecutionStartResult> => {
+        async (
+          response,
+          body,
+        ): Promise<
+          ExecutionStartResult | { status: "unconfirmed"; httpStatus: number }
+        > => {
           if (response.status === 409) {
-            await response.body?.cancel().catch(() => {});
+            if (requires.length === 0) {
+              await response.body?.cancel().catch(() => {});
+              return { status: "exists", sessionId, commandId };
+            }
+            // The session is older than this request: what it was checked
+            // against is the host's echo on the 409, or nothing (MAR-3725).
+            const existing = parseOrNull(await refusalText(response));
+            if (!confirmsExecutionStartRequirements(existing, requires)) {
+              throw new ExecutionStartRequirementsError(
+                "requirements-unconfirmed",
+                `the host already has session ${sessionId}, and does not echo that it was checked for ${requires.join(", ")}; it was left running`,
+                { requires, status: 409, sessionId, sessionDeleted: null },
+              );
+            }
             return { status: "exists", sessionId, commandId };
           }
-          if (!response.ok) throw await refusal("start", response);
+          if (!response.ok) {
+            const text = await refusalText(response);
+            const reason = reasonOfText(
+              text,
+              response.status,
+              connection.scrub,
+            );
+            // The code is honoured where the protocol puts it: on a 400.
+            const unmet =
+              response.status === 400
+                ? decodeExecutionStartRequirementsRefusal(parseOrNull(text))
+                : null;
+            if (unmet?.ok) {
+              // Only traits this start asked for: the host's list is its
+              // words, unscrubbed and unbounded, and may name anything.
+              const missingTraits = requires.filter((trait) =>
+                unmet.value.missingTraits.includes(trait),
+              );
+              throw new ExecutionStartRequirementsError(
+                "requirements-unmet",
+                boundedReason(unmet.value.error, connection.scrub),
+                {
+                  requires,
+                  missingTraits:
+                    missingTraits.length > 0 ? missingTraits : null,
+                  status: response.status,
+                },
+              );
+            }
+            throw new ExecutionHostError(
+              kindOfStatus(response.status),
+              reason,
+              {
+                operation: "start",
+                status: response.status,
+              },
+            );
+          }
           const echo = await body.json();
           const echoed = isRecord(echo) ? echo.sessionId : undefined;
           // An answer about another session is not an answer about this one,
@@ -583,6 +740,12 @@ export function createExecutionHostClient(
                 : "the answer names no session",
               { operation: "start", status: response.status },
             );
+          }
+          if (
+            requires.length > 0 &&
+            !confirmsExecutionStartRequirements(echo, requires)
+          ) {
+            return { status: "unconfirmed", httpStatus: response.status };
           }
           let workspace: ExecutionSessionWorkspace | null = null;
           const raw = isRecord(echo) ? echo.workspace : undefined;
@@ -603,6 +766,22 @@ export function createExecutionHostClient(
           }
           return { status: "started", sessionId, commandId, workspace };
         },
+      );
+      if (answer.status !== "unconfirmed") return answer;
+      // This request created the session, so deleting it loses nothing
+      // older; left running, it would hold a host's place for its turn.
+      // Best effort, and outside the caller's signal: cleanup is not the
+      // caller's to cancel (MAR-3725).
+      const sessionDeleted = await deleteSession(sessionId, {
+        timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+      }).then(
+        () => true,
+        () => false,
+      );
+      throw new ExecutionStartRequirementsError(
+        "requirements-unconfirmed",
+        `the host started session ${sessionId} without echoing that it checked ${requires.join(", ")}; ${sessionDeleted ? "it was deleted" : "deleting it failed, so it may still be running"}`,
+        { requires, status: answer.httpStatus, sessionId, sessionDeleted },
       );
     },
 
@@ -680,26 +859,7 @@ export function createExecutionHostClient(
       );
     },
 
-    deleteSession: (sessionId, requestOptions = {}) =>
-      request(
-        "delete session",
-        sessionPath(sessionId),
-        {
-          method: "DELETE",
-          authenticated: true,
-          timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
-          signal: requestOptions.signal,
-        },
-        async (response): Promise<ExecutionDeleteSessionResult> => {
-          if (response.status === 404) {
-            await response.body?.cancel().catch(() => {});
-            return { status: "no-session", sessionId };
-          }
-          if (!response.ok) throw await refusal("delete session", response);
-          await response.body?.cancel().catch(() => {});
-          return { status: "deleted", sessionId };
-        },
-      ),
+    deleteSession,
 
     snapshot: (sessionId, requestOptions = {}) =>
       request(
@@ -861,6 +1021,14 @@ function randomCommandId(): string {
   if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
   // Unique within a session is all a command id needs to be.
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function parseOrNull(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

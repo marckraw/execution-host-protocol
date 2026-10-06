@@ -16,9 +16,11 @@ export {
   type ExecutionDeleteSessionResult,
   type ExecutionHostClient,
   type ExecutionHostClientOptions,
+  type ExecutionHostProfileReading,
   type ExecutionRequestOptions,
   type ExecutionSessionPatchResult,
   type ExecutionStartResult,
+  type ExecutionWarningsNotice,
 } from "./client.js";
 export {
   executionRetryDelayMs,
@@ -31,6 +33,7 @@ export {
   type ExecutionSessionFollow,
 } from "./follow.js";
 export {
+  hostEnforcesStartRequirements,
   parseExecutionHostHealth,
   SUPPORTED_EXECUTION_HOST_API_VERSIONS,
   type ExecutionHostConnectionStatus,
@@ -38,7 +41,12 @@ export {
   type ExecutionHostHealth,
   type ExecutionHostProviderReadiness,
 } from "./health.js";
-export { ExecutionHostError, type ExecutionHostErrorKind } from "./http.js";
+export {
+  ExecutionHostError,
+  ExecutionStartRequirementsError,
+  type ExecutionHostErrorKind,
+  type ExecutionStartRequirementsErrorCode,
+} from "./http.js";
 export {
   ExecutionOneShotError,
   type ExecutionOneShotErrorCode,

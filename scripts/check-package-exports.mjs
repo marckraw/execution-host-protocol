@@ -14,6 +14,14 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.decodeExecutionSessionPatchRequest, "function");
   assert.equal(typeof loaded.decodeExecutionProviderListResponse, "function");
   assert.equal(typeof loaded.decodeExecutionHostProfile, "function");
+  assert.equal(
+    typeof loaded.decodeExecutionStartRequirementsRefusal,
+    "function",
+  );
+  assert.equal(loaded.EXECUTION_START_REQUIREMENTS_UNMET, "requirements-unmet");
+  assert.equal(typeof loaded.confirmsExecutionStartRequirements, "function");
+  // Shared guards are internal to the contract.
+  assert.equal(loaded.isRecord, undefined);
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");
   // The root is the contract: the client is reachable only by its subpath.
   assert.equal(loaded.createExecutionHostClient, undefined);
@@ -25,6 +33,8 @@ const esModuleClient = await import(`${packageName}/client`);
 for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof loaded.createExecutionHostClient, "function");
   assert.equal(typeof loaded.ExecutionHostError, "function");
+  assert.equal(typeof loaded.ExecutionStartRequirementsError, "function");
+  assert.equal(typeof loaded.hostEnforcesStartRequirements, "function");
   assert.equal(typeof loaded.decodeExecutionSessionSnapshot, "function");
   const client = loaded.createExecutionHostClient({
     baseUrl: "http://127.0.0.1:1",

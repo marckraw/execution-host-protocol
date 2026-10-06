@@ -67,12 +67,22 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "evidence.v1",
   /** The host takes `stop-task`: one task stopped, the session left running (MAR-3679). */
   "commands.stopTask.v1",
-  /** Authenticated `GET /v0/host` and trait requirements on session starts (MAR-3699). */
+  /** Authenticated `GET /v0/host`: the host's identity and probed tools (MAR-3699). */
   "host.profile.v1",
   /** The host reports its probed iOS Simulator inventory (MAR-3699). */
   "devices.iosSimulator.v1",
   /** The host reports its probed Android Emulator inventory (MAR-3699). */
   "devices.androidEmulator.v1",
+  /**
+   * The host checks a start's `requires` against its traits before preparing
+   * anything, refuses one it cannot meet with a 400 coded
+   * `requirements-unmet`, and echoes the `requires` it checked on its 201,
+   * or on its 409 the ones the existing session was checked against
+   * (MAR-3725). A host without it may ignore `requires` and start anyway, so
+   * the shared client refuses such a start itself, before sending it, and
+   * refuses a 201 or 409 that does not echo what it asked.
+   */
+  "start.requires.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -111,8 +121,33 @@ export interface ExecutionHostIosSimulator {
   slots: ExecutionHostDeviceSlots;
 }
 
+export interface ExecutionHostAndroidSystemImage {
+  /** The SDK package path, e.g. `system-images;android-36.1;google_apis;arm64-v8a`. */
+  id: string;
+  /**
+   * A positive integer: the platform's major API level, `36` for both
+   * `android-36` and `android-36.1`. An extension image (`android-36-ext19`,
+   * `36x` in the SDK repository) reports the level it extends; its extension
+   * stays in `id`.
+   */
+  apiLevel: number;
+  /**
+   * A non-negative integer: the minor level when the SDK repository names
+   * one, `1` for `36.1` and `0` for `37.0`. Absent for a level named without
+   * one, such as `36` (MAR-3725).
+   */
+  apiMinor?: number;
+  /**
+   * A preview's codename (`CANARY`, `CinnamonBun`). An image with a codename
+   * is not a release of its `apiLevel`: it builds on that level, as several
+   * previews may at once. Absent on a stable release.
+   */
+  codename?: string;
+  abi: string;
+}
+
 export interface ExecutionHostAndroidEmulator {
-  systemImages: { id: string; apiLevel: number; abi: string }[];
+  systemImages: ExecutionHostAndroidSystemImage[];
   avds: string[];
   slots: ExecutionHostDeviceSlots;
 }
@@ -124,6 +159,9 @@ export interface ExecutionHostAndroidEmulator {
  * Traits are open ids such as `xcode`, `ios.simulator` and `android.emulator`,
  * which a session start may require. Device inventories are optional: absence
  * makes no claim about installed devices. `checkedAt` is when the probe ran.
+ *
+ * It carries no `protocolVersion`: the version is negotiated once, on
+ * `/health`, and the profile grows by capability ids (MAR-3725).
  */
 export interface ExecutionHostProfile {
   id: string;
@@ -136,6 +174,33 @@ export interface ExecutionHostProfile {
     androidEmulator?: ExecutionHostAndroidEmulator;
   };
   checkedAt: string;
+}
+
+/** The `code` of a host's refusal of a start whose `requires` it cannot meet. */
+export const EXECUTION_START_REQUIREMENTS_UNMET = "requirements-unmet";
+
+/**
+ * What a host advertising `start.requires.v1` adds to its answer to a start
+ * with `requires` (MAR-3725), so a client need not take enforcement on
+ * `/health`'s word. On a 201, the traits it checked for this start. On a
+ * 409, the traits the session it already has was checked against: an empty
+ * list when it was started without any. A process that dropped `requires`,
+ * or a rollback between `/health` and the start, answers without it.
+ */
+export interface ExecutionStartRequirementsEcho {
+  requires: string[];
+}
+
+/**
+ * The body of a host's refusal of a start whose `requires` it cannot meet
+ * (`start.requires.v1`, MAR-3725), sent with a 400 before anything is
+ * prepared. `code` is what a client branches on; `error` is for a person.
+ */
+export interface ExecutionStartRequirementsRefusal {
+  error: string;
+  code: typeof EXECUTION_START_REQUIREMENTS_UNMET;
+  /** The required traits this host does not have; never empty. */
+  missingTraits: string[];
 }
 
 /**
@@ -748,9 +813,11 @@ export interface ExecutionStartRequest {
   config: ExecutionStartConfig;
   /**
    * Traits this session needs, such as `ios.simulator` (MAR-3699). A host
-   * advertising `host.profile.v1` checks all of them before starting, and
-   * refuses a missing trait with a readable 400. Absent or empty means none.
-   * Older hosts may ignore this field; check the capability before relying on it.
+   * advertising `start.requires.v1` checks all of them before starting,
+   * refuses a missing trait with an `ExecutionStartRequirementsRefusal`, and
+   * echoes them on its 201 and 409 (`ExecutionStartRequirementsEcho`).
+   * Absent or empty means none. A host without that capability may ignore
+   * this field, so the shared client refuses to send it there (MAR-3725).
    */
   requires?: string[];
   metadata?: ExecutionSessionMetadata | null;
@@ -959,8 +1026,13 @@ export type ExecutionDecodeFailureReason =
   | "unknown-kind"
   | "invalid-payload";
 
+/**
+ * `dropped-invalid-field`: what is at `path` could not be read and was left
+ * out. `dropped-excess-entries`: the list at `path` was cut at its cap, and
+ * its later entries left unread (host profiles only, MAR-3725).
+ */
 export interface ExecutionDecodeWarning {
-  reason: "dropped-invalid-field";
+  reason: "dropped-invalid-field" | "dropped-excess-entries";
   path: string;
 }
 
@@ -990,6 +1062,11 @@ export type ExecutionDecodeResult<T> =
   | {
       ok: false;
       reason: ExecutionDecodeFailureReason;
+      /**
+       * Present only from `decodeExecutionHostProfile`: the field that made
+       * the whole answer unreadable, such as `platform.os` (MAR-3725).
+       */
+      path?: string;
       /**
        * Present only from `decodeExecutionEventEnvelope`, with reason
        * `unknown-kind`: where the unknown envelope sat, so a stream reader can
