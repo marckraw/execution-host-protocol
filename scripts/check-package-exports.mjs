@@ -22,6 +22,8 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.confirmsExecutionStartRequirements, "function");
   assert.equal(typeof loaded.checkExecutionInlineAttachments, "function");
   assert.equal(loaded.EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT, 4);
+  assert.equal(loaded.EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH, 255);
+  assert.equal(loaded.EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH, 255);
   // Shared guards are internal to the contract.
   assert.equal(loaded.isRecord, undefined);
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");

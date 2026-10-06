@@ -424,6 +424,40 @@ describe("the limits, refused before anything is sent", () => {
     expect(requests).toEqual([]);
   });
 
+  it.each([
+    ["name", 255, null],
+    ["name", 256, "name-too-long"],
+    ["mimeType", 255, null],
+    ["mimeType", 256, "mime-type-too-long"],
+  ] as const)(
+    "a file whose %s is %i characters",
+    async (field, length, code) => {
+      await sendsOrRefuses(
+        [image, { ...file, [field]: "n".repeat(length) }],
+        code === null ? null : { code, index: 1 },
+      );
+    },
+  );
+
+  it.each(["image", "file"] as const)(
+    "an empty %s, said to be empty",
+    async (kind) => {
+      takingFiles(host);
+      const { requests, fetch } = counted(host);
+      const refusal = (await client(fetch)
+        .command(
+          "session-1",
+          sendMessage([image, { ...file, kind, sizeBytes: 0, dataBase64: "" }]),
+        )
+        .catch((error: unknown) => error)) as ExecutionInlineAttachmentsError;
+      expect(refusal).toBeInstanceOf(ExecutionInlineAttachmentsError);
+      expect(refusal).toMatchObject({ code: "empty", index: 1 });
+      expect(refusal.reason).toContain("attachment 1 is empty");
+      expect(refusal.reason).not.toContain("base64");
+      expect(requests).toEqual([]);
+    },
+  );
+
   it("names the entry by index, never by name or bytes", async () => {
     const refusal = await client()
       .command(
@@ -433,6 +467,55 @@ describe("the limits, refused before anything is sent", () => {
       .catch((error: unknown) => error);
     expect(refusal).toMatchObject({ code: "size-mismatch", index: 0 });
     expectNothingOfTheFile(refusal);
+  });
+});
+
+describe("the probe before a file is the caller's to abort", () => {
+  /** A host whose `/health` never answers, until the request is aborted. */
+  const silentHealth: typeof globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/health")) {
+      return new Promise<Response>((_resolve, reject) =>
+        init?.signal?.addEventListener("abort", () =>
+          reject(init.signal?.reason),
+        ),
+      );
+    }
+    return host.fetch(input, init);
+  };
+  const aborted = async (
+    send: (
+      connection: ReturnType<typeof client>,
+      signal: AbortSignal,
+    ) => Promise<unknown>,
+  ) => {
+    takingFiles(host);
+    const controller = new AbortController();
+    const reason = new Error("the person closed the composer");
+    // Long enough that only the caller's signal can end the probe in time.
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      healthTimeoutMs: 60_000,
+      fetch: silentHealth,
+    });
+    const pending = send(connection, controller.signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    expect(host.commandRequests).toEqual([]);
+    expect(host.startRequests).toEqual([]);
+  };
+
+  it("for a send", async () => {
+    await aborted((connection, signal) =>
+      connection.command("session-1", sendMessage([file]), { signal }),
+    );
+  });
+
+  it("for a start", async () => {
+    await aborted((connection, signal) =>
+      connection.start(start([file]), { signal }),
+    );
   });
 });
 

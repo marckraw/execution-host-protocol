@@ -198,16 +198,22 @@ A host without the id refuses the whole command, text included, with a `400`,
 so a person's message would be lost with the file.
 
 **The limits**, for images and files together, are agents-daemon's image
-limits, exported as constants:
+limits, and caps on the two strings beside the bytes, exported as constants:
 
-| Constant                                       | Limit                            |
-| ---------------------------------------------- | -------------------------------- |
-| `EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT`       | 4 attachments a command or start |
-| `EXECUTION_INLINE_ATTACHMENT_MAX_BYTES`        | 10 MiB each, decoded             |
-| `EXECUTION_INLINE_ATTACHMENTS_MAX_TOTAL_BYTES` | 20 MiB together, decoded         |
+| Constant                                           | Limit                            |
+| -------------------------------------------------- | -------------------------------- |
+| `EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT`           | 4 attachments a command or start |
+| `EXECUTION_INLINE_ATTACHMENT_MAX_BYTES`            | 10 MiB each, decoded             |
+| `EXECUTION_INLINE_ATTACHMENTS_MAX_TOTAL_BYTES`     | 20 MiB together, decoded         |
+| `EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH`      | 255 characters of `name`         |
+| `EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH` | 255 characters of `mimeType`     |
 
-`dataBase64` is padded standard base64, and `sizeBytes` is exactly the length
-it decodes to. A host refuses the whole command past any of them.
+A character is a UTF-16 code unit, JavaScript's string length, as the
+one-shot's caps count them; without the two caps a 3-byte image could carry a
+name of any size. `dataBase64` is padded standard base64, and `sizeBytes` is
+exactly the length it decodes to. **An empty attachment cannot be sent**: one
+of 0 bytes is refused, image or file, as agents-daemon refuses an image of
+`sizeBytes <= 0`. A host refuses the whole command past any of these.
 `checkExecutionInlineAttachments(attachments)` checks all of this without
 decoding a byte, and says how many entries are files; a problem names the
 entry by its `index`, never by its name.
@@ -215,9 +221,11 @@ entry by its `index`, never by its name.
 **The shared client never sends a file to a host that has not said it takes
 one.** `command()` with a `send-message`, and `start()`, check
 `inlineAttachments` first; past a limit, or malformed, they throw an
-`ExecutionInlineAttachmentsError` (codes `invalid`, `too-many`, `too-large`,
-`size-mismatch`, `total-too-large`) and send nothing. That holds for images
-too: the host would have refused them whole. Then a request carrying a
+`ExecutionInlineAttachmentsError` (codes `invalid`, `name-too-long`,
+`mime-type-too-long`, `empty`, `too-many`, `too-large`, `size-mismatch`,
+`total-too-large`) and send nothing. That holds for images too: the host
+would have refused them whole, except a name or type past 255 characters,
+which agents-daemon took and the client now refuses. Then a request carrying a
 `kind: "file"` entry reads `/health`, within the health timeout or the
 caller's `timeoutMs` when shorter (a start with `requires` shares the one
 read). A host that does not advertise the id, or whose descriptor is
@@ -225,6 +233,10 @@ unreadable, is refused here, unsent, with code `files-unsupported`; a failed
 probe is its `ExecutionHostError` with `operation: "health"`. A request
 without a file is unchanged: no probe, one request, the same bytes.
 `hostTakesInlineFiles(health)` asks the question ahead of time.
+
+The older `attachments` field of a `send-message` (`unknown[]`, opaque to this
+package) is not the way to send a file: nothing checks or gates it, so a file
+put there goes to any host, one without the id included.
 
 **No error carries a file.** The client's own refusals name an entry by index.
 A host's refusal may quote a file's name (agents-daemon's do), and a

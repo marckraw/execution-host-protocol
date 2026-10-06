@@ -5,6 +5,8 @@ import {
   decodeExecutionProviderListResponse,
   decodeExecutionStartRequest,
   EXECUTION_INLINE_ATTACHMENT_MAX_BYTES,
+  EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH,
+  EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH,
   EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT,
   EXECUTION_INLINE_ATTACHMENTS_MAX_TOTAL_BYTES,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
@@ -183,7 +185,7 @@ describe("the limits, for any mix", () => {
     ).toMatchObject({ ok: true, totalBytes: sizeBytes });
   });
 
-  it.each(["AQI", "AQ=D", "AQ-_", "AQ ID", "", "A==="])(
+  it.each(["AQI", "AQ=D", "AQ-_", "AQ ID", "A==="])(
     "refuses %j, which is not padded standard base64",
     (dataBase64) => {
       expect(
@@ -191,6 +193,28 @@ describe("the limits, for any mix", () => {
       ).toEqual({ ok: false, problem: "invalid", index: 1 });
     },
   );
+
+  it("refuses data that decodes to fewer bytes than it claims, empty data too", () => {
+    expect(
+      checkExecutionInlineAttachments([{ ...file, dataBase64: "" }]),
+    ).toEqual({ ok: false, problem: "size-mismatch", index: 0 });
+  });
+
+  it("does the arithmetic before it reads the pattern", () => {
+    // Not base64 at all, and the wrong length for what it claims: the length
+    // answers first, without the pattern scanning the string.
+    expect(
+      checkExecutionInlineAttachments([
+        { ...file, dataBase64: "!!!!!!!!", sizeBytes: 5 },
+      ]),
+    ).toEqual({ ok: false, problem: "size-mismatch", index: 0 });
+    const huge = "!".repeat(64 * MiB);
+    expect(
+      checkExecutionInlineAttachments([
+        { ...file, dataBase64: huge, sizeBytes: 5 },
+      ]),
+    ).toEqual({ ok: false, problem: "size-mismatch", index: 0 });
+  });
 
   it.each([
     ["not a list", { ...file }, null],
@@ -203,6 +227,69 @@ describe("the limits, for any mix", () => {
       problem: "invalid",
       index,
     });
+  });
+});
+
+describe("names, types and empty attachments", () => {
+  it("are 255 characters at most, each", () => {
+    expect(EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH).toBe(255);
+    expect(EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH).toBe(255);
+  });
+
+  it.each([
+    ["name", 254, null],
+    ["name", 255, null],
+    ["name", 256, "name-too-long"],
+    ["mimeType", 254, null],
+    ["mimeType", 255, null],
+    ["mimeType", 256, "mime-type-too-long"],
+  ] as const)("a %s of %i characters: %s", (field, length, problem) => {
+    for (const kind of ["image", "file"] as const) {
+      const entry = { ...file, kind, [field]: "n".repeat(length) };
+      expect(checkExecutionInlineAttachments([image, entry])).toEqual(
+        problem === null
+          ? { ok: true, files: kind === "file" ? 1 : 0, totalBytes: 6 }
+          : { ok: false, problem, index: 1 },
+      );
+    }
+  });
+
+  it("counts a name's length in UTF-16 code units", () => {
+    const emoji = "📎"; // two code units
+    expect(
+      checkExecutionInlineAttachments([
+        { ...file, name: `${emoji.repeat(127)}a` },
+      ]),
+    ).toMatchObject({ ok: true });
+    expect(
+      checkExecutionInlineAttachments([{ ...file, name: emoji.repeat(128) }]),
+    ).toEqual({ ok: false, problem: "name-too-long", index: 0 });
+  });
+
+  it("refuses a 3-byte attachment with an 8 MiB name, so the body stays bounded", () => {
+    expect(
+      checkExecutionInlineAttachments([
+        { ...image, name: "n".repeat(8 * MiB) },
+      ]),
+    ).toEqual({ ok: false, problem: "name-too-long", index: 0 });
+  });
+
+  it.each(["image", "file"] as const)(
+    "refuses an empty %s as empty",
+    (kind) => {
+      expect(
+        checkExecutionInlineAttachments([
+          image,
+          { ...file, kind, sizeBytes: 0, dataBase64: "" },
+        ]),
+      ).toEqual({ ok: false, problem: "empty", index: 1 });
+    },
+  );
+
+  it("refuses data claimed as empty that is not", () => {
+    expect(
+      checkExecutionInlineAttachments([{ ...file, sizeBytes: 0 }]),
+    ).toEqual({ ok: false, problem: "size-mismatch", index: 0 });
   });
 });
 

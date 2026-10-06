@@ -14,13 +14,17 @@ sizeBytes, dataBase64 }`. The decoders read both and still refuse a kind
   run or rendered, `name` and `mimeType` trusted for nothing, gone at teardown.
 - **The limits**, for any mix: `EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT` (4),
   `EXECUTION_INLINE_ATTACHMENT_MAX_BYTES` (10 MiB),
-  `EXECUTION_INLINE_ATTACHMENTS_MAX_TOTAL_BYTES` (20 MiB), padded base64 and
-  `sizeBytes` equal to the decoded length, checked by
-  `checkExecutionInlineAttachments`.
+  `EXECUTION_INLINE_ATTACHMENTS_MAX_TOTAL_BYTES` (20 MiB),
+  `EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH` and
+  `EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH` (255 UTF-16 code units
+  each), no empty attachment, padded base64 and `sizeBytes` equal to the
+  decoded length, checked by `checkExecutionInlineAttachments`.
 - **The client never sends a file to a host that does not take one.**
   `command()` and `start()` refuse attachments past the limits with an
   `ExecutionInlineAttachmentsError`, before anything is sent, images included:
-  a host refused those whole anyway. A request carrying a file first reads
+  a host refused those whole anyway. The one exception is a `name` or
+  `mimeType` past 255 characters, which agents-daemon took on an image and
+  the client now refuses. A request carrying a file first reads
   `/health` and is refused, unsent, with code `files-unsupported` on a host
   without the id. Its failures carry the client's words only, never the
   host's, the transport's, or a file's name or bytes. Requests without a file

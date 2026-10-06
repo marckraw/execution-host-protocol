@@ -1,5 +1,7 @@
 import {
   EXECUTION_INLINE_ATTACHMENT_MAX_BYTES,
+  EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH,
+  EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH,
   EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT,
   EXECUTION_INLINE_ATTACHMENTS_MAX_TOTAL_BYTES,
   type ExecutionInlineAttachmentsCheck,
@@ -63,6 +65,9 @@ export function inlineAttachmentsRefusal(
       check.index === null
         ? "inlineAttachments is not an array"
         : `${entry} is not an image or a file with a name, a mimeType, an integer sizeBytes and padded base64`,
+    "name-too-long": `${entry}'s name is longer than ${EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH} characters`,
+    "mime-type-too-long": `${entry}'s mimeType is longer than ${EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH} characters`,
+    empty: `${entry} is empty: a host takes no attachment of 0 bytes`,
     "too-many": `more than ${EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT} attachments`,
     "too-large": `${entry} is over ${mebibytes(EXECUTION_INLINE_ATTACHMENT_MAX_BYTES)}`,
     "size-mismatch": `${entry}'s sizeBytes is not the length its data decodes to`,
