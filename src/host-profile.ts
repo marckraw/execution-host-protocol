@@ -1,7 +1,8 @@
 import {
-  isNonEmptyString,
-  isNonNegativeInteger,
+  isBoundedString,
+  isPositiveInteger,
   isRecord,
+  isSafeNonNegativeInteger,
   isStringArray,
 } from "./guards.js";
 import {
@@ -17,7 +18,18 @@ import {
   type ExecutionStartRequirementsRefusal,
 } from "./types.js";
 
-type Warnings = ExecutionDecodeWarning[];
+/** The longest id, name, version or label a profile may carry. */
+const MAX_PROFILE_STRING_LENGTH = 256;
+/** The most entries read from one list; the rest are dropped, named once. */
+const MAX_PROFILE_LIST_ENTRIES = 1024;
+/** The most drops one profile reports; past it, drops go unnamed. */
+const MAX_PROFILE_WARNINGS = 64;
+
+/** Names a drop, until the profile has named enough of them. */
+type Warn = (path: string) => void;
+
+const isProfileString = (value: unknown): value is string =>
+  isBoundedString(value, MAX_PROFILE_STRING_LENGTH);
 
 /**
  * Reads authenticated `GET /v0/host` (MAR-3699). Unknown fields, traits and
@@ -26,6 +38,10 @@ type Warnings = ExecutionDecodeWarning[];
  * degrades instead (MAR-3725): an unreadable trait, toolchain, runtime, device
  * type, system image or AVD is dropped, and so is an unreadable device family,
  * each named in `warnings`. A drop under-claims; it never invents a tool.
+ *
+ * Bounded, so a hostile body costs little: strings are 1 to 256 characters,
+ * a list is read to its 1024th entry, the rest dropped and named once at the
+ * first of them, and at most 64 drops are named.
  */
 export function decodeExecutionHostProfile(
   raw: unknown,
@@ -34,35 +50,44 @@ export function decodeExecutionHostProfile(
   const refused = (path: string) =>
     ({ ok: false, reason: "invalid-payload", path }) as const;
   const { platform } = raw;
-  if (!isNonEmptyString(raw.id)) return refused("id");
-  if (!isNonEmptyString(raw.label)) return refused("label");
+  if (!isProfileString(raw.id)) return refused("id");
+  if (!isProfileString(raw.label)) return refused("label");
   if (!isRecord(platform)) return refused("platform");
-  if (!isNonEmptyString(platform.os)) return refused("platform.os");
-  if (!isNonEmptyString(platform.arch)) return refused("platform.arch");
-  if (!(platform.osVersion === null || typeof platform.osVersion === "string"))
+  if (!isProfileString(platform.os)) return refused("platform.os");
+  if (!isProfileString(platform.arch)) return refused("platform.arch");
+  if (!(
+    platform.osVersion === null ||
+    (typeof platform.osVersion === "string" &&
+      platform.osVersion.length <= MAX_PROFILE_STRING_LENGTH)
+  ))
     return refused("platform.osVersion");
   if (!Array.isArray(raw.traits)) return refused("traits");
   if (!Array.isArray(raw.toolchains)) return refused("toolchains");
-  if (!isNonEmptyString(raw.checkedAt)) return refused("checkedAt");
+  if (!isProfileString(raw.checkedAt)) return refused("checkedAt");
 
-  const warnings: Warnings = [];
-  const traits = readList(raw.traits, "traits", warnings, (entry) =>
-    isNonEmptyString(entry) ? entry : null,
+  const warnings: ExecutionDecodeWarning[] = [];
+  const warn: Warn = (path) => {
+    if (warnings.length < MAX_PROFILE_WARNINGS) {
+      warnings.push({ reason: "dropped-invalid-field", path });
+    }
+  };
+  const traits = readList(raw.traits, "traits", warn, (entry) =>
+    isProfileString(entry) ? entry : null,
   );
   const toolchains = readList(
     raw.toolchains,
     "toolchains",
-    warnings,
+    warn,
     decodeToolchain,
   );
-  const devices = decodeDevices(raw.devices, warnings);
+  const devices = decodeDevices(raw.devices, warn);
   const profile: ExecutionHostProfile = {
     id: raw.id,
     label: raw.label,
     platform: {
       os: platform.os,
       arch: platform.arch,
-      osVersion: platform.osVersion,
+      osVersion: platform.osVersion as string | null,
     },
     traits,
     toolchains,
@@ -72,6 +97,20 @@ export function decodeExecutionHostProfile(
   return warnings.length > 0
     ? { ok: true, value: profile, warnings }
     : { ok: true, value: profile };
+}
+
+/**
+ * Whether a host's 201 for a start echoes every trait the start required
+ * (`start.requires.v1`, MAR-3725). An answer without the echo, from a process
+ * that dropped `requires` whatever `/health` said, confirms nothing.
+ */
+export function confirmsExecutionStartRequirements(
+  answer: unknown,
+  requires: readonly string[],
+): boolean {
+  if (!isRecord(answer) || !isStringArray(answer.requires)) return false;
+  const checked = new Set(answer.requires);
+  return requires.every((trait) => checked.has(trait));
 }
 
 /**
@@ -106,9 +145,9 @@ export function decodeExecutionStartRequirementsRefusal(
 function decodeToolchain(raw: unknown): ExecutionHostToolchain | null {
   if (
     !isRecord(raw) ||
-    !isNonEmptyString(raw.id) ||
-    !isNonEmptyString(raw.version) ||
-    !(raw.build === undefined || isNonEmptyString(raw.build))
+    !isProfileString(raw.id) ||
+    !isProfileString(raw.version) ||
+    !(raw.build === undefined || isProfileString(raw.build))
   ) {
     return null;
   }
@@ -121,22 +160,22 @@ function decodeToolchain(raw: unknown): ExecutionHostToolchain | null {
 
 function decodeDevices(
   raw: unknown,
-  warnings: Warnings,
+  warn: Warn,
 ): ExecutionHostProfile["devices"] | undefined {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) {
-    warnings.push({ reason: "dropped-invalid-field", path: "devices" });
+    warn("devices");
     return undefined;
   }
   const family = <T>(
     key: string,
-    read: (value: unknown, path: string, warnings: Warnings) => T | null,
+    read: (value: unknown, path: string, warn: Warn) => T | null,
   ): T | undefined => {
     if (raw[key] === undefined) return undefined;
     const path = `devices.${key}`;
-    const decoded = read(raw[key], path, warnings);
+    const decoded = read(raw[key], path, warn);
     if (decoded === null) {
-      warnings.push({ reason: "dropped-invalid-field", path });
+      warn(path);
       return undefined;
     }
     return decoded;
@@ -153,7 +192,7 @@ function decodeDevices(
 function decodeIosSimulator(
   raw: unknown,
   path: string,
-  warnings: Warnings,
+  warn: Warn,
 ): ExecutionHostIosSimulator | null {
   if (
     !isRecord(raw) ||
@@ -163,23 +202,19 @@ function decodeIosSimulator(
     return null;
   const slots = decodeSlots(raw.slots);
   if (slots === null) return null;
-  const runtimes = readList(
-    raw.runtimes,
-    `${path}.runtimes`,
-    warnings,
-    (entry) =>
-      isRecord(entry) &&
-      isNonEmptyString(entry.id) &&
-      isNonEmptyString(entry.name) &&
-      isNonEmptyString(entry.version)
-        ? { id: entry.id, name: entry.name, version: entry.version }
-        : null,
+  const runtimes = readList(raw.runtimes, `${path}.runtimes`, warn, (entry) =>
+    isRecord(entry) &&
+    isProfileString(entry.id) &&
+    isProfileString(entry.name) &&
+    isProfileString(entry.version)
+      ? { id: entry.id, name: entry.name, version: entry.version }
+      : null,
   );
   const deviceTypes = readList(
     raw.deviceTypes,
     `${path}.deviceTypes`,
-    warnings,
-    (entry) => (isNonEmptyString(entry) ? entry : null),
+    warn,
+    (entry) => (isProfileString(entry) ? entry : null),
   );
   return { runtimes, deviceTypes, slots };
 }
@@ -187,7 +222,7 @@ function decodeIosSimulator(
 function decodeAndroidEmulator(
   raw: unknown,
   path: string,
-  warnings: Warnings,
+  warn: Warn,
 ): ExecutionHostAndroidEmulator | null {
   if (
     !isRecord(raw) ||
@@ -200,68 +235,70 @@ function decodeAndroidEmulator(
   const systemImages = readList(
     raw.systemImages,
     `${path}.systemImages`,
-    warnings,
+    warn,
     decodeSystemImage,
   );
-  const avds = readList(raw.avds, `${path}.avds`, warnings, (entry) =>
-    isNonEmptyString(entry) ? entry : null,
+  const avds = readList(raw.avds, `${path}.avds`, warn, (entry) =>
+    isProfileString(entry) ? entry : null,
   );
   return { systemImages, avds, slots };
 }
 
 /**
- * The SDK repository names levels such as `36`, `36.1` and `37.0`, and
- * previews by codename over the level they build on (MAR-3725).
+ * The SDK repository names levels as strings: `36`, `36.1`, `37.0`, and `36x`
+ * for an extension image. A host splits them into an integer `apiLevel` and
+ * `apiMinor`, never a float, which would read `37.0` as `37` and `36.10` as
+ * `36.1` (MAR-3725).
  */
 function decodeSystemImage(
   raw: unknown,
 ): ExecutionHostAndroidSystemImage | null {
   if (
     !isRecord(raw) ||
-    !isNonEmptyString(raw.id) ||
-    typeof raw.apiLevel !== "number" ||
-    !Number.isFinite(raw.apiLevel) ||
-    raw.apiLevel <= 0 ||
-    !(raw.codename === undefined || isNonEmptyString(raw.codename)) ||
-    !isNonEmptyString(raw.abi)
+    !isProfileString(raw.id) ||
+    !isPositiveInteger(raw.apiLevel) ||
+    !(raw.apiMinor === undefined || isSafeNonNegativeInteger(raw.apiMinor)) ||
+    !(raw.codename === undefined || isProfileString(raw.codename)) ||
+    !isProfileString(raw.abi)
   )
     return null;
   return {
     id: raw.id,
     apiLevel: raw.apiLevel,
+    ...(raw.apiMinor === undefined ? {} : { apiMinor: raw.apiMinor }),
     ...(raw.codename === undefined ? {} : { codename: raw.codename }),
     abi: raw.abi,
   };
 }
 
+/** Counts a reader holds exactly; one past 2^53 is not the count the host sent. */
 function decodeSlots(raw: unknown): ExecutionHostDeviceSlots | null {
   if (
     !isRecord(raw) ||
-    !(raw.max === null || isNonNegativeInteger(raw.max)) ||
-    !isNonNegativeInteger(raw.inUse)
+    !(raw.max === null || isSafeNonNegativeInteger(raw.max)) ||
+    !isSafeNonNegativeInteger(raw.inUse)
   )
     return null;
   return { max: raw.max, inUse: raw.inUse };
 }
 
-/** The readable entries of a list, each unreadable one named at `path.index`. */
+/**
+ * The readable entries of a list, each unreadable one named at `path.index`.
+ * Past the cap the rest are dropped unread, named once at the first of them.
+ */
 function readList<T>(
   raw: unknown[],
   path: string,
-  warnings: Warnings,
+  warn: Warn,
   read: (entry: unknown) => T | null,
 ): T[] {
   const result: T[] = [];
-  raw.forEach((entry, index) => {
-    const decoded = read(entry);
-    if (decoded === null) {
-      warnings.push({
-        reason: "dropped-invalid-field",
-        path: `${path}.${index}`,
-      });
-    } else {
-      result.push(decoded);
-    }
-  });
+  const readable = Math.min(raw.length, MAX_PROFILE_LIST_ENTRIES);
+  for (let index = 0; index < readable; index += 1) {
+    const decoded = read(raw[index]);
+    if (decoded === null) warn(`${path}.${index}`);
+    else result.push(decoded);
+  }
+  if (raw.length > readable) warn(`${path}.${readable}`);
   return result;
 }

@@ -16,10 +16,11 @@ export {
   type ExecutionDeleteSessionResult,
   type ExecutionHostClient,
   type ExecutionHostClientOptions,
-  type ExecutionHostProfileOptions,
+  type ExecutionHostProfileReading,
   type ExecutionRequestOptions,
   type ExecutionSessionPatchResult,
   type ExecutionStartResult,
+  type ExecutionWarningsNotice,
 } from "./client.js";
 export {
   executionRetryDelayMs,

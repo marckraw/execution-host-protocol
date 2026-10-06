@@ -3,6 +3,7 @@ import {
   decodeExecutionHostProfile,
   decodeExecutionProtocolDescriptor,
   decodeExecutionStartRequest,
+  confirmsExecutionStartRequirements,
   decodeExecutionStartRequirementsRefusal,
   encodeExecutionStartRequest,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
@@ -184,6 +185,17 @@ describe("host profiles (MAR-3699)", () => {
       { id: "a", apiLevel: 0, abi: "arm64" },
       { id: "a", apiLevel: -36, abi: "arm64" },
       { id: "a", apiLevel: "36.1", abi: "arm64" },
+      // A float is refused: the minor level has its own field.
+      { id: "a", apiLevel: 36.1, abi: "arm64" },
+      // `1e999` on the wire parses to Infinity.
+      JSON.parse('{"id":"a","apiLevel":1e999,"abi":"arm64"}') as object,
+      { id: "a", apiLevel: 36, apiMinor: -1, abi: "arm64" },
+      { id: "a", apiLevel: 36, apiMinor: 0.5, abi: "arm64" },
+      { id: "a", apiLevel: 36, apiMinor: "1", abi: "arm64" },
+      JSON.parse(
+        '{"id":"a","apiLevel":36,"apiMinor":1e999,"abi":"arm64"}',
+      ) as object,
+      { id: "a".repeat(257), apiLevel: 36, abi: "arm64" },
       { id: "a", apiLevel: 36, abi: "" },
       { id: "a", apiLevel: 36, codename: "", abi: "arm64" },
       { id: "a", apiLevel: 36, codename: null, abi: "arm64" },
@@ -290,6 +302,8 @@ describe("host profiles (MAR-3699)", () => {
     { max: 2, inUse: 0.5 },
     { max: Infinity, inUse: 0 },
     { max: null, inUse: NaN },
+    { max: 1e308, inUse: 0 },
+    { max: null, inUse: Number.MAX_SAFE_INTEGER + 1 },
   ])("drops a device family whose slots are %j", (slots) => {
     expect(
       decodeExecutionHostProfile({
@@ -319,6 +333,68 @@ describe("host profiles (MAR-3699)", () => {
     expect(decodeExecutionHostProfile(profile)).toEqual({
       ok: true,
       value: profile,
+    });
+  });
+
+  it("tells apart the four images the repository calls 37.1", () => {
+    const named = sdkRepositorySystemImagesFixture.filter(
+      (image) => image.apiLevel === 37 && image.apiMinor === 1,
+    );
+    expect(named.map((image) => image.codename ?? "stable")).toEqual([
+      "stable",
+      "CANARY",
+      "CinnamonBun",
+    ]);
+    expect(new Set(named.map((image) => image.id)).size).toBe(named.length);
+  });
+
+  it("keeps what a 0.20.0 reader requires: a positive integer apiLevel", () => {
+    for (const image of sdkRepositorySystemImagesFixture) {
+      expect(Number.isSafeInteger(image.apiLevel) && image.apiLevel > 0).toBe(
+        true,
+      );
+    }
+  });
+
+  it("bounds identity strings, naming the field", () => {
+    expect(
+      decodeExecutionHostProfile({ ...linux, label: "l".repeat(257) }),
+    ).toEqual({ ok: false, reason: "invalid-payload", path: "label" });
+    expect(
+      decodeExecutionHostProfile({
+        ...linux,
+        platform: { ...linux.platform, osVersion: "1".repeat(257) },
+      }),
+    ).toEqual({
+      ok: false,
+      reason: "invalid-payload",
+      path: "platform.osVersion",
+    });
+  });
+
+  it("reads a list to its 1024th entry and names the rest once", () => {
+    const traits = Array.from({ length: 1030 }, (_, index) => `t${index}`);
+    expect(decodeExecutionHostProfile({ ...linux, traits })).toEqual({
+      ok: true,
+      value: { ...linux, traits: traits.slice(0, 1024) },
+      warnings: dropped("traits.1024"),
+    });
+  });
+
+  it("names at most 64 drops, and reads a hostile body cheaply", () => {
+    const traits = Array.from({ length: 1_000_000 }, () => "");
+    const started = performance.now();
+    const decoded = decodeExecutionHostProfile({ ...linux, traits });
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(decoded).toMatchObject({
+      ok: true,
+      value: { ...linux, traits: [] },
+    });
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.warnings).toHaveLength(64);
+    expect(decoded.warnings![63]).toEqual({
+      reason: "dropped-invalid-field",
+      path: "traits.63",
     });
   });
 
@@ -438,5 +514,22 @@ describe("a host's refusal of unmet requirements (MAR-3725)", () => {
       ok: false,
       reason: "invalid-payload",
     });
+  });
+});
+
+describe("a host's echo of the requirements it checked (MAR-3725)", () => {
+  it.each([
+    [{ requires: ["ios.simulator", "xcode"] }, true],
+    [{ requires: ["xcode", "ios.simulator", "future.trait"] }, true],
+    [{ requires: ["ios.simulator"] }, false],
+    [{ requires: [] }, false],
+    [{ requires: "ios.simulator xcode" }, false],
+    [{ requires: ["ios.simulator", "xcode", ""] }, false],
+    [{}, false],
+    [null, false],
+  ])("reads %j as confirming: %s", (answer, confirmed) => {
+    expect(
+      confirmsExecutionStartRequirements(answer, ["ios.simulator", "xcode"]),
+    ).toBe(confirmed);
   });
 });

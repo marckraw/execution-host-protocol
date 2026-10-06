@@ -297,8 +297,9 @@ in when it learns it after the item was added.
 
 On a host advertising `host.profile.v1`, authenticated `GET /v0/host` returns
 an `ExecutionHostProfile` directly (no envelope). `decodeExecutionHostProfile`
-in the package root reads it; the shared client's `host()` fetches and decodes
-it with the bearer token and the health timeout.
+in the package root reads it. The shared client's `host()` fetches and decodes
+it with the bearer token and the health timeout, and returns
+`{ profile, warnings }`.
 
 The profile names the host (`id`, `label`), its `platform` (`os`, `arch`,
 `osVersion`), probed `traits` and `toolchains`, and when those facts were
@@ -317,18 +318,29 @@ Device capabilities advertise probed inventories:
 - `devices.iosSimulator.v1`: `devices.iosSimulator` has `runtimes` (each an
   `id`, `name`, `version`), `deviceTypes` (ids), and `slots`.
 - `devices.androidEmulator.v1`: `devices.androidEmulator` has `systemImages`
-  (each an `id`, `apiLevel`, optional `codename`, `abi`), `avds` (names), and
-  `slots`.
+  (each an `id`, `apiLevel`, optional `apiMinor`, optional `codename`, `abi`),
+  `avds` (names), and `slots`.
 
 A system image's `id` is its SDK package path, e.g.
-`system-images;android-36.1;google_apis;arm64-v8a`. `apiLevel` is a positive
-number, the level the Android SDK repository gives it: `36`, or `36.1` for a
-minor release. A preview carries the level it builds on and its `codename`
-(`CANARY`), and an extension image (`android-36-ext19`) the level it extends.
-As a number `37.0` reads `37`; the `id` is the exact package.
+`system-images;android-36.1;google_apis;arm64-v8a`, and it is the exact name.
+The Android SDK repository's `<api-level>` is a string (`36`, `36.1`, `37.0`,
+`36x`), which a host splits into integers and never sends as a float.
+`apiLevel` is the positive integer major level, and `apiMinor` the minor level
+when the repository names one: `36.1` is `apiLevel: 36, apiMinor: 1`, `37.0`
+is `37` and `0`, and `36` has no `apiMinor`. A float would read `37.0` as
+`37` and `36.10` as `36.1`. A 0.20.0 reader, which requires an integer
+`apiLevel`, still reads such a profile and ignores the two new fields.
 
-Each `slots` contains non-negative integer `inUse` and `max` (a non-negative
-integer, or null when no limit is reported). These are a snapshot, not a
+- **A preview** carries the level it builds on and its `codename` (`CANARY`,
+  `CinnamonBun`). An image with a `codename` is not a release of its
+  `apiLevel`. The repository calls four images `37.1`: the stable release and
+  three previews, which `codename` and `id` tell apart.
+- **An extension image** (`android-36-ext19`, `36x` in the repository)
+  reports the level it extends, `apiLevel: 36` with no `apiMinor`. Its
+  extension stays in the `id`.
+
+Each `slots` contains `inUse` and `max`. `inUse` is a non-negative safe
+integer; `max` is one too, or null when no limit is reported. These are a snapshot, not a
 reservation. Absent inventories are unknown, not fabricated empty inventories.
 
 **One bad entry costs only itself.** The host's identity and platform (`id`,
@@ -339,8 +351,16 @@ throws `malformed` naming it. The inventory degrades: an unreadable trait,
 toolchain, runtime, device type, system image or AVD is dropped, and so is a
 device family whose lists or `slots` cannot be read, or a `devices` that is
 not an object. Each drop is a `dropped-invalid-field` warning at its path
-(`toolchains.0`, `devices.iosSimulator`), heard by `host({ onWarnings })`.
-A drop can only under-claim; it never invents a tool.
+(`toolchains.0`, `devices.iosSimulator`). `host()` returns the warnings beside
+the profile, and the client's `onWarnings` hears them as
+`{ operation: "host", sessionId: null, warnings }`. A drop can only
+under-claim, so a caller treats an absence the warnings explain as unknown,
+not as none: a Mac whose Xcode entry was unreadable may well have Xcode.
+
+The reader is bounded, so a hostile body costs little. Each string is 1 to
+256 characters (`osVersion` may be empty), a list is read to its 1024th
+entry with the rest named once at the first of them (`traits.1024`), and at
+most 64 drops are named.
 
 **Authenticated only.** `/health` advertises the capability ids, never the
 profile or device inventory. `health()` and `handshake()` keep their existing
@@ -357,33 +377,58 @@ Unknown trait ids remain intact for the host to decide.
 it, as it drops any unknown field, and starts the session anyway. So
 enforcement has its own capability id, `start.requires.v1`, apart from
 `host.profile.v1`: serving a profile is not checking a start. A host
-advertising it checks every required trait against its profile before
-preparing a workspace or starting a provider. It refuses a missing one with a
-`400` whose body is an `ExecutionStartRequirementsRefusal`:
+advertising it does three things:
 
-```json
-{
-  "error": "Missing required host traits: ios.simulator",
-  "code": "requirements-unmet",
-  "missingTraits": ["ios.simulator"]
-}
-```
+- It checks every required trait against its profile before preparing a
+  workspace or starting a provider.
+- It refuses a missing trait with a `400` whose body is an
+  `ExecutionStartRequirementsRefusal`:
 
-`code` is what a client branches on; `error` is for a person. The host is
-authoritative: a cached profile may be stale.
+  ```json
+  {
+    "error": "Missing required host traits: ios.simulator",
+    "code": "requirements-unmet",
+    "missingTraits": ["ios.simulator"]
+  }
+  ```
+
+  `code` is what a client branches on; `error` is for a person. A client
+  honours the code only on a `400`.
+
+- It echoes the `requires` it checked on its `201`, beside `sessionId`
+  (`ExecutionStartRequirementsEcho`). So enforcement is not taken on
+  `/health`'s word: a process that dropped `requires` behind a `/health`
+  listing the id, or a rollback between the probe and the start, answers
+  without the echo. `confirmsExecutionStartRequirements(answer, requires)`
+  reads it.
+
+The host is authoritative: a cached profile may be stale.
 
 The shared client makes this mechanical. `start()` with a non-empty
-`requires` first reads `/health`. When the host does not advertise
-`start.requires.v1`, it throws `ExecutionStartRequirementsError` with
-`code: "requirements-unenforced"`, and the start is never sent. The host's
-coded refusal is the same error with `code: "requirements-unmet"`, its
-`missingTraits` and `status`. Either way no session started, and a caller can
-say "this host can't run iOS work" without reading prose. Any other refusal
-stays an `ExecutionHostError`. A start without `requires` is unchanged: one
-request, no probe. `hostEnforcesStartRequirements(health)` asks the same
-question of a `health()` or `handshake()` result ahead of time. Device
-allocation and probing are the host implementation's work, outside this
-package.
+`requires` first reads `/health`, within the health timeout or the caller's
+`timeoutMs` when shorter. A probe that fails is that request's
+`ExecutionHostError`, with `operation: "health"`, and nothing is sent. Every
+other outcome is an `ExecutionStartRequirementsError`, whose `code` says
+which:
+
+- `requirements-unenforced`: the host does not advertise `start.requires.v1`,
+  or its descriptor is unreadable. The start is never sent.
+- `requirements-unmet`: the host's coded `400`. `missingTraits` keeps only
+  traits the start required (null when the host named none of them), and
+  `reason` is the host's `error`, or the decoder's own sentence, scrubbed and
+  cut.
+- `requirements-unconfirmed`: a `201` that does not echo every required
+  trait. The session did start, `sessionId` names it, and the caller decides
+  whether to delete it.
+
+This error is not an `ExecutionHostError`, so a caller converting errors
+checks for both. Any other refusal stays an `ExecutionHostError`. A
+`requires` that is not an array of non-empty strings is a `TypeError`, thrown
+before anything is sent. A start without `requires` is unchanged: one
+request, no probe, the same bytes. `hostEnforcesStartRequirements(health)`
+asks the question ahead of time, of a `health()` result or a handshake's
+`.health`. Device allocation and probing are the host implementation's work,
+outside this package.
 
 ## The client
 

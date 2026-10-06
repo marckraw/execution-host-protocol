@@ -19,6 +19,7 @@ for (const loaded of [commonJs, esModule]) {
     "function",
   );
   assert.equal(loaded.EXECUTION_START_REQUIREMENTS_UNMET, "requirements-unmet");
+  assert.equal(typeof loaded.confirmsExecutionStartRequirements, "function");
   // Shared guards are internal to the contract.
   assert.equal(loaded.isRecord, undefined);
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");

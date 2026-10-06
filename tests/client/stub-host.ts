@@ -248,6 +248,8 @@ export function createStubHost(): StubHost {
           host.startBody?.(body) ?? {
             protocolVersion: EXECUTION_PROTOCOL_VERSION,
             sessionId,
+            // As a host advertising `start.requires.v1` does (MAR-3725).
+            ...(body.requires === undefined ? {} : { requires: body.requires }),
           },
           201,
         );

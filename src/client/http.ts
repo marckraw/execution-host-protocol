@@ -48,26 +48,36 @@ export class ExecutionHostError extends Error {
 
 /**
  * `requirements-unenforced`: the host does not advertise `start.requires.v1`,
- * so it might ignore `requires` and start anyway; nothing was sent.
+ * or its descriptor is unreadable, so it might ignore `requires` and start
+ * anyway; nothing was sent.
  * `requirements-unmet`: the host refused the start because it lacks traits.
+ * `requirements-unconfirmed`: the host started the session but its answer
+ * does not echo the traits it checked, so it may be running without them.
  */
 export type ExecutionStartRequirementsErrorCode =
-  "requirements-unenforced" | "requirements-unmet";
+  "requirements-unenforced" | "requirements-unmet" | "requirements-unconfirmed";
 
 /**
  * A start whose `requires` this host cannot be trusted with (MAR-3725): one a
  * caller can branch on to say "this host can't run iOS work", without reading
- * the host's prose. Either way, no session was started.
+ * the host's prose. Not an `ExecutionHostError`: a caller converting errors
+ * checks for both. Unenforced or unmet, no session started; unconfirmed, one
+ * did, and `sessionId` names it for the caller to delete or keep.
  */
 export class ExecutionStartRequirementsError extends Error {
   readonly code: ExecutionStartRequirementsErrorCode;
   readonly operation = "start";
   /** What the start required. */
   readonly requires: string[];
-  /** The traits the host said it lacks; null when it was never asked. */
+  /**
+   * The required traits the host said it lacks: only ones in `requires`,
+   * never the host's own words. Null when it was not asked, or named none.
+   */
   readonly missingTraits: string[] | null;
-  /** The host's status for its refusal; null when nothing was sent. */
+  /** The host's status for its answer; null when nothing was sent. */
   readonly status: number | null;
+  /** The session the host started without confirming; null otherwise. */
+  readonly sessionId: string | null;
   /** Safe to show: the host's words, or why nothing was sent. */
   readonly reason: string;
 
@@ -78,6 +88,7 @@ export class ExecutionStartRequirementsError extends Error {
       requires: string[];
       missingTraits?: string[] | null;
       status?: number | null;
+      sessionId?: string | null;
     },
   ) {
     const status = details.status ?? null;
@@ -91,6 +102,7 @@ export class ExecutionStartRequirementsError extends Error {
       ? [...details.missingTraits]
       : null;
     this.status = status;
+    this.sessionId = details.sessionId ?? null;
     this.reason = reason;
   }
 }
@@ -170,8 +182,13 @@ export function reasonOfText(
   status: number,
   scrub: Scrub,
 ): string {
+  return boundedReason(rawReasonOf(body, status), scrub);
+}
+
+/** A host's words made safe to carry: the token out, then cut to length. */
+export function boundedReason(text: string, scrub: Scrub): string {
   // Scrubbed before it is cut, so a cut never leaves the start of a token.
-  const reason = scrub(rawReasonOf(body, status));
+  const reason = scrub(text);
   return reason.length > MAX_REASON_LENGTH
     ? `${reason.slice(0, MAX_REASON_LENGTH)}…`
     : reason;

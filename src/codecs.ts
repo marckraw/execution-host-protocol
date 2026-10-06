@@ -1,5 +1,6 @@
 import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
+  isBoundedString,
   isNonEmptyString,
   isNonNegativeInteger,
   isPositiveInteger,
@@ -1119,12 +1120,6 @@ function decodeResearchEvidenceSource(
     return null;
   }
   return raw as unknown as ExecutionResearchEvidenceSource;
-}
-
-function isBoundedString(value: unknown, maxLength: number): value is string {
-  return (
-    typeof value === "string" && value.length > 0 && value.length <= maxLength
-  );
 }
 
 function isBoundedStringArray(

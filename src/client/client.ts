@@ -8,7 +8,9 @@ import {
   encodeExecutionSessionPatchRequest,
   encodeExecutionStartRequest,
 } from "../codecs.js";
+import { isStringArray } from "../guards.js";
 import {
+  confirmsExecutionStartRequirements,
   decodeExecutionHostProfile,
   decodeExecutionStartRequirementsRefusal,
 } from "../host-profile.js";
@@ -40,6 +42,7 @@ import {
 } from "./health.js";
 import {
   ExecutionHostError,
+  boundedReason,
   ExecutionStartRequirementsError,
   failureOf,
   joinUrl,
@@ -79,15 +82,24 @@ export interface ExecutionHostClientOptions {
   /** Mints the command id of a request sent without one. Default `crypto.randomUUID()`. */
   createCommandId?: () => string;
   /**
-   * Hears what a start echo or a snapshot had to drop to be read, so a drop is
-   * never silent. Envelopes' own warnings reach `followSession`'s `onEnvelope`.
+   * Hears what a start echo, a snapshot or a host profile had to drop to be
+   * read, so a drop is never silent. Envelopes' own warnings reach
+   * `followSession`'s `onEnvelope`.
    */
-  onWarnings?(notice: {
-    operation: "start" | "snapshot";
-    sessionId: string;
-    warnings: ExecutionDecodeWarning[];
-  }): void;
+  onWarnings?(notice: ExecutionWarningsNotice): void;
 }
+
+/**
+ * What a read had to drop. A host profile belongs to no session, so its
+ * notice's `sessionId` is null (MAR-3725).
+ */
+export type ExecutionWarningsNotice =
+  | {
+      operation: "start" | "snapshot";
+      sessionId: string;
+      warnings: ExecutionDecodeWarning[];
+    }
+  | { operation: "host"; sessionId: null; warnings: ExecutionDecodeWarning[] };
 
 export interface ExecutionRequestOptions {
   signal?: AbortSignal;
@@ -95,12 +107,14 @@ export interface ExecutionRequestOptions {
   timeoutMs?: number;
 }
 
-export interface ExecutionHostProfileOptions extends ExecutionRequestOptions {
-  /**
-   * Hears what the profile had to drop to be read — an unreadable toolchain,
-   * runtime or device family, each at its path — so a drop is never silent.
-   */
-  onWarnings?(warnings: ExecutionDecodeWarning[]): void;
+/**
+ * A host profile and what had to be dropped to read it (MAR-3725). A profile
+ * with warnings under-claims: a host whose Xcode entry was unreadable may
+ * have Xcode, so a caller treats a warned absence as unknown, not as none.
+ */
+export interface ExecutionHostProfileReading {
+  profile: ExecutionHostProfile;
+  warnings: ExecutionDecodeWarning[];
 }
 
 export interface ExecutionCommandOptions extends ExecutionRequestOptions {
@@ -170,10 +184,11 @@ export interface ExecutionHostClient {
    * Authenticated `GET /v0/host`: identity, traits and device inventory
    * (`host.profile.v1`, MAR-3699). Uses the health timeout. An older host's
    * 404 is an `ExecutionHostError`, not an empty profile. An unreadable
-   * inventory entry is dropped and told to `onWarnings`; an unreadable
-   * identity or platform is `malformed`, naming the field (MAR-3725).
+   * inventory entry is dropped, returned in `warnings` and told to the
+   * client's `onWarnings`; an unreadable identity or platform is `malformed`,
+   * naming the field (MAR-3725).
    */
-  host(options?: ExecutionHostProfileOptions): Promise<ExecutionHostProfile>;
+  host(options?: ExecutionRequestOptions): Promise<ExecutionHostProfileReading>;
   /** The Projects the host advertises (`GET /v0/projects`). */
   projects(options?: ExecutionRequestOptions): Promise<ExecutionProject[]>;
   /**
@@ -185,11 +200,13 @@ export interface ExecutionHostClient {
   providers(options?: ExecutionRequestOptions): Promise<ExecutionProvider[]>;
   /**
    * Starts a session with its first turn. The request's `commandId` is minted
-   * when absent. A start that `requires` traits first reads `/health`, and is
-   * refused here, unsent, with an `ExecutionStartRequirementsError` when the
-   * host does not advertise `start.requires.v1`; the host's own refusal of a
-   * trait it lacks is the same error (MAR-3725). Without `requires`, nothing
-   * changes: one request, as before.
+   * when absent. A start that `requires` traits first reads `/health`
+   * (within the health timeout, or the caller's when shorter), and is refused
+   * here, unsent, with an `ExecutionStartRequirementsError` when the host
+   * does not advertise `start.requires.v1`. The host's own 400 coded
+   * `requirements-unmet`, and a 201 that does not echo the traits, are the
+   * same error (MAR-3725). A failed probe is its `ExecutionHostError`, with
+   * operation `health`. Without `requires`, nothing changes: one request.
    */
   start(
     request: ExecutionStartRequest,
@@ -487,10 +504,15 @@ export function createExecutionHostClient(
               { operation: "host", status: response.status },
             );
           }
-          if (decoded.warnings?.length) {
-            notify(requestOptions.onWarnings, decoded.warnings);
+          const warnings = decoded.warnings ?? [];
+          if (warnings.length > 0) {
+            notify(options.onWarnings, {
+              operation: "host",
+              sessionId: null,
+              warnings,
+            });
           }
-          return decoded.value;
+          return { profile: decoded.value, warnings };
         },
       ),
 
@@ -546,15 +568,28 @@ export function createExecutionHostClient(
     start: async (startRequest, requestOptions = {}) => {
       const commandId = commandIdFor(startRequest.commandId);
       const sessionId = startRequest.config.sessionId;
-      const requires = startRequest.requires ?? [];
+      const requires: unknown = startRequest.requires ?? [];
+      // Checked here, where the mistake is: a host would refuse it, and one
+      // predating `requires` would ignore it.
+      if (!isStringArray(requires)) {
+        throw new TypeError("requires must be an array of non-empty trait ids");
+      }
       // A host that predates `requires` drops it and starts anyway, so the
       // only safe place to refuse is here, before it is sent (MAR-3725).
       if (requires.length > 0) {
-        const probed = await health({ signal: requestOptions.signal });
+        const probed = await health({
+          signal: requestOptions.signal,
+          timeoutMs: Math.min(
+            healthTimeoutMs,
+            requestOptions.timeoutMs ?? healthTimeoutMs,
+          ),
+        });
         if (!hostEnforcesStartRequirements(probed)) {
           throw new ExecutionStartRequirementsError(
             "requirements-unenforced",
-            `the host does not advertise start.requires.v1, so it could start without ${requires.join(", ")}; nothing was sent`,
+            probed.executionProtocolValid
+              ? `the host does not advertise start.requires.v1, so it could start without ${requires.join(", ")}; nothing was sent`
+              : `the host's protocol descriptor is unreadable, so it cannot be trusted to check ${requires.join(", ")}; nothing was sent`,
             { requires },
           );
         }
@@ -581,16 +616,24 @@ export function createExecutionHostClient(
               response.status,
               connection.scrub,
             );
-            const unmet = decodeExecutionStartRequirementsRefusal(
-              parseOrNull(text),
-            );
-            if (unmet.ok) {
+            // The code is honoured where the protocol puts it: on a 400.
+            const unmet =
+              response.status === 400
+                ? decodeExecutionStartRequirementsRefusal(parseOrNull(text))
+                : null;
+            if (unmet?.ok) {
+              // Only traits this start asked for: the host's list is its
+              // words, unscrubbed and unbounded, and may name anything.
+              const missingTraits = requires.filter((trait) =>
+                unmet.value.missingTraits.includes(trait),
+              );
               throw new ExecutionStartRequirementsError(
                 "requirements-unmet",
-                reason,
+                boundedReason(unmet.value.error, connection.scrub),
                 {
                   requires,
-                  missingTraits: unmet.value.missingTraits,
+                  missingTraits:
+                    missingTraits.length > 0 ? missingTraits : null,
                   status: response.status,
                 },
               );
@@ -616,6 +659,16 @@ export function createExecutionHostClient(
                 ? `the host answered about session ${echoed}, not ${sessionId}`
                 : "the answer names no session",
               { operation: "start", status: response.status },
+            );
+          }
+          if (
+            requires.length > 0 &&
+            !confirmsExecutionStartRequirements(echo, requires)
+          ) {
+            throw new ExecutionStartRequirementsError(
+              "requirements-unconfirmed",
+              `the host started session ${sessionId} without echoing that it checked ${requires.join(", ")}; it may be running without them`,
+              { requires, status: response.status, sessionId },
             );
           }
           let workspace: ExecutionSessionWorkspace | null = null;

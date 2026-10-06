@@ -32,7 +32,7 @@ describe("authenticated host profiles", () => {
     "reads $id with the token and refuses redirects",
     async (profile) => {
       host.hostBody = profile;
-      expect(await client().host()).toEqual(profile);
+      expect(await client().host()).toEqual({ profile, warnings: [] });
       expect(host.hostRequests).toEqual([
         { authorization: `Bearer ${host.token}` },
       ]);
@@ -124,7 +124,7 @@ describe("authenticated host profiles", () => {
     },
   );
 
-  it("keeps a profile with one bad entry, and says what it dropped", async () => {
+  it("keeps a profile with one bad entry, returns what it dropped, and tells the client's listener", async () => {
     host.hostBody = {
       ...macHostProfileFixture,
       toolchains: [
@@ -134,31 +134,41 @@ describe("authenticated host profiles", () => {
       devices: { ...macHostProfileFixture.devices, iosSimulator: null },
     };
     const heard: unknown[] = [];
-    expect(
-      await client().host({ onWarnings: (warnings) => heard.push(warnings) }),
-    ).toEqual({
-      ...macHostProfileFixture,
-      devices: {
-        androidEmulator: macHostProfileFixture.devices.androidEmulator,
-      },
+    const warnings = [
+      { reason: "dropped-invalid-field", path: "toolchains.0" },
+      { reason: "dropped-invalid-field", path: "devices.iosSimulator" },
+    ];
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: host.fetch,
+      onWarnings: (notice) => heard.push(notice),
     });
-    expect(heard).toEqual([
-      [
-        { reason: "dropped-invalid-field", path: "toolchains.0" },
-        { reason: "dropped-invalid-field", path: "devices.iosSimulator" },
-      ],
-    ]);
+    expect(await connection.host()).toEqual({
+      profile: {
+        ...macHostProfileFixture,
+        devices: {
+          androidEmulator: macHostProfileFixture.devices.androidEmulator,
+        },
+      },
+      warnings,
+    });
+    expect(heard).toEqual([{ operation: "host", sessionId: null, warnings }]);
   });
 
   it("keeps the profile when the warnings listener throws", async () => {
     host.hostBody = { ...linuxHostProfileFixture, traits: [""] };
-    expect(
-      await client().host({
-        onWarnings: () => {
-          throw new Error("listener broke");
-        },
-      }),
-    ).toEqual(linuxHostProfileFixture);
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: host.fetch,
+      onWarnings: () => {
+        throw new Error("listener broke");
+      },
+    });
+    expect(await connection.host()).toMatchObject({
+      profile: linuxHostProfileFixture,
+    });
   });
 
   it("reports a non-JSON answer", async () => {
@@ -287,6 +297,39 @@ describe("starting with trait requirements (MAR-3725)", () => {
     },
   );
 
+  it("refuses a 201 that does not echo the traits it checked", async () => {
+    // `/health` says it enforces; the process behind it dropped `requires`.
+    enforcing();
+    host.startBody = (body) => ({
+      protocolVersion: 1,
+      sessionId: (body.config as { sessionId: string }).sessionId,
+    });
+    const refusal = await client()
+      .start(requiring(["ios.simulator", "xcode"]))
+      .catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ExecutionStartRequirementsError);
+    expect(refusal).toMatchObject({
+      code: "requirements-unconfirmed",
+      status: 201,
+      sessionId: startRequestWithEnvironmentFixture.value.config.sessionId,
+      requires: ["ios.simulator", "xcode"],
+      missingTraits: null,
+    });
+    expect(host.startRequests).toHaveLength(1);
+  });
+
+  it("refuses an echo that leaves out a required trait", async () => {
+    enforcing();
+    host.startBody = (body) => ({
+      protocolVersion: 1,
+      sessionId: (body.config as { sessionId: string }).sessionId,
+      requires: ["ios.simulator"],
+    });
+    await expect(
+      client().start(requiring(["ios.simulator", "xcode"])),
+    ).rejects.toMatchObject({ code: "requirements-unconfirmed" });
+  });
+
   it("surfaces the host's coded refusal of a missing trait", async () => {
     enforcing();
     host.startStatus = 400;
@@ -306,6 +349,59 @@ describe("starting with trait requirements (MAR-3725)", () => {
       missingTraits: ["ios.simulator"],
       reason: "Missing required host traits: ios.simulator",
     });
+  });
+
+  it("keeps only required traits from the host's list, and bounds its words", async () => {
+    enforcing();
+    host.startStatus = 400;
+    host.startRefusal = {
+      code: "requirements-unmet",
+      missingTraits: [host.token, "x".repeat(10_000), "xcode"],
+    };
+    const refusal = (await client()
+      .start(requiring(["ios.simulator", "xcode"]))
+      .catch((error: unknown) => error)) as ExecutionStartRequirementsError;
+    expect(refusal).toMatchObject({
+      code: "requirements-unmet",
+      missingTraits: ["xcode"],
+    });
+    // The decoder's own sentence, not the raw body; scrubbed, then cut.
+    expect(refusal.reason).toMatch(
+      /^Missing required host traits: \[token\], x+…$/,
+    );
+    expect(refusal.reason.length).toBeLessThanOrEqual(501);
+    expect(refusal.message).not.toContain(host.token);
+  });
+
+  it("reports no missing traits when the host names none that were required", async () => {
+    enforcing();
+    host.startStatus = 400;
+    host.startRefusal = {
+      error: "Missing required host traits: gpu",
+      code: "requirements-unmet",
+      missingTraits: ["gpu"],
+    };
+    await expect(
+      client().start(requiring(["ios.simulator"])),
+    ).rejects.toMatchObject({
+      code: "requirements-unmet",
+      missingTraits: null,
+    });
+  });
+
+  it("honours the code only on a 400", async () => {
+    enforcing();
+    host.startStatus = 503;
+    host.startRefusal = {
+      error: "Missing required host traits: ios.simulator",
+      code: "requirements-unmet",
+      missingTraits: ["ios.simulator"],
+    };
+    const refusal = await client()
+      .start(requiring(["ios.simulator"]))
+      .catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ExecutionHostError);
+    expect(refusal).toMatchObject({ kind: "http", status: 503 });
   });
 
   it("keeps any other refusal an ExecutionHostError with the host's words", async () => {
@@ -332,17 +428,84 @@ describe("starting with trait requirements (MAR-3725)", () => {
     expect(host.startRequests).toEqual([]);
   });
 
+  it("says an unreadable descriptor is unreadable, not unadvertised", async () => {
+    host.healthBody = { ...HEALTH_BODY, executionProtocol: { version: "one" } };
+    const refusal = (await client()
+      .start(requiring(["ios.simulator"]))
+      .catch((error: unknown) => error)) as ExecutionStartRequirementsError;
+    expect(refusal.code).toBe("requirements-unenforced");
+    expect(refusal.reason).toContain("descriptor is unreadable");
+    expect(host.startRequests).toEqual([]);
+  });
+
+  it.each([["ios.simulator"], "ios.simulator", [""], [1]])(
+    "refuses requires %j that is not a list of trait ids, before anything is sent",
+    async (requires) => {
+      await expect(
+        client().start({
+          ...startRequestWithEnvironmentFixture.value,
+          requires: requires as string[],
+        }),
+      ).rejects.toThrow(
+        Array.isArray(requires) && requires[0] === "ios.simulator"
+          ? ExecutionStartRequirementsError
+          : TypeError,
+      );
+      expect(host.startRequests).toEqual([]);
+    },
+  );
+
+  /** A host whose `/health` never answers, until the request is aborted. */
+  const silentHealth = (): typeof globalThis.fetch => async (input, init) => {
+    if (String(input).endsWith("/health")) {
+      return new Promise<Response>((_resolve, reject) =>
+        init?.signal?.addEventListener("abort", () =>
+          reject(init.signal?.reason),
+        ),
+      );
+    }
+    return host.fetch(input, init);
+  };
+
   it("propagates the caller's abort during the probe", async () => {
     const controller = new AbortController();
     const reason = new Error("caller stopped");
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: silentHealth(),
+    });
+    const started = connection.start(requiring(["ios.simulator"]), {
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
     controller.abort(reason);
-    await expect(
-      client().start(requiring(["ios.simulator"]), {
-        signal: controller.signal,
-      }),
-    ).rejects.toBe(reason);
+    await expect(started).rejects.toBe(reason);
     expect(host.startRequests).toEqual([]);
   });
+
+  it.each([
+    [50, 20_000, 50],
+    [undefined, 30, 30],
+    [20_000, 30, 30],
+  ])(
+    "bounds the probe by the caller's timeout %j or the health timeout %j, whichever is shorter",
+    async (timeoutMs, healthTimeoutMs, bound) => {
+      vi.useFakeTimers();
+      const connection = createExecutionHostClient({
+        baseUrl: "https://host.test",
+        token: host.token,
+        healthTimeoutMs,
+        fetch: silentHealth(),
+      });
+      const refusal = expect(
+        connection.start(requiring(["ios.simulator"]), { timeoutMs }),
+      ).rejects.toMatchObject({ kind: "timeout", operation: "health" });
+      await vi.advanceTimersByTimeAsync(bound);
+      await refusal;
+      expect(host.startRequests).toEqual([]);
+    },
+  );
 
   it("answers the predicate from the advertised capabilities", () => {
     expect(hostEnforcesStartRequirements({ capabilities: [] })).toBe(false);

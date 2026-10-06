@@ -67,9 +67,11 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "devices.androidEmulator.v1",
   /**
    * The host checks a start's `requires` against its traits before preparing
-   * anything, and refuses one it cannot meet with `requirements-unmet`
+   * anything, refuses one it cannot meet with a 400 coded
+   * `requirements-unmet`, and echoes the `requires` it checked on its 201
    * (MAR-3725). A host without it may ignore `requires` and start anyway, so
-   * the shared client refuses such a start itself, before sending it.
+   * the shared client refuses such a start itself, before sending it, and
+   * refuses a 201 that does not echo what it asked.
    */
   "start.requires.v1",
 ] as const;
@@ -114,13 +116,23 @@ export interface ExecutionHostAndroidSystemImage {
   /** The SDK package path, e.g. `system-images;android-36.1;google_apis;arm64-v8a`. */
   id: string;
   /**
-   * A positive number: the platform's API level with its minor level when it
-   * has one (`36`, `36.1`), as the SDK repository's `api-level` names it. A
-   * preview image carries the level it builds on, and its `codename`. Read
-   * `id` for the exact package; as a number, `37.0` is `37`.
+   * A positive integer: the platform's major API level, `36` for both
+   * `android-36` and `android-36.1`. An extension image (`android-36-ext19`,
+   * `36x` in the SDK repository) reports the level it extends; its extension
+   * stays in `id`.
    */
   apiLevel: number;
-  /** A preview's codename (`CANARY`, `Baklava`); absent on a stable release. */
+  /**
+   * A non-negative integer: the minor level when the SDK repository names
+   * one, `1` for `36.1` and `0` for `37.0`. Absent for a level named without
+   * one, such as `36` (MAR-3725).
+   */
+  apiMinor?: number;
+  /**
+   * A preview's codename (`CANARY`, `CinnamonBun`). An image with a codename
+   * is not a release of its `apiLevel`: it builds on that level, as several
+   * previews may at once. Absent on a stable release.
+   */
   codename?: string;
   abi: string;
 }
@@ -157,6 +169,16 @@ export interface ExecutionHostProfile {
 
 /** The `code` of a host's refusal of a start whose `requires` it cannot meet. */
 export const EXECUTION_START_REQUIREMENTS_UNMET = "requirements-unmet";
+
+/**
+ * What a host advertising `start.requires.v1` adds to its 201 for a start
+ * with `requires` (MAR-3725): the traits it checked, so a client need not
+ * take enforcement on `/health`'s word. A process that dropped the field, or
+ * a rollback between `/health` and the start, answers without it.
+ */
+export interface ExecutionStartRequirementsEcho {
+  requires: string[];
+}
 
 /**
  * The body of a host's refusal of a start whose `requires` it cannot meet
@@ -780,8 +802,9 @@ export interface ExecutionStartRequest {
   config: ExecutionStartConfig;
   /**
    * Traits this session needs, such as `ios.simulator` (MAR-3699). A host
-   * advertising `start.requires.v1` checks all of them before starting, and
-   * refuses a missing trait with an `ExecutionStartRequirementsRefusal`.
+   * advertising `start.requires.v1` checks all of them before starting,
+   * refuses a missing trait with an `ExecutionStartRequirementsRefusal`, and
+   * echoes them on its 201 (`ExecutionStartRequirementsEcho`).
    * Absent or empty means none. A host without that capability may ignore
    * this field, so the shared client refuses to send it there (MAR-3725).
    */
