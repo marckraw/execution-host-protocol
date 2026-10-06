@@ -82,7 +82,10 @@ a caller of the APIs named:
   echo every required trait is the same error (`requirements-unconfirmed`),
   carrying the `sessionId`. After a 201, which created the session, the
   client makes a best-effort delete first, and `sessionDeleted` says whether
-  it worked (`true`, or `false` when the session may still run). After a 409
+  it worked (`true`, or `false` when the session may still run). The delete
+  ignores the caller's abort but takes the request timeout (the caller's
+  `timeoutMs`, else `requestTimeoutMs`, 60 s by default), so it can add up to
+  that much to a failed `start()`. After a 409
   the session is older than the request, so it is left alone
   (`sessionDeleted: null`), and a retry never adopts an unconfirmed session
   as `exists`. A 409 for a start without `requires` is unchanged.

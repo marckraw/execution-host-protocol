@@ -324,6 +324,63 @@ describe("starting with trait requirements (MAR-3725)", () => {
     expect(host.sessions.has(sessionId)).toBe(false);
   });
 
+  /** A host that enforces on `/health`, then starts without the echo. */
+  const unechoing =
+    (
+      status: number,
+      onDelete: (init: RequestInit | undefined) => Promise<Response>,
+    ): typeof globalThis.fetch =>
+    async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/health")) return host.fetch(input, init);
+      if (init?.method === "DELETE") return onDelete(init);
+      return new Response(JSON.stringify({ protocolVersion: 1, sessionId }), {
+        status,
+      });
+    };
+
+  it("reports the status the host gave, a 200 included", async () => {
+    enforcing();
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: unechoing(200, async () => new Response(null, { status: 200 })),
+    });
+    await expect(
+      connection.start(requiring(["ios.simulator"])),
+    ).rejects.toMatchObject({
+      code: "requirements-unconfirmed",
+      status: 200,
+      sessionDeleted: true,
+    });
+  });
+
+  it("deletes the unconfirmed session even when the caller aborts meanwhile", async () => {
+    enforcing();
+    const controller = new AbortController();
+    let deleteAborted: boolean | null = null;
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: unechoing(201, async (init) => {
+        // The caller gives up while the cleanup is in flight.
+        controller.abort(new Error("caller stopped"));
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        deleteAborted = init?.signal?.aborted ?? false;
+        return new Response(null, { status: 200 });
+      }),
+    });
+    await expect(
+      connection.start(requiring(["ios.simulator"]), {
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({
+      code: "requirements-unconfirmed",
+      sessionDeleted: true,
+    });
+    expect(deleteAborted).toBe(false);
+  });
+
   it("says so when deleting the unconfirmed session fails, and a retry does not adopt it", async () => {
     enforcing();
     host.startBody = (body) => ({

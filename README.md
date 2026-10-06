@@ -432,7 +432,12 @@ which:
     unfollowed session no longer holds a host's place while its turn runs.
     `sessionDeleted` is `true` when the delete worked (or the host no longer
     had the session), and `false` when it failed and the session may still
-    run.
+    run. The delete runs outside the caller's signal, since cleanup is not
+    the caller's to cancel. It does take the start's request timeout (the
+    caller's `timeoutMs`, else the client's `requestTimeoutMs`, 60 s by
+    default), so against a host that stops answering it can add up to that
+    much to a failed `start()`. `status` is the status the host gave (`201`,
+    or any other success).
   - After a `409`, the session is older than this request, so the client
     leaves it alone (`sessionDeleted: null`). A retry therefore never adopts
     an unconfirmed session as `exists`.

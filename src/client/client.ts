@@ -631,7 +631,9 @@ export function createExecutionHostClient(
         async (
           response,
           body,
-        ): Promise<ExecutionStartResult | { status: "unconfirmed" }> => {
+        ): Promise<
+          ExecutionStartResult | { status: "unconfirmed"; httpStatus: number }
+        > => {
           if (response.status === 409) {
             if (requires.length === 0) {
               await response.body?.cancel().catch(() => {});
@@ -705,7 +707,7 @@ export function createExecutionHostClient(
             requires.length > 0 &&
             !confirmsExecutionStartRequirements(echo, requires)
           ) {
-            return { status: "unconfirmed" };
+            return { status: "unconfirmed", httpStatus: response.status };
           }
           let workspace: ExecutionSessionWorkspace | null = null;
           const raw = isRecord(echo) ? echo.workspace : undefined;
@@ -741,7 +743,7 @@ export function createExecutionHostClient(
       throw new ExecutionStartRequirementsError(
         "requirements-unconfirmed",
         `the host started session ${sessionId} without echoing that it checked ${requires.join(", ")}; ${sessionDeleted ? "it was deleted" : "deleting it failed, so it may still be running"}`,
-        { requires, status: 201, sessionId, sessionDeleted },
+        { requires, status: answer.httpStatus, sessionId, sessionDeleted },
       );
     },
 
