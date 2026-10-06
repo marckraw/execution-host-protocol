@@ -22,6 +22,9 @@ export function isNonNegativeInteger(value: unknown): value is number {
 export function isSafeNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
+export function isSafePositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1;
+}
 export function isBoundedString(
   value: unknown,
   maxLength: number,

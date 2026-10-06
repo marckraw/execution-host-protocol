@@ -51,8 +51,10 @@ export class ExecutionHostError extends Error {
  * or its descriptor is unreadable, so it might ignore `requires` and start
  * anyway; nothing was sent.
  * `requirements-unmet`: the host refused the start because it lacks traits.
- * `requirements-unconfirmed`: the host started the session but its answer
- * does not echo the traits it checked, so it may be running without them.
+ * `requirements-unconfirmed`: the host's 201, or its 409 for a session it
+ * already has, does not echo the traits it checked, so the session may run
+ * without them. After a 201 the client tries to delete it; see
+ * `sessionDeleted`.
  */
 export type ExecutionStartRequirementsErrorCode =
   "requirements-unenforced" | "requirements-unmet" | "requirements-unconfirmed";
@@ -61,8 +63,9 @@ export type ExecutionStartRequirementsErrorCode =
  * A start whose `requires` this host cannot be trusted with (MAR-3725): one a
  * caller can branch on to say "this host can't run iOS work", without reading
  * the host's prose. Not an `ExecutionHostError`: a caller converting errors
- * checks for both. Unenforced or unmet, no session started; unconfirmed, one
- * did, and `sessionId` names it for the caller to delete or keep.
+ * checks for both. Unenforced or unmet, no session started. Unconfirmed, one
+ * runs or ran: `sessionId` names it, and `sessionDeleted` says what became
+ * of it.
  */
 export class ExecutionStartRequirementsError extends Error {
   readonly code: ExecutionStartRequirementsErrorCode;
@@ -76,8 +79,15 @@ export class ExecutionStartRequirementsError extends Error {
   readonly missingTraits: string[] | null;
   /** The host's status for its answer; null when nothing was sent. */
   readonly status: number | null;
-  /** The session the host started without confirming; null otherwise. */
+  /** The session the host started or holds without confirming; null otherwise. */
   readonly sessionId: string | null;
+  /**
+   * Unconfirmed after a 201, which created the session: true when the client
+   * deleted it (or the host no longer had it), false when deleting failed
+   * and it may still run. Null otherwise, a 409 included: that session is
+   * older than the request, and the client leaves it alone.
+   */
+  readonly sessionDeleted: boolean | null;
   /** Safe to show: the host's words, or why nothing was sent. */
   readonly reason: string;
 
@@ -89,6 +99,7 @@ export class ExecutionStartRequirementsError extends Error {
       missingTraits?: string[] | null;
       status?: number | null;
       sessionId?: string | null;
+      sessionDeleted?: boolean | null;
     },
   ) {
     const status = details.status ?? null;
@@ -103,6 +114,7 @@ export class ExecutionStartRequirementsError extends Error {
       : null;
     this.status = status;
     this.sessionId = details.sessionId ?? null;
+    this.sessionDeleted = details.sessionDeleted ?? null;
     this.reason = reason;
   }
 }

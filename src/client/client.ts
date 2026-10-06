@@ -459,6 +459,30 @@ export function createExecutionHostClient(
     }
   };
 
+  const deleteSession = (
+    sessionId: string,
+    requestOptions: ExecutionRequestOptions = {},
+  ): Promise<ExecutionDeleteSessionResult> =>
+    request(
+      "delete session",
+      sessionPath(sessionId),
+      {
+        method: "DELETE",
+        authenticated: true,
+        timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+        signal: requestOptions.signal,
+      },
+      async (response): Promise<ExecutionDeleteSessionResult> => {
+        if (response.status === 404) {
+          await response.body?.cancel().catch(() => {});
+          return { status: "no-session", sessionId };
+        }
+        if (!response.ok) throw await refusal("delete session", response);
+        await response.body?.cancel().catch(() => {});
+        return { status: "deleted", sessionId };
+      },
+    );
+
   return {
     baseUrl,
 
@@ -594,7 +618,7 @@ export function createExecutionHostClient(
           );
         }
       }
-      return request(
+      const answer = await request(
         "start",
         "/v0/execution/sessions",
         {
@@ -604,9 +628,25 @@ export function createExecutionHostClient(
           timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
           signal: requestOptions.signal,
         },
-        async (response, body): Promise<ExecutionStartResult> => {
+        async (
+          response,
+          body,
+        ): Promise<ExecutionStartResult | { status: "unconfirmed" }> => {
           if (response.status === 409) {
-            await response.body?.cancel().catch(() => {});
+            if (requires.length === 0) {
+              await response.body?.cancel().catch(() => {});
+              return { status: "exists", sessionId, commandId };
+            }
+            // The session is older than this request: what it was checked
+            // against is the host's echo on the 409, or nothing (MAR-3725).
+            const existing = parseOrNull(await refusalText(response));
+            if (!confirmsExecutionStartRequirements(existing, requires)) {
+              throw new ExecutionStartRequirementsError(
+                "requirements-unconfirmed",
+                `the host already has session ${sessionId}, and does not echo that it was checked for ${requires.join(", ")}; it was left running`,
+                { requires, status: 409, sessionId, sessionDeleted: null },
+              );
+            }
             return { status: "exists", sessionId, commandId };
           }
           if (!response.ok) {
@@ -665,11 +705,7 @@ export function createExecutionHostClient(
             requires.length > 0 &&
             !confirmsExecutionStartRequirements(echo, requires)
           ) {
-            throw new ExecutionStartRequirementsError(
-              "requirements-unconfirmed",
-              `the host started session ${sessionId} without echoing that it checked ${requires.join(", ")}; it may be running without them`,
-              { requires, status: response.status, sessionId },
-            );
+            return { status: "unconfirmed" };
           }
           let workspace: ExecutionSessionWorkspace | null = null;
           const raw = isRecord(echo) ? echo.workspace : undefined;
@@ -690,6 +726,22 @@ export function createExecutionHostClient(
           }
           return { status: "started", sessionId, commandId, workspace };
         },
+      );
+      if (answer.status !== "unconfirmed") return answer;
+      // This request created the session, so deleting it loses nothing
+      // older; left running, it would hold a host's place for its turn.
+      // Best effort, and outside the caller's signal: cleanup is not the
+      // caller's to cancel (MAR-3725).
+      const sessionDeleted = await deleteSession(sessionId, {
+        timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+      }).then(
+        () => true,
+        () => false,
+      );
+      throw new ExecutionStartRequirementsError(
+        "requirements-unconfirmed",
+        `the host started session ${sessionId} without echoing that it checked ${requires.join(", ")}; ${sessionDeleted ? "it was deleted" : "deleting it failed, so it may still be running"}`,
+        { requires, status: 201, sessionId, sessionDeleted },
       );
     },
 
@@ -767,26 +819,7 @@ export function createExecutionHostClient(
       );
     },
 
-    deleteSession: (sessionId, requestOptions = {}) =>
-      request(
-        "delete session",
-        sessionPath(sessionId),
-        {
-          method: "DELETE",
-          authenticated: true,
-          timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
-          signal: requestOptions.signal,
-        },
-        async (response): Promise<ExecutionDeleteSessionResult> => {
-          if (response.status === 404) {
-            await response.body?.cancel().catch(() => {});
-            return { status: "no-session", sessionId };
-          }
-          if (!response.ok) throw await refusal("delete session", response);
-          await response.body?.cancel().catch(() => {});
-          return { status: "deleted", sessionId };
-        },
-      ),
+    deleteSession,
 
     snapshot: (sessionId, requestOptions = {}) =>
       request(

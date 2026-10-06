@@ -358,9 +358,13 @@ under-claim, so a caller treats an absence the warnings explain as unknown,
 not as none: a Mac whose Xcode entry was unreadable may well have Xcode.
 
 The reader is bounded, so a hostile body costs little. Each string is 1 to
-256 characters (`osVersion` may be empty), a list is read to its 1024th
-entry with the rest named once at the first of them (`traits.1024`), and at
-most 64 drops are named.
+256 characters (`osVersion` may be empty). A list is read to its 1024th
+entry, and the rest are named once as `dropped-excess-entries` at the list's
+path (`traits`). At most 64 dropped entries are named; past that, later
+entries go unnamed. A dropped `devices` or device family, and a cut list,
+are always named, so a lost family never hides behind the cap. There are at
+most eight such warnings. When 64 entries have been named, treat every absent
+entry as unknown.
 
 **Authenticated only.** `/health` advertises the capability ids, never the
 profile or device inventory. `health()` and `handshake()` keep their existing
@@ -395,12 +399,15 @@ advertising it does three things:
   `code` is what a client branches on; `error` is for a person. A client
   honours the code only on a `400`.
 
-- It echoes the `requires` it checked on its `201`, beside `sessionId`
-  (`ExecutionStartRequirementsEcho`). So enforcement is not taken on
-  `/health`'s word: a process that dropped `requires` behind a `/health`
-  listing the id, or a rollback between the probe and the start, answers
-  without the echo. `confirmsExecutionStartRequirements(answer, requires)`
-  reads it.
+- It echoes `requires` (`ExecutionStartRequirementsEcho`). On its `201`,
+  beside `sessionId`, it echoes the traits it checked for this start. On its
+  `409` for a session it already has, it echoes the traits that session was
+  checked against: `[]` when it was started without any. So enforcement is
+  not taken on `/health`'s word: a process that dropped `requires` behind a
+  `/health` listing the id, or a rollback between the probe and the start,
+  answers without the echo. `confirmsExecutionStartRequirements` reads
+  it. The echo should hold trait ids only; an entry that is
+  not one is ignored, not held against the host.
 
 The host is authoritative: a cached profile may be stale.
 
@@ -417,9 +424,18 @@ which:
   traits the start required (null when the host named none of them), and
   `reason` is the host's `error`, or the decoder's own sentence, scrubbed and
   cut.
-- `requirements-unconfirmed`: a `201` that does not echo every required
-  trait. The session did start, `sessionId` names it, and the caller decides
-  whether to delete it.
+- `requirements-unconfirmed`: an answer that does not echo every required
+  trait. `sessionId` names the session, and `sessionDeleted` says what
+  became of it:
+  - After a `201`, this request created the session, so the client makes a
+    best-effort delete before throwing. Nothing older is lost, and an
+    unfollowed session no longer holds a host's place while its turn runs.
+    `sessionDeleted` is `true` when the delete worked (or the host no longer
+    had the session), and `false` when it failed and the session may still
+    run.
+  - After a `409`, the session is older than this request, so the client
+    leaves it alone (`sessionDeleted: null`). A retry therefore never adopts
+    an unconfirmed session as `exists`.
 
 This error is not an `ExecutionHostError`, so a caller converting errors
 checks for both. Any other refusal stays an `ExecutionHostError`. A

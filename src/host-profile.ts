@@ -1,8 +1,8 @@
 import {
   isBoundedString,
-  isPositiveInteger,
   isRecord,
   isSafeNonNegativeInteger,
+  isSafePositiveInteger,
   isStringArray,
 } from "./guards.js";
 import {
@@ -22,11 +22,19 @@ import {
 const MAX_PROFILE_STRING_LENGTH = 256;
 /** The most entries read from one list; the rest are dropped, named once. */
 const MAX_PROFILE_LIST_ENTRIES = 1024;
-/** The most drops one profile reports; past it, drops go unnamed. */
-const MAX_PROFILE_WARNINGS = 64;
+/** The most dropped entries one profile names; past it, they go unnamed. */
+const MAX_PROFILE_ENTRY_WARNINGS = 64;
 
-/** Names a drop, until the profile has named enough of them. */
-type Warn = (path: string) => void;
+/**
+ * Names what a profile had to drop. A dropped entry is named until 64 are;
+ * a dropped `devices` or device family, and a list cut at its cap, are always
+ * named: there are at most eight of them, and each loses more than an entry.
+ */
+interface Drops {
+  entry(path: string): void;
+  whole(path: string): void;
+  cut(path: string): void;
+}
 
 const isProfileString = (value: unknown): value is string =>
   isBoundedString(value, MAX_PROFILE_STRING_LENGTH);
@@ -40,8 +48,9 @@ const isProfileString = (value: unknown): value is string =>
  * each named in `warnings`. A drop under-claims; it never invents a tool.
  *
  * Bounded, so a hostile body costs little: strings are 1 to 256 characters,
- * a list is read to its 1024th entry, the rest dropped and named once at the
- * first of them, and at most 64 drops are named.
+ * a list is read to its 1024th entry and the rest named once, as
+ * `dropped-excess-entries` at the list's path, and at most 64 dropped entries
+ * are named. A dropped `devices` or device family is always named.
  */
 export function decodeExecutionHostProfile(
   raw: unknown,
@@ -66,10 +75,15 @@ export function decodeExecutionHostProfile(
   if (!isProfileString(raw.checkedAt)) return refused("checkedAt");
 
   const warnings: ExecutionDecodeWarning[] = [];
-  const warn: Warn = (path) => {
-    if (warnings.length < MAX_PROFILE_WARNINGS) {
+  let namedEntries = 0;
+  const warn: Drops = {
+    entry: (path) => {
+      if (namedEntries >= MAX_PROFILE_ENTRY_WARNINGS) return;
+      namedEntries += 1;
       warnings.push({ reason: "dropped-invalid-field", path });
-    }
+    },
+    whole: (path) => warnings.push({ reason: "dropped-invalid-field", path }),
+    cut: (path) => warnings.push({ reason: "dropped-excess-entries", path }),
   };
   const traits = readList(raw.traits, "traits", warn, (entry) =>
     isProfileString(entry) ? entry : null,
@@ -100,15 +114,17 @@ export function decodeExecutionHostProfile(
 }
 
 /**
- * Whether a host's 201 for a start echoes every trait the start required
- * (`start.requires.v1`, MAR-3725). An answer without the echo, from a process
- * that dropped `requires` whatever `/health` said, confirms nothing.
+ * Whether a host's 201 for a start, or its 409 for a session it already has,
+ * echoes every trait the start required (`start.requires.v1`, MAR-3725). An
+ * answer without the echo, from a process that dropped `requires` whatever
+ * `/health` said, confirms nothing. An echo entry that is not a trait id is
+ * ignored rather than held against an honest host.
  */
 export function confirmsExecutionStartRequirements(
   answer: unknown,
   requires: readonly string[],
 ): boolean {
-  if (!isRecord(answer) || !isStringArray(answer.requires)) return false;
+  if (!isRecord(answer) || !Array.isArray(answer.requires)) return false;
   const checked = new Set(answer.requires);
   return requires.every((trait) => checked.has(trait));
 }
@@ -160,22 +176,22 @@ function decodeToolchain(raw: unknown): ExecutionHostToolchain | null {
 
 function decodeDevices(
   raw: unknown,
-  warn: Warn,
+  warn: Drops,
 ): ExecutionHostProfile["devices"] | undefined {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) {
-    warn("devices");
+    warn.whole("devices");
     return undefined;
   }
   const family = <T>(
     key: string,
-    read: (value: unknown, path: string, warn: Warn) => T | null,
+    read: (value: unknown, path: string, warn: Drops) => T | null,
   ): T | undefined => {
     if (raw[key] === undefined) return undefined;
     const path = `devices.${key}`;
     const decoded = read(raw[key], path, warn);
     if (decoded === null) {
-      warn(path);
+      warn.whole(path);
       return undefined;
     }
     return decoded;
@@ -192,7 +208,7 @@ function decodeDevices(
 function decodeIosSimulator(
   raw: unknown,
   path: string,
-  warn: Warn,
+  warn: Drops,
 ): ExecutionHostIosSimulator | null {
   if (
     !isRecord(raw) ||
@@ -222,7 +238,7 @@ function decodeIosSimulator(
 function decodeAndroidEmulator(
   raw: unknown,
   path: string,
-  warn: Warn,
+  warn: Drops,
 ): ExecutionHostAndroidEmulator | null {
   if (
     !isRecord(raw) ||
@@ -256,7 +272,7 @@ function decodeSystemImage(
   if (
     !isRecord(raw) ||
     !isProfileString(raw.id) ||
-    !isPositiveInteger(raw.apiLevel) ||
+    !isSafePositiveInteger(raw.apiLevel) ||
     !(raw.apiMinor === undefined || isSafeNonNegativeInteger(raw.apiMinor)) ||
     !(raw.codename === undefined || isProfileString(raw.codename)) ||
     !isProfileString(raw.abi)
@@ -284,21 +300,21 @@ function decodeSlots(raw: unknown): ExecutionHostDeviceSlots | null {
 
 /**
  * The readable entries of a list, each unreadable one named at `path.index`.
- * Past the cap the rest are dropped unread, named once at the first of them.
+ * Past the cap the rest are dropped unread, named once at `path`.
  */
 function readList<T>(
   raw: unknown[],
   path: string,
-  warn: Warn,
+  warn: Drops,
   read: (entry: unknown) => T | null,
 ): T[] {
   const result: T[] = [];
   const readable = Math.min(raw.length, MAX_PROFILE_LIST_ENTRIES);
   for (let index = 0; index < readable; index += 1) {
     const decoded = read(raw[index]);
-    if (decoded === null) warn(`${path}.${index}`);
+    if (decoded === null) warn.entry(`${path}.${index}`);
     else result.push(decoded);
   }
-  if (raw.length > readable) warn(`${path}.${readable}`);
+  if (raw.length > readable) warn.cut(path);
   return result;
 }

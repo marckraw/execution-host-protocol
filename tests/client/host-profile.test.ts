@@ -227,6 +227,7 @@ describe("starting with trait requirements (MAR-3725)", () => {
       },
     };
   };
+  const sessionId = startRequestWithEnvironmentFixture.value.config.sessionId;
   const requiring = (requires: string[]) => ({
     ...startRequestWithEnvironmentFixture.value,
     requires,
@@ -314,8 +315,97 @@ describe("starting with trait requirements (MAR-3725)", () => {
       sessionId: startRequestWithEnvironmentFixture.value.config.sessionId,
       requires: ["ios.simulator", "xcode"],
       missingTraits: null,
+      sessionDeleted: true,
     });
+    expect((refusal as Error).message).toContain("it was deleted");
     expect(host.startRequests).toHaveLength(1);
+    // The session this request created is gone, not left holding a place.
+    expect(host.deleteRequests).toEqual([sessionId]);
+    expect(host.sessions.has(sessionId)).toBe(false);
+  });
+
+  it("says so when deleting the unconfirmed session fails, and a retry does not adopt it", async () => {
+    enforcing();
+    host.startBody = (body) => ({
+      protocolVersion: 1,
+      sessionId: (body.config as { sessionId: string }).sessionId,
+    });
+    host.deleteStatus = 500;
+    const refusal = await client()
+      .start(requiring(["ios.simulator"]))
+      .catch((error: unknown) => error);
+    expect(refusal).toMatchObject({
+      code: "requirements-unconfirmed",
+      sessionDeleted: false,
+    });
+    expect((refusal as Error).message).toContain("may still be running");
+    expect(host.sessions.has(sessionId)).toBe(true);
+    // The retry hears 409, whose echo says the session was checked for none.
+    const retry = await client()
+      .start(requiring(["ios.simulator"]))
+      .catch((error: unknown) => error);
+    expect(retry).toBeInstanceOf(ExecutionStartRequirementsError);
+    expect(retry).toMatchObject({
+      code: "requirements-unconfirmed",
+      status: 409,
+      sessionId,
+      sessionDeleted: null,
+    });
+    // An older session is the caller's to delete, not the client's.
+    expect(host.deleteRequests).toEqual([sessionId]);
+  });
+
+  it.each([
+    [["ios.simulator", "xcode"], "exists"],
+    [["xcode", "", "ios.simulator", "future.trait"], "exists"],
+    [["ios.simulator"], "requirements-unconfirmed"],
+    [[], "requirements-unconfirmed"],
+  ])(
+    "reads a 409 echoing %j for a start requiring two traits as %s",
+    async (existingRequires, outcome) => {
+      enforcing();
+      host.sessions.add(sessionId);
+      host.existingRequires = existingRequires;
+      const answer = await client()
+        .start(requiring(["ios.simulator", "xcode"]))
+        .catch((error: unknown) => error);
+      if (outcome === "exists") {
+        expect(answer).toMatchObject({ status: "exists", sessionId });
+      } else {
+        expect(answer).toMatchObject({
+          code: outcome,
+          status: 409,
+          sessionDeleted: null,
+        });
+      }
+      expect(host.deleteRequests).toEqual([]);
+      expect(host.sessions.has(sessionId)).toBe(true);
+    },
+  );
+
+  it("refuses a 409 with no echo at all", async () => {
+    enforcing();
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: async (input, init) =>
+        String(input).endsWith("/health")
+          ? host.fetch(input, init)
+          : new Response(JSON.stringify({ error: "Session already exists" }), {
+              status: 409,
+            }),
+    });
+    await expect(
+      connection.start(requiring(["ios.simulator"])),
+    ).rejects.toMatchObject({ code: "requirements-unconfirmed", status: 409 });
+  });
+
+  it("keeps a 409 without requires as before: exists, no probe", async () => {
+    host.sessions.add(sessionId);
+    expect(
+      await client().start(startRequestWithEnvironmentFixture.value),
+    ).toMatchObject({ status: "exists", sessionId });
+    expect(host.healthRequests).toEqual([]);
   });
 
   it("refuses an echo that leaves out a required trait", async () => {

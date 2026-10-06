@@ -68,10 +68,11 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   /**
    * The host checks a start's `requires` against its traits before preparing
    * anything, refuses one it cannot meet with a 400 coded
-   * `requirements-unmet`, and echoes the `requires` it checked on its 201
+   * `requirements-unmet`, and echoes the `requires` it checked on its 201,
+   * or on its 409 the ones the existing session was checked against
    * (MAR-3725). A host without it may ignore `requires` and start anyway, so
    * the shared client refuses such a start itself, before sending it, and
-   * refuses a 201 that does not echo what it asked.
+   * refuses a 201 or 409 that does not echo what it asked.
    */
   "start.requires.v1",
 ] as const;
@@ -171,10 +172,12 @@ export interface ExecutionHostProfile {
 export const EXECUTION_START_REQUIREMENTS_UNMET = "requirements-unmet";
 
 /**
- * What a host advertising `start.requires.v1` adds to its 201 for a start
- * with `requires` (MAR-3725): the traits it checked, so a client need not
- * take enforcement on `/health`'s word. A process that dropped the field, or
- * a rollback between `/health` and the start, answers without it.
+ * What a host advertising `start.requires.v1` adds to its answer to a start
+ * with `requires` (MAR-3725), so a client need not take enforcement on
+ * `/health`'s word. On a 201, the traits it checked for this start. On a
+ * 409, the traits the session it already has was checked against: an empty
+ * list when it was started without any. A process that dropped `requires`,
+ * or a rollback between `/health` and the start, answers without it.
  */
 export interface ExecutionStartRequirementsEcho {
   requires: string[];
@@ -804,7 +807,7 @@ export interface ExecutionStartRequest {
    * Traits this session needs, such as `ios.simulator` (MAR-3699). A host
    * advertising `start.requires.v1` checks all of them before starting,
    * refuses a missing trait with an `ExecutionStartRequirementsRefusal`, and
-   * echoes them on its 201 (`ExecutionStartRequirementsEcho`).
+   * echoes them on its 201 and 409 (`ExecutionStartRequirementsEcho`).
    * Absent or empty means none. A host without that capability may ignore
    * this field, so the shared client refuses to send it there (MAR-3725).
    */
@@ -1015,8 +1018,13 @@ export type ExecutionDecodeFailureReason =
   | "unknown-kind"
   | "invalid-payload";
 
+/**
+ * `dropped-invalid-field`: what is at `path` could not be read and was left
+ * out. `dropped-excess-entries`: the list at `path` was cut at its cap, and
+ * its later entries left unread (host profiles only, MAR-3725).
+ */
 export interface ExecutionDecodeWarning {
-  reason: "dropped-invalid-field";
+  reason: "dropped-invalid-field" | "dropped-excess-entries";
   path: string;
 }
 

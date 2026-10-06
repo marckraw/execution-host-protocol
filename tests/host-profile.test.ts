@@ -192,6 +192,8 @@ describe("host profiles (MAR-3699)", () => {
       { id: "a", apiLevel: 36, apiMinor: -1, abi: "arm64" },
       { id: "a", apiLevel: 36, apiMinor: 0.5, abi: "arm64" },
       { id: "a", apiLevel: 36, apiMinor: "1", abi: "arm64" },
+      { id: "a", apiLevel: 1e308, abi: "arm64" },
+      { id: "a", apiLevel: Number.MAX_SAFE_INTEGER + 1, abi: "arm64" },
       JSON.parse(
         '{"id":"a","apiLevel":36,"apiMinor":1e999,"abi":"arm64"}',
       ) as object,
@@ -377,11 +379,34 @@ describe("host profiles (MAR-3699)", () => {
     expect(decodeExecutionHostProfile({ ...linux, traits })).toEqual({
       ok: true,
       value: { ...linux, traits: traits.slice(0, 1024) },
-      warnings: dropped("traits.1024"),
+      warnings: [{ reason: "dropped-excess-entries", path: "traits" }],
     });
   });
 
-  it("names at most 64 drops, and reads a hostile body cheaply", () => {
+  it("names a lost device family and a cut list even past 64 dropped entries", () => {
+    const decoded = decodeExecutionHostProfile({
+      ...macHostProfileFixture,
+      traits: [...Array.from({ length: 70 }, () => ""), "xcode"],
+      toolchains: Array.from({ length: 1025 }, () => ({
+        id: "t",
+        version: "1",
+      })),
+      devices: {
+        iosSimulator: { ...ios, slots: null },
+        androidEmulator: android,
+      },
+    });
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value.traits).toEqual(["xcode"]);
+    expect(decoded.value.devices).toEqual({ androidEmulator: android });
+    expect(decoded.warnings).toHaveLength(66);
+    expect(decoded.warnings!.slice(64)).toEqual([
+      { reason: "dropped-excess-entries", path: "toolchains" },
+      { reason: "dropped-invalid-field", path: "devices.iosSimulator" },
+    ]);
+  });
+
+  it("names at most 64 dropped entries, and reads a hostile body cheaply", () => {
     const traits = Array.from({ length: 1_000_000 }, () => "");
     const started = performance.now();
     const decoded = decodeExecutionHostProfile({ ...linux, traits });
@@ -391,11 +416,12 @@ describe("host profiles (MAR-3699)", () => {
       value: { ...linux, traits: [] },
     });
     if (!decoded.ok) throw new Error(decoded.reason);
-    expect(decoded.warnings).toHaveLength(64);
-    expect(decoded.warnings![63]).toEqual({
-      reason: "dropped-invalid-field",
-      path: "traits.63",
-    });
+    // 64 entries named, then the cut: the list was read to its 1024th.
+    expect(decoded.warnings).toHaveLength(65);
+    expect(decoded.warnings!.slice(63)).toEqual([
+      { reason: "dropped-invalid-field", path: "traits.63" },
+      { reason: "dropped-excess-entries", path: "traits" },
+    ]);
   });
 
   it("carries no protocolVersion, and ignores one a host sends", () => {
@@ -524,7 +550,10 @@ describe("a host's echo of the requirements it checked (MAR-3725)", () => {
     [{ requires: ["ios.simulator"] }, false],
     [{ requires: [] }, false],
     [{ requires: "ios.simulator xcode" }, false],
-    [{ requires: ["ios.simulator", "xcode", ""] }, false],
+    // Entries that are not trait ids are ignored, not held against the host.
+    [{ requires: ["ios.simulator", "xcode", ""] }, true],
+    [{ requires: [1, "xcode", null, "ios.simulator"] }, true],
+    [{ requires: ["ios.simulator", ""] }, false],
     [{}, false],
     [null, false],
   ])("reads %j as confirming: %s", (answer, confirmed) => {

@@ -71,6 +71,8 @@ export interface StubHost {
   deleteStatus: number;
   startRequests: Array<Record<string, unknown>>;
   startStatus: number;
+  /** The `requires` a 409 echoes for a session the stub already has. */
+  existingRequires: string[];
   /** What a start refused by `startStatus` answers with. */
   startRefusal: unknown;
   startBody: ((request: Record<string, unknown>) => unknown) | null;
@@ -139,6 +141,7 @@ export function createStubHost(): StubHost {
     deleteStatus: 200,
     startRequests: [],
     startStatus: 201,
+    existingRequires: [],
     startRefusal: { error: "Provider claude failed to start" },
     startBody: null,
     commandRequests: [],
@@ -238,7 +241,17 @@ export function createStubHost(): StubHost {
         host.startRequests.push(body);
         const sessionId = (body.config as { sessionId: string }).sessionId;
         if (host.sessions.has(sessionId)) {
-          return json({ error: `Session already exists: ${sessionId}` }, 409);
+          return json(
+            {
+              error: `Session already exists: ${sessionId}`,
+              // What it was checked against, as a `start.requires.v1` host
+              // says (MAR-3725); the stub's sessions were checked for none.
+              ...(body.requires === undefined
+                ? {}
+                : { requires: host.existingRequires }),
+            },
+            409,
+          );
         }
         if (host.startStatus !== 201) {
           return json(host.startRefusal, host.startStatus);

@@ -11,16 +11,21 @@ What differs from 0.20.0, on the wire:
 - **`requires` is enforced only where a host says so, and confirmed.** A new
   capability, `start.requires.v1`, means "this host checks `requires`,
   refuses a 400 coded `requirements-unmet` with `missingTraits`, and echoes
-  the `requires` it checked on its 201". `host.profile.v1` now means only
+  `requires`". On its 201 it echoes the traits it checked; on its 409, the
+  traits the existing session was checked against (`[]` for none).
+  `host.profile.v1` now means only
   "this host serves `GET /v0/host`". In 0.20.0 it also stood for enforcement,
   which a host predating `requires` could not honour. A host built from
-  0.20.0's README must also advertise `start.requires.v1` and send the echo.
+  0.20.0's README must also advertise `start.requires.v1` and send the echo
+  on both answers.
   New: `ExecutionStartRequirementsRefusal`,
   `decodeExecutionStartRequirementsRefusal`,
   `EXECUTION_START_REQUIREMENTS_UNMET`, `ExecutionStartRequirementsEcho`,
   `confirmsExecutionStartRequirements`.
 - **Android system images gain `apiMinor` and `codename`.** `apiLevel` stays
-  the positive integer 0.20.0 published. A minor level goes in `apiMinor`
+  the positive integer 0.20.0 published, now also required to be a safe
+  integer (so `1e308` is refused, as 0.20.0 refused it). A minor level goes
+  in `apiMinor`
   (`36.1` is `36` + `1`), and a preview names its `codename`. New type name:
   `ExecutionHostAndroidSystemImage`. This is additive: a 0.20.0 reader reads a
   profile from a newer host and ignores the two fields (checked against the
@@ -35,10 +40,14 @@ In the decoder:
   `dropped-invalid-field` warning at its path. Identity and platform stay
   strict. A refusal names the field in `ExecutionDecodeResult`'s new optional
   `path`. In 0.20.0 any bad entry refused the whole profile, with no path.
-- **Bounded.** Strings are 1 to 256 characters, lists are read to their
-  1024th entry, and at most 64 drops are named. 0.20.0 had no length bounds,
-  so a profile with a longer id or label is now refused, and a longer entry
-  is dropped.
+- **Bounded.** Strings are 1 to 256 characters. Lists are read to their
+  1024th entry, and the rest are named once with a new warning reason,
+  `dropped-excess-entries`, at the list's path. `ExecutionDecodeWarning`'s
+  `reason` is now a union of two. At most 64 dropped entries are named. A
+  dropped `devices` or device family, and a cut list, are always named
+  beyond those (at most eight), so a lost family never hides behind the cap.
+  0.20.0 had no length bounds, so a profile with a longer id or label is now
+  refused, and a longer entry is dropped.
 - Slot counts must be safe integers (as 0.20.0 required). The shape checks
   are shared between `codecs.ts` and the profile in one internal module.
   Deliberately, the profile carries no `protocolVersion`; the README says why.
@@ -53,6 +62,12 @@ a caller of the APIs named:
   union `ExecutionWarningsNotice`, so `sessionId` is `string | null`. Code
   that called `host()` against 0.20.0, or that treats a notice's `sessionId`
   as a `string`, must change.
+  **The compiler will not always say so.** A listener declared on its own
+  with 0.20.0's notice type, where `sessionId` is a `string`, still compiles
+  when passed as `onWarnings`. It then receives `sessionId: null` for a host
+  profile. If it uses `sessionId` as a string, it throws, and the client
+  swallows that throw, as it does for every listener. Those drops then go
+  unheard. Check such listeners by hand.
 - **A start with `requires` is checked first.** `start()` with a non-empty
   `requires` reads `/health` first, within the health timeout or the
   caller's `timeoutMs` when shorter. So such a start makes two requests, can
@@ -63,9 +78,16 @@ a caller of the APIs named:
   the start and could get `started` on a host without the traits.
 - **New error class.** The host's coded 400 is `ExecutionStartRequirementsError`
   (`requirements-unmet`). Its `missingTraits` is limited to the required
-  traits, and its reason is scrubbed and cut. A 201 without the echo is the
-  same error (`requirements-unconfirmed`), carrying the `sessionId` that
-  did start. **`ExecutionStartRequirementsError` is not an
+  traits, and its reason is scrubbed and cut. A 201 or 409 that does not
+  echo every required trait is the same error (`requirements-unconfirmed`),
+  carrying the `sessionId`. After a 201, which created the session, the
+  client makes a best-effort delete first, and `sessionDeleted` says whether
+  it worked (`true`, or `false` when the session may still run). After a 409
+  the session is older than the request, so it is left alone
+  (`sessionDeleted: null`), and a retry never adopts an unconfirmed session
+  as `exists`. A 409 for a start without `requires` is unchanged.
+  An echo entry that is not a trait id is ignored when matching.
+  **`ExecutionStartRequirementsError` is not an
   `ExecutionHostError`**: a caller converting errors must check for both. An
   uncoded refusal, or a coded one on any status but 400, stays an
   `ExecutionHostError`.
