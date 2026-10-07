@@ -44,6 +44,14 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    */
   "sessions.modelSelection.v1",
   /**
+   * The host answers `POST /v0/oneshot`: one answer to one prompt from one of
+   * its providers, with no tools, no workspace, no session, and nothing kept
+   * afterwards. The shared client always sends `contract: "oneshot.v1"`, and
+   * a host that accepts a request carrying it keeps that promise for the call
+   * (MAR-3775).
+   */
+  "oneshot.v1",
+  /**
    * The resident session (MAR-3679): the host keeps one provider process per
    * session, so the agent's own work outlives its answer. The session reports
    * `answered` while tasks it started still run, `runningTasks` on

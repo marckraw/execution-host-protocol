@@ -48,6 +48,12 @@ export {
   type ExecutionStartRequirementsErrorCode,
 } from "./http.js";
 export {
+  ExecutionOneShotError,
+  type ExecutionOneShotErrorCode,
+  type ExecutionOneShotOptions,
+  type ExecutionOneShotResult,
+} from "./oneshot.js";
+export {
   EXECUTION_CAUGHT_UP_EVENT,
   EXECUTION_REPLAY_EVENT,
   decodeExecutionCaughtUp,

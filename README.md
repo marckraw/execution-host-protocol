@@ -451,6 +451,98 @@ asks the question ahead of time, of a `health()` result or a handshake's
 `.health`. Device allocation and probing are the host implementation's work,
 outside this package.
 
+## One-shots: one answer, no tools
+
+On a host advertising `oneshot.v1`, authenticated `POST /v0/oneshot` answers
+one prompt with one of the host's providers. The body is agents-daemon's route
+as it already is plus one required field —
+`{ contract: "oneshot.v1", providerId, model, effort?, prompt, timeoutMs? }`,
+read and written by `encodeExecutionOneShotRequest` and
+`decodeExecutionOneShotRequest` — and the answer is `{ text }`
+(`decodeExecutionOneShotResponse`).
+
+**What a host promises under `oneshot.v1`.** One answer to one prompt, and
+nothing else: no tools, no workspace, no session, and no memory of it
+afterwards. The prompt is data the caller may not trust; the host runs it as a
+prompt and as nothing more. A host that serves the route without making this
+promise does not advertise the id, and the client will not send it a prompt.
+
+**The promise is made per request, by `contract`.** A host that accepts a
+request carrying `contract: "oneshot.v1"` keeps the promise for that call. A
+request without the field is not a `oneshot.v1` request, whatever the host
+does with it. The field exists because `/health` is read a moment before the
+request is sent, and a host can change in that moment: one rolled back to a
+release that predates `oneshot.v1` would run the prompt as that release does,
+with tools on, in its data directory, and nothing afterwards could undo it.
+Released agents-daemons validate the body strictly and answer `400` to a field
+they do not know, so they refuse the request instead, whatever their `/health`
+said. A `oneshot.v1` host may go on taking requests without the field for the
+callers that already send them; those calls are not under the promise.
+
+What `contract` does not protect against: a host that ignores fields it does
+not know instead of refusing them, and a host that advertises `oneshot.v1`
+falsely. Either would take the request and run the prompt as it pleases, and
+the answer carries no proof of who wrote it or how.
+
+**Caps.** The prompt is not blank and at most 65,536 characters
+(`EXECUTION_ONESHOT_PROMPT_MAX_LENGTH`); the answer's `text` is at most 65,536
+characters (`EXECUTION_ONESHOT_TEXT_MAX_LENGTH`) and may be empty. Characters
+are UTF-16 code units, JavaScript's `length`. Provider, model and effort are
+ids of 1 to 256 characters, not blank. `timeoutMs` is how long the provider
+may take, a whole number of milliseconds from 1 to 120,000
+(`EXECUTION_ONESHOT_TIMEOUT_MAX_MS`); absent, the host's default is 45 s. The
+request reader is strict: a field it does not know is refused, not dropped, so
+a one-shot never silently answers a different question than it was asked.
+
+**Refusals** are a status and a body `{ error, code }`
+(`decodeExecutionOneShotRefusal`):
+
+| Status | `code`                 | Meaning                                                                              |
+| ------ | ---------------------- | ------------------------------------------------------------------------------------ |
+| 404    | `provider-unknown`     | The host has no provider by that id. Always sent with its `code`.                    |
+| 503    | `provider-unavailable` | The provider is not installed, not signed in, or answers no one-shot.                |
+| 429    | `busy`                 | The host is answering as many one-shots as it will.                                  |
+| 504    | `timed-out`            | The provider did not answer within `timeoutMs`.                                      |
+| 502    | `failed`               | The provider failed to answer.                                                       |
+| 400    | `rejected`             | The host will not take the body: a field it does not know, or a value out of bounds. |
+
+A host's `error` is for its own logs. It never echoes the prompt or the
+answer, and the client does not repeat it either way.
+
+**The client.** `oneShot({ provider, model, effort?, prompt, timeoutMs?, signal? })`
+resolves `{ text }`:
+
+- A request the caps refuse throws a `TypeError` before anything is sent, and
+  so does an option it does not take (`tools`, `workspace`, …): a caller who
+  thinks they asked for tools learns they did not.
+- The body always carries `contract: "oneshot.v1"`.
+- It reads `/health` first, within the health timeout. A host that does not
+  advertise `oneshot.v1` exactly (`oneshot.v2` and `oneshot.v1 ` are other
+  ids), or whose descriptor is unreadable, is refused there as `unsupported`,
+  and the prompt is never sent. The caller's `signal` ends the probe too. A
+  failed probe is the probe's `ExecutionHostError`, operation `health`.
+- Every refusal after that is an `ExecutionOneShotError` with a `code`: the
+  host's code where it gave a known one, else its status as in the table
+  above. A `404` with no code is `unsupported`: no route, from a host without
+  one or a proxy in front of it. agents-daemon's `422` is read as
+  `provider-unavailable`, any other 5xx as `failed`, and any other refusal (a
+  400 — a released daemon refusing `contract` among them — or a 401 or 403
+  whatever its body says) as `rejected`. `timed-out` is also the client's own deadline:
+  `timeoutMs` (or 45 s) plus 10 s for the host to say so, with `status` null.
+  A 2xx that is not an answer, or is over the cap, is `malformed`. The client
+  reads at most 512 KiB of an answer's body and 64 KiB of a refusal's,
+  however much more the host sends.
+- The error's `sent` is false when the client refused before sending. Its
+  message and `reason` are the client's own sentences, so neither the prompt,
+  the answer, nor the token is ever in them.
+- Only a host that cannot be reached at all is an `ExecutionHostError`, kind
+  `network`, and it too is in the client's words — "the connection to the
+  host failed" — with no `cause`: a `fetch` may quote the request it failed to
+  send. A caller's abort is rethrown as it came.
+
+Not part of `oneshot.v1`: streaming, tools, images, several turns, or any link
+to a session.
+
 ## The client
 
 Three clients spoke this protocol, each with what the others lacked (MAR-3638):
@@ -499,7 +591,8 @@ token; `handshake()` adds the token probe and never throws. `projects()`,
 `providers()` (the catalogue: each provider, its models and the efforts each
 takes), `snapshot()` (null for a session the host does not have),
 `patchSession()` (a session's title, or the model and effort its next turn runs
-on), `deleteSession()` (teardown) and `events()` — one connection, decoded but
+on), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above) and
+`events()` — one connection, decoded but
 not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
 `not-found`, `http`, `malformed`), the status, and the host's own words. The

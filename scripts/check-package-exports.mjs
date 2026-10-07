@@ -48,4 +48,20 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof client.deleteSession, "function");
 }
 
+// One-shots (MAR-3775): the contract at the root, the method and its error on
+// the client.
+for (const loaded of [commonJs, esModule]) {
+  assert.equal(typeof loaded.decodeExecutionOneShotResponse, "function");
+  assert.equal(loaded.EXECUTION_ONESHOT_CONTRACT, "oneshot.v1");
+}
+for (const loaded of [commonJsClient, esModuleClient]) {
+  assert.equal(typeof loaded.ExecutionOneShotError, "function");
+  const client = loaded.createExecutionHostClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "check",
+    fetch: async () => new Response(null, { status: 503 }),
+  });
+  assert.equal(typeof client.oneShot, "function");
+}
+
 console.log("Package exports resolve from CommonJS and ESM, root and client.");

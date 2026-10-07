@@ -58,6 +58,19 @@ import {
 } from "./http.js";
 import { notify } from "./listeners.js";
 import {
+  ExecutionOneShotError,
+  ONESHOT_ANSWER_MAX_BYTES,
+  ONESHOT_REFUSAL_MAX_BYTES,
+  oneShotFailure,
+  oneShotRefusal,
+  oneShotUnreachable,
+  prepareOneShot,
+  readAtMost,
+  readOneShotAnswer,
+  type ExecutionOneShotOptions,
+  type ExecutionOneShotResult,
+} from "./oneshot.js";
+import {
   decodeExecutionSessionSnapshot,
   type ExecutionSessionSnapshot,
 } from "./snapshot.js";
@@ -268,6 +281,20 @@ export interface ExecutionHostClient {
     sessionId: string,
     options: ExecutionFollowOptions,
   ): ExecutionSessionFollow;
+  /**
+   * One tool-less answer to one prompt from one of the host's providers
+   * (`POST /v0/oneshot`, `oneshot.v1`, MAR-3775): no workspace, no session,
+   * nothing kept. A request the protocol would refuse throws a `TypeError`
+   * before anything is sent. Then it reads `/health` (the health timeout; a
+   * failed probe is its `ExecutionHostError`, operation `health`), and a host
+   * that does not advertise `oneshot.v1` is refused here, unsent, as
+   * `ExecutionOneShotError` code `unsupported`. The body always carries
+   * `contract: "oneshot.v1"`, which a host released before the id refuses
+   * whatever its `/health` said. Every refusal is an `ExecutionOneShotError`
+   * too; only a host that cannot be reached is an `ExecutionHostError`, in the
+   * client's own words. No error carries the prompt, the answer or the token.
+   */
+  oneShot(options: ExecutionOneShotOptions): Promise<ExecutionOneShotResult>;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -336,7 +363,11 @@ export function createExecutionHostClient(
     },
     read: (
       response: Response,
-      body: { json(): Promise<unknown> },
+      body: {
+        json(): Promise<unknown>;
+        /** The body, or null when it is longer than `maxBytes`. */
+        atMost(maxBytes: number): Promise<string | null>;
+      },
     ) => Promise<T>,
   ): Promise<T> => {
     const timeoutMs = positiveMs(init.timeoutMs, "timeoutMs");
@@ -388,7 +419,14 @@ export function createExecutionHostClient(
           });
         }
       };
-      return await read(response, { json });
+      const atMost = async (maxBytes: number): Promise<string | null> => {
+        try {
+          return await readAtMost(response, maxBytes);
+        } catch (error) {
+          throw transport(error);
+        }
+      };
+      return await read(response, { json, atMost });
     } finally {
       deadline.dispose();
     }
@@ -871,6 +909,93 @@ export function createExecutionHostClient(
         sessionId,
         followOptions,
       ),
+
+    oneShot: async (oneShotOptions) => {
+      // Every option read once, here, before anything is awaited.
+      const {
+        body,
+        deadlineMs: timeoutMs,
+        signal,
+      } = prepareOneShot(oneShotOptions);
+      // A host that serves the route without advertising `oneshot.v1` has
+      // not promised to run the prompt as nothing more than a prompt, so the
+      // only safe place to refuse is here, before it is sent (MAR-3775).
+      const probed = await health({ signal, timeoutMs: healthTimeoutMs });
+      if (!probed.capabilities.includes("oneshot.v1")) {
+        throw new ExecutionOneShotError(
+          "unsupported",
+          probed.executionProtocolValid
+            ? "the host does not advertise oneshot.v1; nothing was sent"
+            : "the host's protocol descriptor is unreadable, so it cannot be trusted with oneshot.v1; nothing was sent",
+          { sent: false },
+        );
+      }
+      try {
+        return await request(
+          "oneshot",
+          "/v0/oneshot",
+          {
+            method: "POST",
+            body,
+            authenticated: true,
+            timeoutMs,
+            signal,
+          },
+          async (response, answer): Promise<ExecutionOneShotResult> => {
+            if (!response.ok) {
+              // An unreadable refusal still has a status; a caller's abort
+              // is still theirs.
+              const refusal = await answer
+                .atMost(ONESHOT_REFUSAL_MAX_BYTES)
+                .catch((error: unknown) => {
+                  if (signal?.aborted) throw error;
+                  return null;
+                });
+              throw oneShotRefusal(response.status, refusal ?? "");
+            }
+            const text = await answer.atMost(ONESHOT_ANSWER_MAX_BYTES);
+            if (text === null) {
+              throw oneShotFailure(
+                "malformed",
+                response.status,
+                `it is longer than ${ONESHOT_ANSWER_MAX_BYTES} bytes`,
+              );
+            }
+            const decoded = readOneShotAnswer(text);
+            if (decoded === null) {
+              throw oneShotFailure(
+                "malformed",
+                response.status,
+                "it has no text, or text longer than 65536 characters",
+              );
+            }
+            return decoded;
+          },
+        );
+      } catch (error) {
+        // The client's deadline is the host's timeout plus its grace: either
+        // way the provider did not answer in time.
+        if (
+          error instanceof ExecutionHostError &&
+          error.kind === "timeout" &&
+          !signal?.aborted
+        ) {
+          throw oneShotFailure(
+            "timed-out",
+            null,
+            `no answer within ${seconds(timeoutMs)}`,
+          );
+        }
+        if (
+          error instanceof ExecutionHostError &&
+          error.kind === "network" &&
+          !signal?.aborted
+        ) {
+          throw oneShotUnreachable();
+        }
+        throw error;
+      }
+    },
   };
 }
 
