@@ -3,6 +3,8 @@ import {
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
+  checkExecutionInlineAttachments,
+  type ExecutionInlineAttachment,
 } from "../../src/index.js";
 import { linuxHostProfileFixture } from "../fixtures/host-profile-fixtures.js";
 
@@ -79,6 +81,19 @@ export interface StubHost {
   startBody: ((request: Record<string, unknown>) => unknown) | null;
   commandRequests: Array<{ sessionId: string; body: Record<string, unknown> }>;
   commandStatus: number;
+  /**
+   * Takes `kind: "file"` attachments (MAR-3783). Off, a file is refused as a
+   * host predating `attachments.inline-file.v1` refuses it: the whole command
+   * or start, text and all, with a 400. Whatever `/health` says.
+   */
+  takesFiles: boolean;
+  /**
+   * Refuses every attachment with a 400 quoting its name, its data and the
+   * token, as no host should, to show none of them reaches an error.
+   */
+  refusesAttachments: boolean;
+  /** The files each session holds; they go when it is torn down. */
+  files: Map<string, ExecutionInlineAttachment[]>;
   patchRequests: Array<{ sessionId: string; body: Record<string, unknown> }>;
   /** Status the next session patches answer with; 400 refuses the selection. */
   patchStatus: number;
@@ -142,6 +157,44 @@ export function createStubHost(): StubHost {
       headers: { "Content-Type": "application/json" },
     });
 
+  /**
+   * A 400 for attachments the host will not take, quoting the name as
+   * agents-daemon's refusals do; null when it takes them.
+   */
+  const refuseAttachments = (raw: unknown): Response | null => {
+    if (raw === undefined) return null;
+    const entries = (Array.isArray(raw) ? raw : []) as Array<
+      Record<string, unknown>
+    >;
+    if (host.refusesAttachments && entries.length > 0) {
+      const [first] = entries;
+      return json(
+        {
+          error: `Refused ${String(first?.name)} (${String(first?.dataBase64)}) for Bearer ${host.token}`,
+        },
+        400,
+      );
+    }
+    const file = entries.find((entry) => entry?.kind !== "image");
+    if (file && !host.takesFiles) {
+      return json(
+        { error: `Invalid inline attachment: ${String(file.name)}` },
+        400,
+      );
+    }
+    const checked = checkExecutionInlineAttachments(raw);
+    return checked.ok
+      ? null
+      : json({ error: `Attachment refused: ${checked.problem}` }, 400);
+  };
+  const keepFiles = (sessionId: string, raw: unknown) => {
+    const files = ((raw ?? []) as ExecutionInlineAttachment[]).filter(
+      (entry) => entry.kind === "file",
+    );
+    if (files.length === 0) return;
+    host.files.set(sessionId, [...(host.files.get(sessionId) ?? []), ...files]);
+  };
+
   const host: StubHost = {
     framing: true,
     bufferedSeqs: new Set(),
@@ -167,6 +220,9 @@ export function createStubHost(): StubHost {
     startBody: null,
     commandRequests: [],
     commandStatus: 202,
+    takesFiles: false,
+    refusesAttachments: false,
+    files: new Map(),
     patchRequests: [],
     patchStatus: 200,
     patchBody: null,
@@ -302,6 +358,9 @@ export function createStubHost(): StubHost {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         host.startRequests.push(body);
         const sessionId = (body.config as { sessionId: string }).sessionId;
+        const config = body.config as { inlineAttachments?: unknown };
+        const unattachable = refuseAttachments(config.inlineAttachments);
+        if (unattachable) return unattachable;
         if (host.sessions.has(sessionId)) {
           return json(
             {
@@ -319,6 +378,7 @@ export function createStubHost(): StubHost {
           return json(host.startRefusal, host.startStatus);
         }
         host.sessions.add(sessionId);
+        keepFiles(sessionId, config.inlineAttachments);
         return json(
           host.startBody?.(body) ?? {
             protocolVersion: EXECUTION_PROTOCOL_VERSION,
@@ -338,12 +398,17 @@ export function createStubHost(): StubHost {
       if (match[2] === "/commands") {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         host.commandRequests.push({ sessionId, body });
+        const command = body.command as { inlineAttachments?: unknown };
+        const unattachable = refuseAttachments(command.inlineAttachments);
+        if (unattachable) return unattachable;
         if (!host.sessions.has(sessionId)) {
           return json({ error: `Session not found: ${sessionId}` }, 404);
         }
-        return host.commandStatus === 202
-          ? json({ accepted: true }, 202)
-          : json({ error: "Session has stopped" }, host.commandStatus);
+        if (host.commandStatus !== 202) {
+          return json({ error: "Session has stopped" }, host.commandStatus);
+        }
+        keepFiles(sessionId, command.inlineAttachments);
+        return json({ accepted: true }, 202);
       }
 
       if (match[2] === "/events") {
@@ -422,6 +487,7 @@ export function createStubHost(): StubHost {
         // a follower that reconnects hears 404.
         host.sessions.delete(sessionId);
         host.snapshots.delete(sessionId);
+        host.files.delete(sessionId);
         for (const stream of [...streams]) {
           if (stream.sessionId !== sessionId) continue;
           stream.detach();

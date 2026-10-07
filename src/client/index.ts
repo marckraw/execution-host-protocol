@@ -10,6 +10,11 @@
  */
 
 export {
+  ExecutionInlineAttachmentsError,
+  hostTakesInlineFiles,
+  type ExecutionInlineAttachmentsErrorCode,
+} from "./attachments.js";
+export {
   createExecutionHostClient,
   type ExecutionCommandOptions,
   type ExecutionCommandResult,

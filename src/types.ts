@@ -83,6 +83,15 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * refuses a 201 or 409 that does not echo what it asked.
    */
   "start.requires.v1",
+  /**
+   * The host takes `kind: "file"` entries in `inlineAttachments` beside images
+   * (MAR-3783): it keeps each file for that session only, tells the agent
+   * where to read it, never opens, unpacks, runs or renders it, trusts its
+   * `name` and `mimeType` for nothing, and removes it when the session is torn
+   * down. A host without it refuses the whole command, text included, so the
+   * shared client never sends it a file.
+   */
+  "attachments.inline-file.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -658,6 +667,26 @@ export interface ExecutionInlineImageAttachment {
   dataBase64: string;
 }
 
+/**
+ * Any file transported inline beside images, to a host advertising
+ * `attachments.inline-file.v1` (MAR-3783). `name` and `mimeType` are the
+ * sender's words: a host trusts them for nothing.
+ */
+export interface ExecutionInlineFileAttachment {
+  kind: "file";
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  dataBase64: string;
+}
+
+/**
+ * An entry of `inlineAttachments`. A reader refuses a `kind` it does not know,
+ * the whole command with it, rather than drop part of what was sent.
+ */
+export type ExecutionInlineAttachment =
+  ExecutionInlineImageAttachment | ExecutionInlineFileAttachment;
+
 export type ExecutionPermissionPreset = "ask" | "yolo" | "custom";
 export type ExecutionCodexApprovalPolicy = "untrusted" | "on-request" | "never";
 export type ExecutionCodexSandboxMode =
@@ -709,7 +738,7 @@ export type ExecutionHostCommand =
       kind: "send-message";
       text: string;
       attachments?: unknown[];
-      inlineAttachments?: ExecutionInlineImageAttachment[];
+      inlineAttachments?: ExecutionInlineAttachment[];
       skillSelections?: unknown[];
       options?: ExecutionSendMessageOptions;
       researchEvidence?: ExecutionResearchEvidencePack;
@@ -757,7 +786,7 @@ export interface ExecutionStartConfig {
   permissionConfig?: ExecutionPermissionConfig;
   /** @deprecated Use permissionConfig. Retained for existing clients. */
   automationMode?: boolean;
-  inlineAttachments?: ExecutionInlineImageAttachment[];
+  inlineAttachments?: ExecutionInlineAttachment[];
   researchEvidence?: ExecutionResearchEvidencePack;
 }
 
@@ -983,6 +1012,12 @@ export interface ExecutionProvider {
   /** The efforts the provider takes as a whole (`features.effortLevels`): what its default model takes. */
   effortLevels: string[];
   models: ExecutionProviderModel[];
+  /**
+   * The attachment kinds the provider takes (`features.attachmentKinds`), in
+   * the host's own words (`image`, `pdf`). Absent when the host does not say,
+   * or says it in a shape this build cannot read: unknown, not none (MAR-3783).
+   */
+  attachmentKinds?: string[];
 }
 
 export interface ExecutionProviderListResponse {

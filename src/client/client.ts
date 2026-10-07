@@ -8,6 +8,7 @@ import {
   encodeExecutionSessionPatchRequest,
   encodeExecutionStartRequest,
 } from "../codecs.js";
+import { checkExecutionInlineAttachments } from "../attachments.js";
 import { isStringArray } from "../guards.js";
 import {
   confirmsExecutionStartRequirements,
@@ -27,6 +28,12 @@ import {
   type ExecutionSessionWorkspace,
   type ExecutionStartRequest,
 } from "../types.js";
+import {
+  hostTakesInlineFiles,
+  inlineAttachmentsRefusal,
+  inlineFilesRefusal,
+  withoutHostWords,
+} from "./attachments.js";
 import {
   followExecutionSession,
   type ExecutionFollowOptions,
@@ -220,12 +227,23 @@ export interface ExecutionHostClient {
    * `requirements-unmet`, and a 201 that does not echo the traits, are the
    * same error (MAR-3725). A failed probe is its `ExecutionHostError`, with
    * operation `health`. Without `requires`, nothing changes: one request.
+   * `config.inlineAttachments` are checked as `command()` checks them, and a
+   * start carrying a file reads the same one `/health` (MAR-3783).
    */
   start(
     request: ExecutionStartRequest,
     options?: ExecutionRequestOptions,
   ): Promise<ExecutionStartResult>;
-  /** Sends a session a command, saying who sent it. */
+  /**
+   * Sends a session a command, saying who sent it. A `send-message` whose
+   * `inlineAttachments` are past the limits, or malformed, throws an
+   * `ExecutionInlineAttachmentsError` before anything is sent. One carrying a
+   * `kind: "file"` entry first reads `/health` (as a start with `requires`
+   * does), and is refused here, unsent, with code `files-unsupported` when
+   * the host does not advertise `attachments.inline-file.v1`; its failures
+   * then carry the client's words only, never the host's or a file's
+   * (MAR-3783). Images only, or none: one request, as before.
+   */
   command(
     sessionId: string,
     command: ExecutionHostCommand,
@@ -636,9 +654,16 @@ export function createExecutionHostClient(
       if (!isStringArray(requires)) {
         throw new TypeError("requires must be an array of non-empty trait ids");
       }
+      const withFiles = carriesFiles(
+        "start",
+        startRequest.config.inlineAttachments,
+      );
+      const told = (error: unknown): never => {
+        throw withFiles ? withoutHostWords(error) : error;
+      };
       // A host that predates `requires` drops it and starts anyway, so the
       // only safe place to refuse is here, before it is sent (MAR-3725).
-      if (requires.length > 0) {
+      if (requires.length > 0 || withFiles) {
         const probed = await health({
           signal: requestOptions.signal,
           timeoutMs: Math.min(
@@ -646,7 +671,10 @@ export function createExecutionHostClient(
             requestOptions.timeoutMs ?? healthTimeoutMs,
           ),
         });
-        if (!hostEnforcesStartRequirements(probed)) {
+        if (withFiles && !hostTakesInlineFiles(probed)) {
+          throw inlineFilesRefusal("start", probed);
+        }
+        if (requires.length > 0 && !hostEnforcesStartRequirements(probed)) {
           throw new ExecutionStartRequirementsError(
             "requirements-unenforced",
             probed.executionProtocolValid
@@ -766,7 +794,7 @@ export function createExecutionHostClient(
           }
           return { status: "started", sessionId, commandId, workspace };
         },
-      );
+      ).catch(told);
       if (answer.status !== "unconfirmed") return answer;
       // This request created the session, so deleting it loses nothing
       // older; left running, it would hold a host's place for its turn.
@@ -795,6 +823,26 @@ export function createExecutionHostClient(
         command,
       };
       const operation = `command ${command.kind}`;
+      const withFiles =
+        command.kind === "send-message" &&
+        carriesFiles(operation, command.inlineAttachments);
+      // A host that predates files refuses the whole command, text and all,
+      // so the only safe place to refuse is here, before it is sent.
+      if (withFiles) {
+        const probed = await health({
+          signal: commandOptions.signal,
+          timeoutMs: Math.min(
+            healthTimeoutMs,
+            commandOptions.timeoutMs ?? healthTimeoutMs,
+          ),
+        });
+        if (!hostTakesInlineFiles(probed)) {
+          throw inlineFilesRefusal(operation, probed);
+        }
+      }
+      const told = (error: unknown): never => {
+        throw withFiles ? withoutHostWords(error) : error;
+      };
       return request(
         operation,
         `${sessionPath(sessionId)}/commands`,
@@ -814,7 +862,7 @@ export function createExecutionHostClient(
           await response.body?.cancel().catch(() => {});
           return { status: "accepted", commandId };
         },
-      );
+      ).catch(told);
     },
 
     patchSession: async (sessionId, patch, requestOptions = {}) => {
@@ -997,6 +1045,16 @@ export function createExecutionHostClient(
       }
     },
   };
+}
+
+/**
+ * Whether a request's inline attachments hold a file, once ones the host
+ * would refuse are refused here, unsent (MAR-3783).
+ */
+function carriesFiles(operation: string, attachments: unknown): boolean {
+  const checked = checkExecutionInlineAttachments(attachments);
+  if (!checked.ok) throw inlineAttachmentsRefusal(operation, checked);
+  return checked.files > 0;
 }
 
 /** The bound the protocol puts on a command id (MAR-3633). */
