@@ -1018,7 +1018,51 @@ export interface ExecutionProvider {
    * or says it in a shape this build cannot read: unknown, not none (MAR-3783).
    */
   attachmentKinds?: string[];
+  /**
+   * The account the provider is signed in as, as the host says it (MAR-3821).
+   * Absent when the host does not say, or says it in a shape this build
+   * cannot read: unknown, not "signed out".
+   */
+  account?: ExecutionProviderAccount;
 }
+
+/**
+ * Who a provider on a host is signed in as: the host's word, never verified.
+ * Nothing in the protocol checks it against the provider, so it is a label to
+ * show an owner, never an authorisation. It is personal data (an email):
+ * show it to owners only (MAR-3818).
+ */
+export interface ExecutionProviderAccount {
+  /**
+   * Who it is: an email, or what the host's operator wrote. Read cleaned of
+   * control and bidirectional-formatting characters, trimmed, and cut to
+   * `EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH`.
+   */
+  label: string;
+  /** The account's plan (`pro`), when the host knows it; read as `label` is. */
+  plan?: string;
+  /**
+   * Where the host got it: `sign-in` when the provider's own sign-in said so
+   * (still unverified: the host read it, nobody checked it), `label` when an
+   * operator wrote it beside the token.
+   */
+  source: ExecutionProviderAccountSource;
+  /**
+   * The calendar day the sign-in ends (`2027-09-30`), when the operator wrote
+   * one. No time and no zone: it is the day as written.
+   */
+  expiresOn?: string;
+}
+
+export const EXECUTION_PROVIDER_ACCOUNT_SOURCES = ["sign-in", "label"] as const;
+export type ExecutionProviderAccountSource =
+  (typeof EXECUTION_PROVIDER_ACCOUNT_SOURCES)[number];
+
+/**
+ * The longest an account's `label` or `plan` is read, in UTF-16 units: past
+ * it the text is cut. An email is at most 254, so a real one is never cut.
+ */
+export const EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH = 256;
 
 export interface ExecutionProviderListResponse {
   /** Absent on hosts that served the catalogue before the payload was contracted. */
