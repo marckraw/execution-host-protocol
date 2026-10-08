@@ -328,8 +328,11 @@ outlive its answer: a test run it backgrounded, a subagent it sent off.
   say).
 - **A turn has an `origin`.** `user` — a person's message opened it. `harness`
   — the provider opened it by itself, as Claude Code does when a background
-  task finishes and it reports back. It is required on every turn, and fixed
-  when the turn is added.
+  task finishes and it reports back. It is fixed when the turn is added. A
+  host sends it on every turn. A turn without one comes from a host that
+  predates 0.19, where a person's message opened every turn, so it reads as
+  `user`: agents-daemon on 0.17 sends none, and its turns read. An origin this
+  build does not know is refused, never read as `user` (MAR-3823).
 - **Settled** is `completed` or `failed`, with `runningTasks` at 0 and nothing
   queued. Attention `finished` comes only then: an answer with work still
   running is not the end of it, and neither is one with a message waiting

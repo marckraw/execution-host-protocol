@@ -1,0 +1,143 @@
+{
+  "protocolVersion": 1,
+  "sessionId": "session-1",
+  "providerId": "claude",
+  "model": null,
+  "effort": null,
+  "commandable": true,
+  "status": "completed",
+  "attention": "finished",
+  "activity": null,
+  "metadata": null,
+  "continuationToken": null,
+  "contextWindow": null,
+  "conversation": [
+    {
+      "id": "ae5d6519-8706-4ec1-8a98-bedb0f84b5e0",
+      "kind": "message",
+      "state": "complete",
+      "createdAt": "2026-10-08T15:51:17.312Z",
+      "updatedAt": "2026-10-08T15:51:17.312Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": null,
+        "providerEventType": "user"
+      },
+      "actor": "user",
+      "text": "hello"
+    },
+    {
+      "id": "1eb9f10f-448a-4203-af59-5d83f245a82d",
+      "kind": "message",
+      "state": "complete",
+      "createdAt": "2026-10-08T15:51:17.316Z",
+      "updatedAt": "2026-10-08T15:51:17.320Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": null,
+        "providerEventType": "assistant"
+      },
+      "actor": "assistant",
+      "text": "PRE_TOOL"
+    },
+    {
+      "id": "f4c62f86-dfd1-4195-ac64-d04576556b6a",
+      "kind": "tool-call",
+      "state": "complete",
+      "createdAt": "2026-10-08T15:51:17.320Z",
+      "updatedAt": "2026-10-08T15:51:17.326Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": "toolu_01EutxVyoJWnoHo1fQYfrkoi",
+        "providerEventType": "tool-use"
+      },
+      "toolName": "Read",
+      "inputText": "{\"file_path\":\"/etc/hostname\"}"
+    },
+    {
+      "id": "978596f1-1d48-4f1e-b18d-6bac57448fe8",
+      "kind": "tool-result",
+      "state": "complete",
+      "createdAt": "2026-10-08T15:51:17.326Z",
+      "updatedAt": "2026-10-08T15:51:17.326Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": "toolu_01EutxVyoJWnoHo1fQYfrkoi",
+        "providerEventType": "tool-result"
+      },
+      "toolName": "Read",
+      "relatedItemId": "f4c62f86-dfd1-4195-ac64-d04576556b6a",
+      "outputText": "1\t7029ea7c63de\n2\t"
+    },
+    {
+      "id": "5b65cadc-cb00-47fb-a67f-38ef4075ba06",
+      "kind": "message",
+      "state": "complete",
+      "createdAt": "2026-10-08T15:51:17.332Z",
+      "updatedAt": "2026-10-08T15:51:17.336Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": null,
+        "providerEventType": "assistant"
+      },
+      "actor": "assistant",
+      "text": "POST_TOOL\n7029ea7c63de"
+    },
+    {
+      "id": "09393691-c5a7-4dc3-8742-53e5cf2bc45c",
+      "kind": "message",
+      "state": "complete",
+      "createdAt": "2026-10-08T15:51:17.367Z",
+      "updatedAt": "2026-10-08T15:51:17.367Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": null,
+        "providerEventType": "user"
+      },
+      "actor": "user",
+      "text": "again",
+      "clientMessageId": "command-2"
+    },
+    {
+      "id": "57ec30a2-5cfe-4351-a288-dd29d016fe40",
+      "kind": "message",
+      "state": "complete",
+      "createdAt": "2026-10-08T15:51:17.369Z",
+      "updatedAt": "2026-10-08T15:51:17.375Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": null,
+        "providerEventType": "assistant"
+      },
+      "actor": "assistant",
+      "text": "Second answer"
+    }
+  ],
+  "turns": [
+    {
+      "id": "bcffe1a7-b9f7-41d7-8844-d774e925f172",
+      "sessionId": "session-1",
+      "sequence": 1,
+      "startedAt": "2026-10-08T15:51:17.302Z",
+      "endedAt": "2026-10-08T15:51:17.347Z",
+      "status": "completed",
+      "summary": "PRE_TOOLPOST_TOOL 7029ea7c63de",
+      "fileChanges": []
+    },
+    {
+      "id": "c94ed6da-aae6-43db-a59a-d15d0479fcdb",
+      "sessionId": "session-1",
+      "sequence": 2,
+      "startedAt": "2026-10-08T15:51:17.357Z",
+      "endedAt": "2026-10-08T15:51:17.386Z",
+      "status": "completed",
+      "summary": "Second answer",
+      "fileChanges": []
+    }
+  ],
+  "lastSeq": 32,
+  "workspace": null,
+  "prUrl": null,
+  "roomId": null,
+  "process": null
+}

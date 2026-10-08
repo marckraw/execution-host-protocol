@@ -141,16 +141,33 @@ describe("a turn's origin", () => {
     }
   });
 
-  it("is required: a turn without one, or with one it does not know, is refused", () => {
+  // MAR-3823: a turn without one came from a host that predates 0.19, and was
+  // a person's. This test said it was refused, which dropped every turn of
+  // every such host; tests/older-hosts.test.ts reads one as agents-daemon
+  // sends it.
+  it("reads a turn without one as a person's", () => {
     const { origin: _origin, ...withoutOrigin } = turn("harness");
     void _origin;
-    for (const raw of [withoutOrigin, { ...turn("user"), origin: "cron" }]) {
-      expect(decodeDelta({ kind: "turn.add", turn: raw })).toEqual({
-        ok: false,
-        reason: "invalid-payload",
-      });
-      expect(decodeExecutionTurn(raw).ok).toBe(false);
-    }
+    expect(decodeDelta({ kind: "turn.add", turn: withoutOrigin })).toEqual({
+      ok: true,
+      value: deltaEnvelope(1, {
+        kind: "turn.add",
+        turn: { ...withoutOrigin, origin: "user" },
+      }),
+    });
+    expect(decodeExecutionTurn(withoutOrigin)).toEqual({
+      ok: true,
+      value: { ...withoutOrigin, origin: "user" },
+    });
+  });
+
+  it("refuses a turn with one it does not know", () => {
+    const raw = { ...turn("user"), origin: "cron" };
+    expect(decodeDelta({ kind: "turn.add", turn: raw })).toEqual({
+      ok: false,
+      reason: "invalid-payload",
+    });
+    expect(decodeExecutionTurn(raw).ok).toBe(false);
   });
 
   it("reads only the turn's own fields, not whatever rode along", () => {
