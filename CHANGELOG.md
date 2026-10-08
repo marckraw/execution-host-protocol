@@ -1,5 +1,48 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.22.0
+
+### Minor Changes
+
+- 4ccc97d: A provider in the catalogue can say which account it is signed in as
+  (MAR-3821). `ExecutionProvider` gains an optional `account`:
+  `{ label, plan?, source: "sign-in" | "label", expiresOn? }`, with the new
+  types `ExecutionProviderAccount` and `ExecutionProviderAccountSource` and the
+  constants `EXECUTION_PROVIDER_ACCOUNT_SOURCES` and
+  `EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH` (256).
+
+  It is the host's word, never verified: show it to owners as a label, never
+  use it to authorise anything.
+
+  Additive: no capability id, and nothing that read before reads differently.
+  A catalogue without `account` decodes exactly as in 0.21.0, and a 0.21.0
+  reader ignores the field. `decodeExecutionProviderListResponse` never fails a
+  catalogue over an `account`. One that is not an object, names a `source` this
+  build does not know, or has no label is left out. A `label` or `plan` is
+  cleaned of control and bidirectional-formatting characters, trimmed, and cut
+  at 256 UTF-16 units. A `plan` or an `expiresOn` that is not a real
+  `YYYY-MM-DD` day is left out on its own.
+
+### Patch Changes
+
+- 2f1a314: A turn from a host that sends no `origin` reads again (MAR-3823). 0.19 made
+  `origin` required, so every turn from a host that predates it was dropped as
+  `invalid-payload`: agents-daemon (on 0.17) sends none, and a client past 0.18
+  followed its sessions with no turns and read snapshots without them.
+
+  - **A turn without `origin` reads as `origin: "user"`**, on `turn.add`, in
+    `decodeExecutionTurn`, and in the client's session snapshot. Before 0.19 a
+    person's message opened every turn, so that is what its absence means.
+  - **An `origin` this build does not know is still refused**, as is `null`: a
+    newer host said something this build cannot place, not nothing. A `harness`
+    turn stays `harness`.
+  - Every other field 0.19 to 0.21 added to something an older host already sent
+    was checked and already read without it; tests now hold that, against a
+    session recorded from agents-daemon.
+
+  What a host or client sends is unchanged, and the protocol version stays 1.
+  A host built on 0.19 or later still sends `origin` on every turn.
+
 ## 0.21.0
 
 ### Minor Changes
