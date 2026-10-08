@@ -781,6 +781,22 @@ A provider's `attachmentKinds` are the kinds it takes (`features.attachmentKinds
 in the host's own words: `image`, `pdf`); absent when the host does not say, or
 says it in a shape this build cannot read, which is unknown, not none
 (MAR-3783).
+A provider's `account` is who it is signed in as, **as the host says it**:
+nothing checks it, so it is a label to show an owner, never an authorisation,
+and it is personal data (an email) for owners' eyes only. It holds a `label`
+(an email, or what the host's operator wrote), a `plan` when the host knows
+one, its `source` (`sign-in` when the provider's own sign-in said so, `label`
+when an operator wrote it beside the token), and `expiresOn`, the calendar day
+an operator wrote that the token ends (`2027-09-30`). It sits on
+`GET /v0/providers`, behind the token, never on `/health`, and needs no
+capability id: it is one optional field on an existing answer, which a reader
+that does not know it ignores. It never costs the catalogue. An `account` that
+is not an object, has a `source` this build does not know, or has no label
+left once cleaned is left out, which is unknown, not signed out. A `label` or
+`plan` is cleaned of control and bidirectional-formatting characters, trimmed,
+and cut at 256 UTF-16 units (a real email is at most 254, so it is never cut);
+a `plan` or `expiresOn` that cannot be read (`2027-02-30` is not a day) is
+left out on its own (MAR-3821).
 
 **Teardown** is `deleteSession(sessionId)`, `DELETE /v0/execution/sessions/:id`:
 the host stops the provider, drops the workspace and the log, and ends the

@@ -55,6 +55,26 @@ describe("the providers' catalogue", () => {
     expect(providers[1]).toMatchObject({ authenticated: false, models: [] });
   });
 
+  it("hands on a provider's account as read, and a bad one costs nothing (MAR-3821)", async () => {
+    host.providersBody = {
+      providers: [
+        {
+          id: "claude",
+          account: { label: "ops@example.com\n", source: "label" },
+        },
+        { id: "codex", account: { label: "m@e.com", source: "who-knows" } },
+      ],
+    };
+
+    const providers = await client().providers();
+
+    expect(providers[0]!.account).toStrictEqual({
+      label: "ops@example.com",
+      source: "label",
+    });
+    expect("account" in providers[1]!).toBe(false);
+  });
+
   it("asks with the token, which the catalogue sits behind", async () => {
     await expect(client("wrong-token").providers()).rejects.toMatchObject({
       kind: "auth",

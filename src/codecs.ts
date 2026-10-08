@@ -11,6 +11,8 @@ import {
   EXECUTION_ACTOR_KINDS,
   EXECUTION_ATTENTION_STATES,
   EXECUTION_PROTOCOL_VERSION,
+  EXECUTION_PROVIDER_ACCOUNT_SOURCES,
+  EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH,
   EXECUTION_SESSION_STATUSES,
   EXECUTION_TURN_ORIGINS,
   type ExecutionActivitySignal,
@@ -47,6 +49,8 @@ import {
   type ExecutionProjectEnvironmentRef,
   type ExecutionProjectListResponse,
   type ExecutionProvider,
+  type ExecutionProviderAccount,
+  type ExecutionProviderAccountSource,
   type ExecutionProviderListResponse,
   type ExecutionProviderModel,
   type ExecutionProtocolDescriptor,
@@ -1619,7 +1623,9 @@ export function decodeExecutionProjectListResponse(
  * `slug`, an effort an `id` — and fields beyond what is named here are
  * ignored. A model's `efforts` are its own `effortOptions`, or else its
  * provider's `features.effortLevels`; `available` and `authenticated` stay
- * absent when the host does not say, never guessed `false`.
+ * absent when the host does not say, never guessed `false`. A provider's
+ * `account` never costs the catalogue: one this build cannot read is left out,
+ * and its text is cleaned and cut (MAR-3821).
  */
 export function decodeExecutionProviderListResponse(
   raw: unknown,
@@ -1690,7 +1696,78 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
     effortLevels,
     models,
     ...optionalProperty("attachmentKinds", attachmentKinds),
+    ...optionalProperty("account", decodeExecutionProviderAccount(raw.account)),
   };
+}
+
+/**
+ * Optional and read tolerantly (MAR-3821): an older host never sent it, and a
+ * hostile or broken one must not cost the catalogue. Left out whole when it is
+ * not an object, its `source` is not one this build knows (a reader could not
+ * say whose word it is), or no label is left after cleaning. A `plan` or
+ * `expiresOn` that cannot be read is left out alone; the account stays.
+ */
+function decodeExecutionProviderAccount(
+  raw: unknown,
+): ExecutionProviderAccount | undefined {
+  if (
+    !isRecord(raw) ||
+    !(EXECUTION_PROVIDER_ACCOUNT_SOURCES as readonly unknown[]).includes(
+      raw.source,
+    )
+  ) {
+    return undefined;
+  }
+  const label = readAccountText(raw.label);
+  if (label === undefined) return undefined;
+  return {
+    label,
+    ...optionalProperty("plan", readAccountText(raw.plan)),
+    source: raw.source as ExecutionProviderAccountSource,
+    ...optionalProperty("expiresOn", readCalendarDay(raw.expiresOn)),
+  };
+}
+
+/**
+ * C0 and C1 controls, and what reorders or breaks a line on screen: bidi
+ * marks, embeddings, overrides and isolates, line and paragraph separators.
+ * They let one label pass for another, or for more than one line.
+ */
+const UNSHOWABLE_ACCOUNT_CHARACTERS =
+  /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+
+/**
+ * Cleaned, trimmed, then cut, rather than refused: the host cuts and cleans a
+ * label too (MAR-3820), so a reader agrees with it whatever length it chose,
+ * and a cut never lands inside a real email (at most 254 units).
+ */
+function readAccountText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let text = value.replace(UNSHOWABLE_ACCOUNT_CHARACTERS, "").trim();
+  if (text.length > EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH) {
+    text = text.slice(0, EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH);
+    // Never end on half a surrogate pair.
+    if (/[\ud800-\udbff]$/.test(text)) text = text.slice(0, -1);
+    text = text.trimEnd();
+  }
+  return text.length > 0 ? text : undefined;
+}
+
+/** `YYYY-MM-DD`, and a day that month has: `2027-02-30` is not one. */
+function readCalendarDay(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return undefined;
+  const [year, month, day] = match.slice(1).map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][
+    month - 1
+  ];
+  return days !== undefined && day >= 1 && day <= days ? value : undefined;
 }
 
 function decodeExecutionProviderModel(
