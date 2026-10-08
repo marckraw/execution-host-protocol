@@ -688,9 +688,16 @@ function isHttpUrl(value: unknown): value is string {
   }
 }
 
+/**
+ * A turn without `origin` comes from a host that predates 0.19, where a
+ * person's message opened every turn: it reads as `user` (MAR-3823). An origin
+ * this build does not know is a newer host saying something it cannot place,
+ * and is refused, never read as `user`.
+ */
 function decodeTurn(raw: unknown): ExecutionTurn | null {
+  if (!isRecord(raw)) return null;
+  const origin = raw.origin === undefined ? "user" : raw.origin;
   if (
-    !isRecord(raw) ||
     !isNonEmptyString(raw.id) ||
     !isNonEmptyString(raw.sessionId) ||
     !Number.isInteger(raw.sequence) ||
@@ -699,7 +706,7 @@ function decodeTurn(raw: unknown): ExecutionTurn | null {
     (raw.endedAt !== null && typeof raw.endedAt !== "string") ||
     !isTurnStatus(raw.status) ||
     (raw.summary !== null && typeof raw.summary !== "string") ||
-    !(EXECUTION_TURN_ORIGINS as readonly unknown[]).includes(raw.origin)
+    !(EXECUTION_TURN_ORIGINS as readonly unknown[]).includes(origin)
   ) {
     return null;
   }
@@ -711,7 +718,7 @@ function decodeTurn(raw: unknown): ExecutionTurn | null {
     endedAt: raw.endedAt as string | null,
     status: raw.status,
     summary: raw.summary as string | null,
-    origin: raw.origin as ExecutionTurn["origin"],
+    origin: origin as ExecutionTurn["origin"],
   };
 }
 

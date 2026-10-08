@@ -546,7 +546,13 @@ export interface ExecutionTurn {
   endedAt: string | null;
   status: ExecutionTurnStatus;
   summary: string | null;
-  /** Fixed when the turn is added: a `turn.patch` never carries it. */
+  /**
+   * Fixed when the turn is added: a `turn.patch` never carries it. A host
+   * built on 0.19 or later sends it on every turn. A turn without one comes
+   * from a host that predates it, where a person's message opened every turn,
+   * so readers take it as `user` (MAR-3823). An origin a reader does not know
+   * is refused, never taken as `user`.
+   */
   origin: ExecutionTurnOrigin;
 }
 
