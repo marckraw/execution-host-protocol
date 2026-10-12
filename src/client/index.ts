@@ -16,6 +16,7 @@ export {
 } from "./attachments.js";
 export {
   createExecutionHostClient,
+  type ExecutionAttachmentDownloadOptions,
   type ExecutionCommandOptions,
   type ExecutionCommandResult,
   type ExecutionDeleteSessionResult,
@@ -27,6 +28,7 @@ export {
   type ExecutionStartResult,
   type ExecutionWarningsNotice,
 } from "./client.js";
+export { type ExecutionAttachmentDownloadResult } from "./attachment-download.js";
 export {
   executionRetryDelayMs,
   type ExecutionFollowEnd,

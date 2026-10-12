@@ -65,6 +65,14 @@ import {
 } from "./http.js";
 import { notify } from "./listeners.js";
 import {
+  attachmentByteLimit,
+  attachmentDownloadFailure,
+  attachmentPathId,
+  cancelAttachmentBody,
+  readAttachmentBytes,
+  type ExecutionAttachmentDownloadResult,
+} from "./attachment-download.js";
+import {
   ExecutionOneShotError,
   ONESHOT_ANSWER_MAX_BYTES,
   ONESHOT_REFUSAL_MAX_BYTES,
@@ -125,6 +133,11 @@ export interface ExecutionRequestOptions {
   signal?: AbortSignal;
   /** Overrides the client's timeout for this request. */
   timeoutMs?: number;
+}
+
+export interface ExecutionAttachmentDownloadOptions extends ExecutionRequestOptions {
+  /** Defaults to 8 MiB; a positive whole number no greater than that ceiling. */
+  maxBytes?: number;
 }
 
 /**
@@ -279,6 +292,17 @@ export interface ExecutionHostClient {
     options?: ExecutionRequestOptions,
   ): Promise<ExecutionSessionSnapshot | null>;
   /**
+   * Authenticated GET of a session attachment, with both IDs encoded. Reads
+   * at most 8 MiB (or a smaller maxBytes) within the request deadline, through
+   * injected fetch. Throws ExecutionHostError with fixed client reasons;
+   * a caller's abort is rethrown. MIME and length claims are not validation.
+   */
+  downloadAttachment(
+    sessionId: string,
+    attachmentId: string,
+    options?: ExecutionAttachmentDownloadOptions,
+  ): Promise<ExecutionAttachmentDownloadResult>;
+  /**
    * One connection to the session's event stream, decoded but not sequenced.
    * Most readers want `followSession`. When the caller's `signal` aborts the
    * iteration ends, it does not throw — the same as `followSession`, whose
@@ -363,6 +387,7 @@ export function createExecutionHostClient(
     `/v0/execution/sessions/${encodeURIComponent(sessionId)}`;
 
   /**
+   * Facade: JSON and bounded binary reads share one authenticated request.
    * One request, within a deadline that covers reading the body too, handed to
    * `read` with the response. Only what `fetch` and the body throw becomes a
    * transport `ExecutionHostError` — a listener's mistake, or this client's,
@@ -376,6 +401,7 @@ export function createExecutionHostClient(
       method: "GET" | "POST" | "PATCH" | "DELETE";
       body?: string;
       authenticated: boolean;
+      accept?: string;
       timeoutMs: number;
       signal: AbortSignal | undefined;
     },
@@ -385,6 +411,7 @@ export function createExecutionHostClient(
         json(): Promise<unknown>;
         /** The body, or null when it is longer than `maxBytes`. */
         atMost(maxBytes: number): Promise<string | null>;
+        bytes(maxBytes: number): Promise<ExecutionAttachmentDownloadResult>;
       },
     ) => Promise<T>,
   ): Promise<T> => {
@@ -404,7 +431,7 @@ export function createExecutionHostClient(
         response = await connection.fetch(joinUrl(baseUrl, path), {
           method: init.method,
           headers: {
-            Accept: "application/json",
+            Accept: init.accept ?? "application/json",
             ...(init.authenticated
               ? { Authorization: `Bearer ${connection.token}` }
               : {}),
@@ -444,7 +471,18 @@ export function createExecutionHostClient(
           throw transport(error);
         }
       };
-      return await read(response, { json, atMost });
+      const bytes = async (
+        maxBytes: number,
+      ): Promise<ExecutionAttachmentDownloadResult> => {
+        try {
+          return await readAttachmentBytes(response, maxBytes, deadline.signal);
+        } catch (error) {
+          const failure = transport(error);
+          deadline.close();
+          throw failure;
+        }
+      };
+      return await read(response, { json, atMost, bytes });
     } finally {
       deadline.dispose();
     }
@@ -946,6 +984,57 @@ export function createExecutionHostClient(
           return decoded.value;
         },
       ),
+
+    downloadAttachment: async (
+      sessionId,
+      attachmentId,
+      downloadOptions = {},
+    ) => {
+      const {
+        maxBytes: requestedBytes,
+        signal,
+        timeoutMs = requestTimeoutMs,
+      } = downloadOptions;
+      const maxBytes = attachmentByteLimit(requestedBytes);
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new RangeError(
+          "timeoutMs must be a finite positive number of milliseconds",
+        );
+      }
+      const path = `/v0/execution/sessions/${attachmentPathId(
+        sessionId,
+      )}/attachments/${attachmentPathId(attachmentId)}`;
+      if (signal?.aborted) throw signal.reason;
+      try {
+        return await request(
+          "download attachment",
+          path,
+          {
+            method: "GET",
+            authenticated: true,
+            accept: "application/octet-stream",
+            timeoutMs,
+            signal,
+          },
+          async (response, body) => {
+            if (!response.ok || response.redirected) {
+              cancelAttachmentBody(response);
+              throw attachmentDownloadFailure(
+                response.redirected ? "http" : kindOfStatus(response.status),
+                response.status,
+              );
+            }
+            return body.bytes(maxBytes);
+          },
+        );
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason;
+        if (error instanceof ExecutionHostError) {
+          throw attachmentDownloadFailure(error.kind, error.status);
+        }
+        throw error;
+      }
+    },
 
     events: (sessionId, streamOptions) =>
       streamSessionEvents(connection, sessionId, streamOptions),

@@ -38,6 +38,8 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");
   // The root is the contract: the client is reachable only by its subpath.
   assert.equal(loaded.createExecutionHostClient, undefined);
+  assert.equal(loaded.readAttachmentBytes, undefined);
+  assert.equal(loaded.readOrAbort, undefined);
 }
 
 const commonJsClient = require(`${packageName}/client`);
@@ -61,6 +63,13 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof client.providers, "function");
   assert.equal(typeof client.host, "function");
   assert.equal(typeof client.deleteSession, "function");
+  assert.equal(typeof client.downloadAttachment, "function");
+  assert.deepEqual(
+    await client
+      .downloadAttachment("s", "a")
+      .catch((error) => ({ kind: error.kind, status: error.status })),
+    { kind: "http", status: 503 },
+  );
 }
 
 // One-shots (MAR-3775): the contract at the root, the method and its error on
