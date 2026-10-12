@@ -26,7 +26,10 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(loaded.EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH, 255);
   assert.equal(loaded.EXECUTION_TOOL_ATTACHMENTS_MAX_COUNT, 8);
   assert.equal(loaded.EXECUTION_TOOL_ATTACHMENT_MAX_BYTES, 8_388_608);
-  assert.equal(loaded.EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT, 65_535);
+  assert.equal(
+    loaded.EXECUTION_TOOL_ATTACHMENT_MIME_TYPE_MAX_LENGTH,
+    loaded.EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH,
+  );
   // The tool metadata readers are implementation details of the item codec.
   assert.equal(loaded.decodeToolAttachments, undefined);
   assert.equal(loaded.decodeToolAttachmentOmissions, undefined);

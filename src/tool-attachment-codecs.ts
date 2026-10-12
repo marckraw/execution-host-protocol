@@ -1,14 +1,17 @@
-import { isBoundedString, isRecord, isSafePositiveInteger } from "./guards.js";
 import {
-  EXECUTION_TOOL_ATTACHMENT_ID_MAX_LENGTH,
-  EXECUTION_TOOL_ATTACHMENT_NAME_MAX_LENGTH,
+  isBoundedString,
+  isNonEmptyString,
+  isRecord,
+  isSafeNonNegativeInteger,
+  isSafePositiveInteger,
+} from "./guards.js";
+import {
   EXECUTION_TOOL_ATTACHMENT_MIME_TYPE_MAX_LENGTH,
   EXECUTION_TOOL_ATTACHMENT_MAX_BYTES,
   EXECUTION_TOOL_ATTACHMENT_MAX_PIXELS,
   EXECUTION_TOOL_ATTACHMENT_MAX_SIDE,
   EXECUTION_TOOL_ATTACHMENTS_MAX_COUNT,
   EXECUTION_TOOL_ATTACHMENT_OMISSION_CODES,
-  EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT,
   type ExecutionToolAttachment,
   type ExecutionToolAttachmentOmissions,
 } from "./tool-attachments.js";
@@ -37,16 +40,14 @@ export function decodeToolAttachments(
   }
   const value: ExecutionToolAttachment[] = [];
   const warnings: ExecutionDecodeWarning[] = [];
-  const ids = new Set<string>();
   for (const [index, entry] of raw.entries()) {
     const attachment = readToolAttachment(entry);
-    if (attachment === null || ids.has(attachment.id)) {
+    if (attachment === null) {
       warnings.push({
         reason: "dropped-invalid-field",
         path: `${path}.${index}`,
       });
     } else {
-      ids.add(attachment.id);
       value.push(attachment);
     }
   }
@@ -56,9 +57,9 @@ export function decodeToolAttachments(
 function readToolAttachment(raw: unknown): ExecutionToolAttachment | null {
   if (
     !isRecord(raw) ||
-    !isBoundedString(raw.id, EXECUTION_TOOL_ATTACHMENT_ID_MAX_LENGTH) ||
+    !isNonEmptyString(raw.id) ||
     !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(raw.id) ||
-    !isBoundedString(raw.name, EXECUTION_TOOL_ATTACHMENT_NAME_MAX_LENGTH) ||
+    !isNonEmptyString(raw.name) ||
     /[/\\\u0000-\u001f\u007f]/.test(raw.name) ||
     !isBoundedString(
       raw.mimeType,
@@ -97,10 +98,7 @@ export function decodeToolAttachmentOmissions(
   for (const code of EXECUTION_TOOL_ATTACHMENT_OMISSION_CODES) {
     if (!Object.hasOwn(raw, code)) continue;
     const count = raw[code];
-    if (
-      isSafePositiveInteger(count) &&
-      count <= EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT
-    ) {
+    if (isSafeNonNegativeInteger(count)) {
       value[code] = count;
     } else {
       warnings.push({

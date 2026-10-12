@@ -28,7 +28,7 @@ describe("tool image metadata in snapshots", () => {
           ...imageToolResult.attachments,
           { ...imageToolResult.attachments[0], id: "bad", width: 0 },
         ],
-        attachmentOmissions: { "turn-limit": 0 },
+        attachmentOmissions: { "turn-limit": -1 },
       }),
     );
     expect(decoded.ok && decoded.value.conversation).toEqual([

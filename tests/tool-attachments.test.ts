@@ -17,7 +17,7 @@ import {
   EXECUTION_TOOL_ATTACHMENTS_MAX_SESSION_PREVIEW_BYTES,
   EXECUTION_TOOL_ATTACHMENT_MAX_RENDITION_BYTES,
   EXECUTION_TOOL_ATTACHMENT_OMISSION_CODES,
-  EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT,
+  EXECUTION_TOOL_ATTACHMENT_MIME_TYPE_MAX_LENGTH,
   type ExecutionConversationItemPatch,
 } from "../src/index.js";
 import {
@@ -102,24 +102,14 @@ describe("tool image references (MAR-3926)", () => {
     },
   );
 
-  it("drops only bad entries, including duplicate ids, in a bounded list", () => {
+  it("drops only bad entries in a bounded list", () => {
     const second = { ...toolAttachment, id: "image-2" };
     expect(
-      readAttachments([
-        null,
-        toolAttachment,
-        { ...second, width: 0 },
-        second,
-        toolAttachment,
-      ]),
+      readAttachments([null, toolAttachment, { ...second, width: 0 }, second]),
     ).toEqual({
       ok: true,
       value: { ...textToolResult, attachments: [toolAttachment, second] },
-      warnings: [
-        warning("item.attachments.0"),
-        warning("item.attachments.2"),
-        warning("item.attachments.4"),
-      ],
+      warnings: [warning("item.attachments.0"), warning("item.attachments.2")],
     });
   });
 
@@ -210,24 +200,38 @@ describe("tool image references (MAR-3926)", () => {
     },
   );
 
+  it.each([254, 255, 256])(
+    "reuses the existing MIME bound at %i code units",
+    (length) => {
+      const attachment = {
+        ...toolAttachment,
+        mimeType: `image/${"x".repeat(length - 6)}`,
+      };
+      const decoded = readAttachments([attachment]);
+      expect(decoded.ok && decoded.value).toMatchObject({
+        attachments:
+          length <= EXECUTION_TOOL_ATTACHMENT_MIME_TYPE_MAX_LENGTH
+            ? [attachment]
+            : [],
+      });
+    },
+  );
+
+  it("does not impose new ID/name length caps or deduplicate references", () => {
+    const attachment = {
+      ...toolAttachment,
+      id: "x".repeat(256),
+      name: "n".repeat(256),
+    };
+    expect(readAttachments([attachment, attachment])).toEqual({
+      ok: true,
+      value: { ...textToolResult, attachments: [attachment, attachment] },
+    });
+  });
+
   it.each(["id", "name", "mimeType"])(
-    "bounds %s, including missing and malformed values",
+    "requires a non-empty string for %s",
     (field) => {
-      const atLength = (length: number) =>
-        field === "mimeType"
-          ? `image/${"x".repeat(length - 6)}`
-          : "x".repeat(length);
-      for (const length of [254, 255, 256]) {
-        const decoded = readAttachments([
-          { ...toolAttachment, [field]: atLength(length) },
-        ]);
-        expect(decoded.ok && decoded.value).toMatchObject({
-          attachments:
-            length <= 255
-              ? [{ ...toolAttachment, [field]: atLength(length) }]
-              : [],
-        });
-      }
       for (const value of [undefined, null, "", 1, [], {}]) {
         expect(
           readAttachments([{ ...toolAttachment, [field]: value }]),
@@ -366,14 +370,19 @@ describe("bounded omission counts", () => {
   const read = (attachmentOmissions: unknown) =>
     decodeExecutionConversationItem({ ...textToolResult, attachmentOmissions });
 
-  it("accepts each fixed code, zero omissions as an empty map, and saturated counts", () => {
-    expect(EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT).toBe(65_535);
+  it("accepts each fixed code with a count representable exactly as a safe integer", () => {
     expect(read({})).toEqual({
       ok: true,
       value: { ...textToolResult, attachmentOmissions: {} },
     });
     for (const code of EXECUTION_TOOL_ATTACHMENT_OMISSION_CODES) {
-      for (const count of [1, 65_534, 65_535]) {
+      for (const count of [
+        0,
+        1,
+        65_536,
+        Number.MAX_SAFE_INTEGER - 1,
+        Number.MAX_SAFE_INTEGER,
+      ]) {
         expect(read({ [code]: count })).toEqual({
           ok: true,
           value: { ...textToolResult, attachmentOmissions: { [code]: count } },
@@ -383,10 +392,8 @@ describe("bounded omission counts", () => {
   });
 
   it.each([
-    0,
     -1,
     1.5,
-    65_536,
     Number.MAX_SAFE_INTEGER + 1,
     NaN,
     Infinity,

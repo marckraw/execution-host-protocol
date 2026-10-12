@@ -138,11 +138,12 @@ including existing `[image]` placeholders, alongside the references:
 As with the other examples, the item's base fields are omitted here. Image
 references reuse the message attachment metadata names, adding positive integer
 `width` and `height`. `sizeBytes` is the positive integer size of the original.
-Ids are opaque session-scoped tokens: 1–255 UTF-16 code units, starting with an
+Ids are opaque session-scoped tokens, starting with an
 ASCII letter or digit and continuing with letters, digits, `.`, `_` or `-`.
-Names are display filenames of 1–255 code units, without slashes, backslashes or
+Names are non-empty display filenames, without slashes, backslashes or
 control characters. MIME metadata is a bounded `image/<token>` string, at most
-255 code units, with no parameters or whitespace. It is open to JPEG and future
+255 code units (reusing the existing attachment MIME bound), with no parameters
+or whitespace. It is open to JPEG and future
 image types; it is not a PNG-only wire type. Metadata does not promise that a
 consumer can decode or render that format. Initial host admission is for static
 PNG; JPEG admission can follow without changing this shape.
@@ -157,8 +158,8 @@ arbitrary provider/error text never belong in this metadata. Fetching images,
 persistence, decoding and quota accounting are outside this contract change.
 
 **Tolerant readers.** Absent fields stay absent; empty lists/maps are valid.
-Readers project known fields and ignore unknown ones. A malformed attachment or
-a repeated id within one result is dropped with a `dropped-invalid-field`
+Readers project known fields and ignore unknown ones. A malformed attachment
+is dropped with a `dropped-invalid-field`
 warning at its index; valid siblings and all valid tool text remain. A non-array
 or a list longer than eight is dropped as a whole before traversal, with one
 warning. The item decoder serves standalone items, events/replay and client
@@ -179,9 +180,9 @@ optional across at least one release of hosts, servers and apps. Wire
 | `session-limit`         | A session or all-attachment budget is exhausted.    |
 | `storage-failed`        | The host could not persist an admitted image.       |
 
-Omit codes with no omissions. Counts are integers from 1 to
-`EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT` (65,535), saturating at that
-maximum, which means **at least** that many. Unknown codes are ignored, malformed
+Counts are non-negative safe integers (0 through `Number.MAX_SAFE_INTEGER`),
+so the reader can represent them exactly; no separate product quota is inferred.
+An absent code or a zero count means no omissions. Unknown codes are ignored, malformed
 known counts drop individually with warnings, and an invalid map drops as a
 whole. Only the six known codes are traversed, so omissions do not create an
 unbounded list or warning stream. Omission counts do not grant image slots or

@@ -1,4 +1,5 @@
 import type { ExecutionConversationAttachment } from "./types.js";
+import { EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH } from "./attachments.js";
 
 /** Tool image admission limits (MAR-3926), independent of inline uploads. */
 export const EXECUTION_TOOL_ATTACHMENT_MAX_BYTES = 8_388_608;
@@ -10,10 +11,9 @@ export const EXECUTION_TOOL_ATTACHMENTS_MAX_SESSION_COUNT = 100;
 export const EXECUTION_TOOL_ATTACHMENTS_MAX_SESSION_BYTES = 335_544_320;
 export const EXECUTION_TOOL_ATTACHMENTS_MAX_SESSION_PREVIEW_BYTES = 167_772_160;
 export const EXECUTION_TOOL_ATTACHMENT_MAX_RENDITION_BYTES = 2_097_152;
-/** String bounds are in UTF-16 code units. Ids are opaque tokens, never paths. */
-export const EXECUTION_TOOL_ATTACHMENT_ID_MAX_LENGTH = 255;
-export const EXECUTION_TOOL_ATTACHMENT_NAME_MAX_LENGTH = 255;
-export const EXECUTION_TOOL_ATTACHMENT_MIME_TYPE_MAX_LENGTH = 255;
+/** Reuse the existing attachment MIME bound, in UTF-16 code units. */
+export const EXECUTION_TOOL_ATTACHMENT_MIME_TYPE_MAX_LENGTH =
+  EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH;
 
 /** Fixed codes keep omissions bounded and free of provider/error text. */
 export const EXECUTION_TOOL_ATTACHMENT_OMISSION_CODES = [
@@ -26,8 +26,7 @@ export const EXECUTION_TOOL_ATTACHMENT_OMISSION_CODES = [
 ] as const;
 export type ExecutionToolAttachmentOmissionCode =
   (typeof EXECUTION_TOOL_ATTACHMENT_OMISSION_CODES)[number];
-/** Counts saturate here; the maximum means at least this many were omitted. */
-export const EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT = 65_535;
+/** Non-negative safe integers, at most one count per fixed code. */
 export type ExecutionToolAttachmentOmissions = Partial<
   Record<ExecutionToolAttachmentOmissionCode, number>
 >;

@@ -481,7 +481,7 @@ export type ExecutionConversationItem =
       outputText: string;
       /** Optional image references, at most 8; fixed when the item is added. */
       attachments?: ExecutionToolAttachment[];
-      /** Fixed-code, saturated omission counts; fixed when the item is added. */
+      /** Fixed-code omission counts; fixed when the item is added. */
       attachmentOmissions?: ExecutionToolAttachmentOmissions;
     })
   | (ExecutionConversationItemBase & {
