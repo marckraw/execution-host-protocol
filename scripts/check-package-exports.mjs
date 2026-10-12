@@ -24,6 +24,12 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(loaded.EXECUTION_INLINE_ATTACHMENTS_MAX_COUNT, 4);
   assert.equal(loaded.EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH, 255);
   assert.equal(loaded.EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH, 255);
+  assert.equal(loaded.EXECUTION_TOOL_ATTACHMENTS_MAX_COUNT, 8);
+  assert.equal(loaded.EXECUTION_TOOL_ATTACHMENT_MAX_BYTES, 8_388_608);
+  assert.equal(loaded.EXECUTION_TOOL_ATTACHMENT_OMISSION_MAX_COUNT, 65_535);
+  // The tool metadata readers are implementation details of the item codec.
+  assert.equal(loaded.decodeToolAttachments, undefined);
+  assert.equal(loaded.decodeToolAttachmentOmissions, undefined);
   // Shared guards are internal to the contract.
   assert.equal(loaded.isRecord, undefined);
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");

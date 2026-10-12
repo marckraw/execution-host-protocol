@@ -1,0 +1,174 @@
+{
+  "source": "Published npm readers @mrck-labs/execution-host-protocol 0.17.0 and 0.22.0, executed 2026-10-12; hand-authored input, actual decoder outputs.",
+  "input": {
+    "item": {
+      "id": "tool-result-1",
+      "kind": "tool-result",
+      "state": "complete",
+      "createdAt": "2026-07-10T19:46:56.584Z",
+      "updatedAt": "2026-07-10T19:46:56.584Z",
+      "providerMeta": {
+        "providerId": "claude",
+        "providerItemId": null,
+        "providerEventType": null
+      },
+      "toolName": "Bash",
+      "relatedItemId": "tool-call-1",
+      "outputText": "before\n[image]\nafter\n",
+      "attachments": [
+        {
+          "id": "image-1",
+          "name": "screen.png",
+          "mimeType": "image/png",
+          "sizeBytes": 1024,
+          "width": 800,
+          "height": 600
+        }
+      ],
+      "attachmentOmissions": {
+        "turn-limit": 2
+      }
+    },
+    "event": {
+      "protocolVersion": 1,
+      "sessionId": "session-1",
+      "seq": 1,
+      "event": {
+        "kind": "delta",
+        "delta": {
+          "kind": "conversation.item.add",
+          "item": {
+            "id": "tool-result-1",
+            "kind": "tool-result",
+            "state": "complete",
+            "createdAt": "2026-07-10T19:46:56.584Z",
+            "updatedAt": "2026-07-10T19:46:56.584Z",
+            "providerMeta": {
+              "providerId": "claude",
+              "providerItemId": null,
+              "providerEventType": null
+            },
+            "toolName": "Bash",
+            "relatedItemId": "tool-call-1",
+            "outputText": "before\n[image]\nafter\n",
+            "attachments": [
+              {
+                "id": "image-1",
+                "name": "screen.png",
+                "mimeType": "image/png",
+                "sizeBytes": 1024,
+                "width": 800,
+                "height": 600
+              }
+            ],
+            "attachmentOmissions": {
+              "turn-limit": 2
+            }
+          }
+        }
+      }
+    }
+  },
+  "readers": {
+    "0.17.0": {
+      "tarballSha512": "UwYh91QRne0gMtxuDLPkVX9VQsTEDCxzCj/eaS4RWRhYsD86q+BprqbYbysSpyf1O6W2jeh6qjpZZpWBvT4SGg==",
+      "item": {
+        "ok": true,
+        "value": {
+          "id": "tool-result-1",
+          "kind": "tool-result",
+          "state": "complete",
+          "createdAt": "2026-07-10T19:46:56.584Z",
+          "updatedAt": "2026-07-10T19:46:56.584Z",
+          "providerMeta": {
+            "providerId": "claude",
+            "providerItemId": null,
+            "providerEventType": null
+          },
+          "toolName": "Bash",
+          "relatedItemId": "tool-call-1",
+          "outputText": "before\n[image]\nafter\n"
+        }
+      },
+      "event": {
+        "ok": true,
+        "value": {
+          "protocolVersion": 1,
+          "sessionId": "session-1",
+          "seq": 1,
+          "event": {
+            "kind": "delta",
+            "delta": {
+              "kind": "conversation.item.add",
+              "item": {
+                "id": "tool-result-1",
+                "kind": "tool-result",
+                "state": "complete",
+                "createdAt": "2026-07-10T19:46:56.584Z",
+                "updatedAt": "2026-07-10T19:46:56.584Z",
+                "providerMeta": {
+                  "providerId": "claude",
+                  "providerItemId": null,
+                  "providerEventType": null
+                },
+                "toolName": "Bash",
+                "relatedItemId": "tool-call-1",
+                "outputText": "before\n[image]\nafter\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "0.22.0": {
+      "tarballSha512": "+dfV4cd6izfrO3zUguW7HqhYulNyZiJ/mQFLFAUwMUWFWFV2TGZJ8UhC6ZGG11DvMDiCjrRp1zRF/84JIZMV5Q==",
+      "item": {
+        "ok": true,
+        "value": {
+          "id": "tool-result-1",
+          "kind": "tool-result",
+          "state": "complete",
+          "createdAt": "2026-07-10T19:46:56.584Z",
+          "updatedAt": "2026-07-10T19:46:56.584Z",
+          "providerMeta": {
+            "providerId": "claude",
+            "providerItemId": null,
+            "providerEventType": null
+          },
+          "toolName": "Bash",
+          "relatedItemId": "tool-call-1",
+          "outputText": "before\n[image]\nafter\n"
+        }
+      },
+      "event": {
+        "ok": true,
+        "value": {
+          "protocolVersion": 1,
+          "sessionId": "session-1",
+          "seq": 1,
+          "event": {
+            "kind": "delta",
+            "delta": {
+              "kind": "conversation.item.add",
+              "item": {
+                "id": "tool-result-1",
+                "kind": "tool-result",
+                "state": "complete",
+                "createdAt": "2026-07-10T19:46:56.584Z",
+                "updatedAt": "2026-07-10T19:46:56.584Z",
+                "providerMeta": {
+                  "providerId": "claude",
+                  "providerItemId": null,
+                  "providerEventType": null
+                },
+                "toolName": "Bash",
+                "relatedItemId": "tool-call-1",
+                "outputText": "before\n[image]\nafter\n"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
