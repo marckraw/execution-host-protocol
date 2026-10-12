@@ -25,3 +25,19 @@ and `caught-up` included; the `.json` is its `GET /v0/execution/sessions/:id`.
 Its turns carry no `origin`, and nothing carries `runningTasks`. Seqs 15 and 27
 are missing because the host pruned settled increments, as it does live. Do not
 edit them to fit a codec: they are what an older host sends.
+
+`tool-attachment-fixtures.ts` contains hand-authored MAR-3926 references and
+tool results, preserving the `[image]` placeholder and surrounding text.
+`tool-attachments-older-readers.json` records actual standalone item and
+`conversation.item.add` decoder outputs from the published npm packages
+`@mrck-labs/execution-host-protocol@0.17.0` and `@0.22.0`, executed on 12 Oct
+2026 with the included input. The tarball SHA-512 digests identify the readers;
+both ignore optional image metadata and keep all required text fields unchanged.
+To reproduce, `npm pack` those exact versions into a temporary directory,
+extract each tarball, import its `package/dist/index.js`, then call
+`decodeExecutionConversationItem(input.item)` and
+`decodeExecutionEventEnvelope(JSON.stringify(input.event))`. Do not add these
+packages as dependencies or modify the outputs to fit the new reader.
+
+Current pins rechecked on 12 Oct 2026: agents-daemon's `bun.lock` resolves 0.17.0
+from `^0.17.0`; accentdot's `pnpm-lock.yaml` resolves 0.22.0 from `^0.22.0`.

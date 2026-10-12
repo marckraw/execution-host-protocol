@@ -1,4 +1,8 @@
 import type { HarnessEvidence } from "./harness-evidence.js";
+import type {
+  ExecutionToolAttachment,
+  ExecutionToolAttachmentOmissions,
+} from "./tool-attachments.js";
 
 export const EXECUTION_PROTOCOL_VERSION = 1 as const;
 
@@ -92,6 +96,8 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * shared client never sends it a file.
    */
   "attachments.inline-file.v1",
+  /** Persisted, immutable session image references on tool-result items (MAR-3926). */
+  "items.toolAttachments.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -473,6 +479,10 @@ export type ExecutionConversationItem =
       toolName: string | null;
       relatedItemId: string | null;
       outputText: string;
+      /** Optional image references, at most 8; fixed when the item is added. */
+      attachments?: ExecutionToolAttachment[];
+      /** Fixed-code omission counts; fixed when the item is added. */
+      attachmentOmissions?: ExecutionToolAttachmentOmissions;
     })
   | (ExecutionConversationItemBase & {
       kind: "approval-request";
@@ -491,11 +501,16 @@ export type ExecutionConversationItem =
 
 /**
  * Fields fixed when an item is added. A patch never carries them, and a reader
- * ignores them if one does: who sent a message, and which send it answers, do
- * not change after the fact.
+ * ignores them if one does: attachment references and omissions, who sent a
+ * message, and which send it answers do not change after the fact.
  */
 type ImmutableConversationItemField =
-  "id" | "kind" | "attachments" | "author" | "clientMessageId";
+  | "id"
+  | "kind"
+  | "attachments"
+  | "attachmentOmissions"
+  | "author"
+  | "clientMessageId";
 
 type MutableConversationItemPatch<
   Item extends ExecutionConversationItem = ExecutionConversationItem,

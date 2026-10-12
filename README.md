@@ -107,6 +107,110 @@ Beside the fields every item carries, it reads:
   word. A host has no users of its own, so authorizing who may act stays with
   the client that knows them.
 
+## Images in tool results
+
+A host advertising `items.toolAttachments.v1` may include optional
+`attachments` and `attachmentOmissions` on a `tool-result` (MAR-3926).
+All existing required fields remain required, including `toolName` and
+`relatedItemId` (both nullable) and `outputText`. Keep the full tool text,
+including existing `[image]` placeholders, alongside the references:
+
+```json
+{
+  "kind": "tool-result",
+  "toolName": "Read",
+  "relatedItemId": "call-1",
+  "outputText": "Screenshot captured.\n[image]",
+  "attachments": [
+    {
+      "id": "image-1",
+      "name": "screen.png",
+      "mimeType": "image/png",
+      "sizeBytes": 1024,
+      "width": 800,
+      "height": 600
+    }
+  ],
+  "attachmentOmissions": { "turn-limit": 2 }
+}
+```
+
+As with the other examples, the item's base fields are omitted here. Image
+references reuse the message attachment metadata names, adding positive integer
+`width` and `height`. `sizeBytes` is the positive integer size of the original.
+Ids are opaque session-scoped tokens, starting with an
+ASCII letter or digit and continuing with letters, digits, `.`, `_` or `-`.
+Names are non-empty display filenames, without slashes, backslashes or
+control characters. MIME metadata is a bounded `image/<token>` string, at most
+255 code units (reusing the existing attachment MIME bound), with no parameters
+or whitespace. It is open to JPEG and future
+image types; it is not a PNG-only wire type. Metadata does not promise that a
+consumer can decode or render that format. Initial host admission is for static
+PNG; JPEG admission can follow without changing this shape.
+
+**Persist, then emit.** The host stores an image before emitting its reference
+on `conversation.item.add`. That reference belongs to the owning session and is
+immutable after emission. The same metadata appears in replayed adds and the
+snapshot's `conversation`; a snapshot must not invent new ids or re-admit the
+image. Patches cannot add or change either metadata field, and readers ignore
+them on `conversation.item.patch`. Bytes, base64, URLs, filesystem paths and
+arbitrary provider/error text never belong in this metadata. Fetching images,
+persistence, decoding and quota accounting are outside this contract change.
+
+**Tolerant readers.** Absent fields stay absent; empty lists/maps are valid.
+Readers project known fields and ignore unknown ones. A malformed attachment
+is dropped with a `dropped-invalid-field`
+warning at its index; valid siblings and all valid tool text remain. A non-array
+or a list longer than eight is dropped as a whole before traversal, with one
+warning. The item decoder serves standalone items, events/replay and client
+snapshots, whose warning paths point into `conversation`. Invalid required tool
+fields still reject the item. Published 0.17.0 and 0.22.0 readers ignore both
+new fields and preserve the text unchanged; old hosts can omit them. Keep them
+optional across at least one release of hosts, servers and apps. Wire
+`protocolVersion` stays 1.
+
+**Bounded omissions.** `attachmentOmissions` is a fixed code-to-count map:
+
+| Code                    | Meaning                                             |
+| ----------------------- | --------------------------------------------------- |
+| `unsupported-mime-type` | The host does not admit this image format.          |
+| `invalid-image`         | The image or its dimensions could not be validated. |
+| `image-too-large`       | The image exceeds a per-image limit.                |
+| `turn-limit`            | The outer turn's count or byte budget is exhausted. |
+| `session-limit`         | A session or all-attachment budget is exhausted.    |
+| `storage-failed`        | The host could not persist an admitted image.       |
+
+Counts are non-negative safe integers (0 through `Number.MAX_SAFE_INTEGER`),
+so the reader can represent them exactly; no separate product quota is inferred.
+An absent code or a zero count means no omissions. Unknown codes are ignored, malformed
+known counts drop individually with warnings, and an invalid map drops as a
+whole. Only the six known codes are traversed, so omissions do not create an
+unbounded list or warning stream. Omission counts do not grant image slots or
+reset admission budgets.
+
+The following exported constants capture the owner's admission budgets. Readers
+bound each result list and each image's metadata; hosts enforce accumulated
+turn/session quotas independently, including subagents and late resident results
+in the same outer turn:
+
+| Constant                                               | Limit                      |
+| ------------------------------------------------------ | -------------------------- |
+| `EXECUTION_TOOL_ATTACHMENT_MAX_BYTES`                  | 8,388,608 bytes (8 MiB)    |
+| `EXECUTION_TOOL_ATTACHMENT_MAX_PIXELS`                 | 16,000,000 pixels          |
+| `EXECUTION_TOOL_ATTACHMENT_MAX_SIDE`                   | 8,000 px on either side    |
+| `EXECUTION_TOOL_ATTACHMENTS_MAX_COUNT`                 | 8 images per outer turn    |
+| `EXECUTION_TOOL_ATTACHMENTS_MAX_TURN_BYTES`            | 67,108,864 original bytes  |
+| `EXECUTION_TOOL_ATTACHMENTS_MAX_SESSION_COUNT`         | 100 lifetime image slots   |
+| `EXECUTION_TOOL_ATTACHMENTS_MAX_SESSION_BYTES`         | 335,544,320 original bytes |
+| `EXECUTION_TOOL_ATTACHMENTS_MAX_SESSION_PREVIEW_BYTES` | 167,772,160 preview bytes  |
+| `EXECUTION_TOOL_ATTACHMENT_MAX_RENDITION_BYTES`        | 2,097,152 bytes            |
+
+The daemon's existing 500 MiB all-attachment ceiling still includes
+person-supplied files; it stores no accent. previews. Failed admissions and
+replay must not create unlimited records or reset lifetime slots. A host serving
+many sessions must also bound memory, active I/O and queues across its process.
+These are host obligations, not state or quota enforcement in this package.
+
 ## Changing the model between turns
 
 A session's model and effort are set when it starts (`config.model`,

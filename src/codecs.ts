@@ -1,5 +1,9 @@
 import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
+  decodeToolAttachments,
+  decodeToolAttachmentOmissions,
+} from "./tool-attachment-codecs.js";
+import {
   isBoundedString,
   isNonEmptyString,
   isNonNegativeInteger,
@@ -879,18 +883,35 @@ function decodeConversationItemOfKind(
             inputText: raw.inputText as string,
           })
         : failure("invalid-payload");
-    case "tool-result":
-      return CONVERSATION_ITEM_FIELD_VALIDATORS.toolName(raw.toolName) &&
-        CONVERSATION_ITEM_FIELD_VALIDATORS.relatedItemId(raw.relatedItemId) &&
-        CONVERSATION_ITEM_FIELD_VALIDATORS.outputText(raw.outputText)
-        ? success({
-            ...base,
-            kind: "tool-result",
-            toolName: raw.toolName as string | null,
-            relatedItemId: raw.relatedItemId as string | null,
-            outputText: raw.outputText as string,
-          })
-        : failure("invalid-payload");
+    case "tool-result": {
+      if (
+        !CONVERSATION_ITEM_FIELD_VALIDATORS.toolName(raw.toolName) ||
+        !CONVERSATION_ITEM_FIELD_VALIDATORS.relatedItemId(raw.relatedItemId) ||
+        !CONVERSATION_ITEM_FIELD_VALIDATORS.outputText(raw.outputText)
+      ) {
+        return failure("invalid-payload");
+      }
+      const attachments = decodeToolAttachments(
+        raw.attachments,
+        `${path}.attachments`,
+      );
+      const omissions = decodeToolAttachmentOmissions(
+        raw.attachmentOmissions,
+        `${path}.attachmentOmissions`,
+      );
+      return success(
+        {
+          ...base,
+          kind: "tool-result",
+          toolName: raw.toolName as string | null,
+          relatedItemId: raw.relatedItemId as string | null,
+          outputText: raw.outputText as string,
+          ...optionalProperty("attachments", attachments.value),
+          ...optionalProperty("attachmentOmissions", omissions.value),
+        },
+        [...attachments.warnings, ...omissions.warnings],
+      );
+    }
     case "approval-request":
       return CONVERSATION_ITEM_FIELD_VALIDATORS.description(raw.description)
         ? success({
