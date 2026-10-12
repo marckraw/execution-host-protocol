@@ -1,5 +1,16 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.23.0
+
+### Minor Changes
+
+- 01a25c8: Add authenticated downloadAttachment() to the client subpath with encoded session/attachment IDs, an 8 MiB maximum (or smaller caller limit), body-wide deadlines and cancellation even when fetch leaves reads pending. Downloads return measured bytes and fixed client errors without host diagnostics (MAR-3928).
+- d177bd8: Add optional persisted image references and bounded fixed-code omission counts to tool-result items under `items.toolAttachments.v1` (MAR-3926). Tolerant readers preserve required tool text when optional metadata is malformed, with the same behavior in events, replay and snapshots. Export image budget constants and document host persistence, immutability and compatibility obligations without changing the wire protocol version.
+
+### Patch Changes
+
+- 5180c5b: End aborted event streams even when fetch leaves a body read or cancellation pending. Followers can stop and reconnect after an idle timeout on affected runtimes, including Node 24.13.0 (MAR-3751).
+
 ## 0.22.0
 
 ### Minor Changes
