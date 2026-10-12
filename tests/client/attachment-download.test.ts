@@ -134,15 +134,28 @@ describe("bounded attachment downloads (MAR-3928)", () => {
         [new Uint8Array(3), new Uint8Array(2), new Uint8Array(1)],
         length === undefined ? undefined : { "Content-Length": length },
       );
+      let signal!: AbortSignal;
       await expect(
-        clientFor(async () => held.response).downloadAttachment("s", "a", {
-          maxBytes: 4,
-        }),
+        clientFor(async (_input, init) => {
+          signal = init!.signal!;
+          return held.response;
+        }).downloadAttachment("s", "a", { maxBytes: 4 }),
       ).rejects.toMatchObject({ kind: "malformed" });
       expect(held.cancel).toHaveBeenCalledOnce();
       expect(held.body.locked).toBe(false);
+      // Cancel alone may never settle; the request itself is torn down.
+      expect(signal.aborted).toBe(true);
     },
   );
+
+  it("returns exactly the bytes read when the body is below the ceiling", async () => {
+    const held = bodyOf([new Uint8Array([1, 2]), new Uint8Array([3])]);
+    const result = await clientFor(
+      async () => held.response,
+    ).downloadAttachment("s", "a");
+    expect(result).toEqual({ bytes: new Uint8Array([1, 2, 3]), sizeBytes: 3 });
+    expect(result.bytes.buffer.byteLength).toBe(3);
+  });
 
   it("rejects 8 MiB + 1 with no claimed length", async () => {
     const held = bodyOf([
