@@ -810,6 +810,25 @@ whitespace is dropped, as `fetch` drops it. Every message built from a failure,
 and a host's refusal, has the token replaced by `[token]`, and the `cause` an
 error carries is a scrubbed copy, never the original.
 
+**Attachment downloads (MAR-3928).**
+`downloadAttachment(sessionId, attachmentId, { signal?, timeoutMs?, maxBytes? })`
+uses the same authenticated transport, including injected tailnet routing, for
+`GET /v0/execution/sessions/:id/attachments/:attachmentId`. Both IDs are encoded;
+empty IDs and dot segments are refused. It returns
+`{ bytes: Uint8Array, sizeBytes: number }` after consuming the whole body.
+`sizeBytes` is measured, and `maxBytes` defaults to the image ceiling of
+8,388,608 bytes; a caller may choose a positive whole number below it.
+Content-Length can refuse an oversized body early, but every actual chunk is
+counted even when the header is absent or false. A body without a readable
+stream is refused rather than buffered without a bound. The request timeout
+(60 s by default) covers headers and the full read; it is not reset by chunks.
+Cancellation ends even a stalled read, starts cancellation without waiting on
+it, and releases the reader. No raw response or stream escapes the deadline.
+Redirects are refused, and errors retain their `ExecutionHostError` kind and
+status with fixed client reasons and no diagnostic cause. A caller abort keeps
+the caller's reason. MIME claims are not image validation: this operation does
+not sniff or decode images, retry, persist, or enforce turn/session quotas.
+
 **Requests** refuse redirects (`redirect: "error"`): a redirect would carry the
 token to wherever it points, and a 302 turns a POST into a GET. Timeouts must
 be positive, and one past what a timer holds (about 24.8 days) waits that long
