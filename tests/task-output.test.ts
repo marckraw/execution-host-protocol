@@ -6,14 +6,15 @@ import {
   decodeExecutionTaskOutputWindow,
   encodeExecutionTaskOutputRequest,
   encodeExecutionTaskOutputResponse,
+  executionSecretRedactionValues,
   executionTaskOutputReadRange,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
+  EXECUTION_SECRET_LINE_MIN_LENGTH,
   EXECUTION_TASK_OUTPUT_MAX_BYTES,
   EXECUTION_TASK_OUTPUT_REFUSAL_CODES,
   EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES,
   EXECUTION_TASK_OUTPUT_STATUSES,
   EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH,
-  type AgentRunStatus,
   type ExecutionTaskOutputResponse,
 } from "../src/index.js";
 
@@ -78,7 +79,7 @@ describe("task-output requests", () => {
     for (const request of [
       { sessionId: "session-1", taskId: "b7x2k9q1", tail: 1 },
       { sessionId: "accent 8f2c?", taskId: "t.1_a-B", tail: 65_536 },
-      { sessionId: "é😀", taskId: "x".repeat(256), tail: 4_096 },
+      { sessionId: "é😀", taskId: "x".repeat(248), tail: 4_096 },
       { sessionId: "s".repeat(256), taskId: "b7x2k9q1", tail: 4_096 },
       { sessionId: "a..b", taskId: "b7x2k9q1", tail: 4_096 },
     ]) {
@@ -140,7 +141,7 @@ describe("task-output requests", () => {
     ],
     [
       "a task id past its bound",
-      `/v0/execution/sessions/session-1/tasks/${"x".repeat(257)}/output`,
+      `/v0/execution/sessions/session-1/tasks/${"x".repeat(249)}/output`,
     ],
     [
       "a session id that is a dot segment",
@@ -198,7 +199,7 @@ describe("task-output requests", () => {
       "a/b",
       "a\\b",
       "task 1",
-      "x".repeat(257),
+      "x".repeat(249),
       42,
     ]) {
       expect(at({ taskId })).toThrow(TypeError);
@@ -294,9 +295,12 @@ describe("task-output answers", () => {
         totalBytes: 0,
         truncated: false,
       },
-      // A running task's unfinished last line, held back.
-      { ...OUTPUT, endOffset: 204_000 },
-      { ...OUTPUT, status: "unknown", endOffset: 204_000 },
+      // An unfinished last line, held back, whatever the task's status.
+      ...EXECUTION_TASK_OUTPUT_STATUSES.map((status) => ({
+        ...OUTPUT,
+        status,
+        endOffset: 204_000,
+      })),
       // No line starts within the tail: an empty window at the end.
       {
         ...OUTPUT,
@@ -360,18 +364,6 @@ describe("task-output answers", () => {
     ["a window ending past the file's end", { endOffset: 204_801 }],
     ["a window ending before it starts", { endOffset: 139_263 }],
     ["an end as a string", { endOffset: "204800" }],
-    [
-      "a completed task's line held back",
-      { status: "completed", endOffset: 204_000 },
-    ],
-    [
-      "a failed task's line held back",
-      { status: "failed", endOffset: 204_000 },
-    ],
-    [
-      "a stopped task's line held back",
-      { status: "stopped", endOffset: 204_000 },
-    ],
     ["a lone high surrogate in the text", { text: "a\ud800b" }],
     ["a lone low surrogate in the text", { text: "a\udc00b" }],
     [
@@ -412,6 +404,7 @@ describe("task-output answers", () => {
     ["month 0", { readAt: "2026-00-14T05:30:00Z" }],
     ["day 0", { readAt: "2026-10-00T05:30:00Z" }],
     ["an offset of 24 hours", { readAt: "2026-10-14T05:30:00+24:00" }],
+    ["an offset of 60 minutes", { readAt: "2026-10-14T05:30:00+05:60" }],
     ["a lowercase separator", { readAt: "2026-10-14t05:30:00z" }],
     ["a time as a number", { readAt: 1_791_955_800_000 }],
   ])("refuses %s", (_name, overrides) => {
@@ -495,11 +488,7 @@ describe("task-output read ranges", () => {
 
 describe("task-output windows", () => {
   /** A file's window, read as a host reads it. */
-  const windowOf = (
-    file: string | Uint8Array,
-    tail: number,
-    status: AgentRunStatus = "running",
-  ) => {
+  const windowOf = (file: string | Uint8Array, tail: number) => {
     const bytes = typeof file === "string" ? encoder.encode(file) : file;
     const { position, length } = executionTaskOutputReadRange(
       bytes.byteLength,
@@ -509,7 +498,6 @@ describe("task-output windows", () => {
       bytes.slice(position, position + length),
       position,
       tail,
-      status,
     );
   };
 
@@ -563,27 +551,26 @@ describe("task-output windows", () => {
     ]);
   });
 
-  it("holds back a running task's last line until it ends", () => {
-    const file = "done\npartial sk-li";
-    for (const status of ["running", "unknown"] as const) {
-      expect(windowOf(file, 64, status)).toEqual({
-        startOffset: 0,
-        endOffset: 5,
-        totalBytes: 18,
-        truncated: false,
-        text: "done\n",
-      });
-    }
+  it("holds back a last line that has no line break yet", () => {
+    expect(windowOf("done\npartial sk-li", 64)).toEqual({
+      startOffset: 0,
+      endOffset: 5,
+      totalBytes: 18,
+      truncated: false,
+      text: "done\n",
+    });
   });
 
-  it("shows an ended task's last line, the file being whole", () => {
-    for (const status of ["completed", "failed", "stopped"] as const) {
-      expect(windowOf("done\nlast", 64, status)).toMatchObject({
-        endOffset: 9,
-        totalBytes: 9,
-        text: "done\nlast",
-      });
-    }
+  it("holds back a killed command's frozen last line too: the window does not know the status", () => {
+    // stop-task, an OOM or a timeout kill leaves the file where its last
+    // block-buffered flush landed: here, one character short of the secret.
+    const secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRS";
+    const window = windowOf(
+      `lint ok\nANTHROPIC_API_KEY=${secret.slice(0, -1)}`,
+      64,
+    );
+    expect(window).toMatchObject({ text: "lint ok\n", endOffset: 8 });
+    expect(window.text).not.toContain(secret.slice(0, 8));
   });
 
   it("is empty when no line starts within the tail", () => {
@@ -612,17 +599,16 @@ describe("task-output windows", () => {
     }
   });
 
-  it("decodes invalid bytes, and an ended task's unfinished character, as U+FFFD", () => {
+  it("decodes invalid bytes as U+FFFD", () => {
     expect(
       windowOf(
-        new Uint8Array([0x41, 0xff, 0x42, 0x0a, 0x43, 0xe2, 0x9c]),
+        new Uint8Array([0x41, 0xff, 0x42, 0x0a, 0x43, 0xe2, 0x9c, 0x0a]),
         64,
-        "completed",
       ),
-    ).toMatchObject({ text: "A\ufffdB\nC\ufffd" });
+    ).toMatchObject({ text: "A\ufffdB\nC\ufffd\n" });
   });
 
-  it("holds back a running task's unfinished character with its line", () => {
+  it("holds back an unfinished character with its line", () => {
     expect(
       windowOf(new Uint8Array([0x41, 0x0a, 0x43, 0xe2, 0x9c]), 64),
     ).toMatchObject({ endOffset: 2, totalBytes: 5, text: "A\n" });
@@ -645,8 +631,8 @@ describe("task-output windows", () => {
       new Uint8Array(EXECUTION_TASK_OUTPUT_MAX_BYTES).fill(0xff),
       encoder.encode("😀\n".repeat(EXECUTION_TASK_OUTPUT_MAX_BYTES / 5)),
     ]) {
-      for (const status of ["running", "completed"] as const) {
-        const window = windowOf(bytes, EXECUTION_TASK_OUTPUT_MAX_BYTES, status);
+      for (const status of EXECUTION_TASK_OUTPUT_STATUSES) {
+        const window = windowOf(bytes, EXECUTION_TASK_OUTPUT_MAX_BYTES);
         expect(window.totalBytes - window.startOffset).toBeLessThanOrEqual(
           EXECUTION_TASK_OUTPUT_MAX_BYTES,
         );
@@ -663,21 +649,97 @@ describe("task-output windows", () => {
   it("refuses bytes that do not reach before the tail, or the file's start", () => {
     const bytes = encoder.encode("abcdef\n");
     // A file of 107 bytes, a tail of 7: the read must start by byte 99.
-    expect(() =>
-      decodeExecutionTaskOutputWindow(bytes, 100, 7, "running"),
-    ).toThrow(RangeError);
+    expect(() => decodeExecutionTaskOutputWindow(bytes, 100, 7)).toThrow(
+      RangeError,
+    );
     // A file of 9 bytes, all within the tail: the read must start at 0.
+    expect(() => decodeExecutionTaskOutputWindow(bytes, 2, 64)).toThrow(
+      RangeError,
+    );
+    expect(() => decodeExecutionTaskOutputWindow(bytes, -1, 64)).toThrow(
+      RangeError,
+    );
+    expect(() => decodeExecutionTaskOutputWindow(bytes, 0, 0)).toThrow(
+      RangeError,
+    );
+    // A file that shrank after `fstat` reads short: the bytes no longer reach.
+    const { position, length } = executionTaskOutputReadRange(100, 10);
+    expect(length).toBe(11);
     expect(() =>
-      decodeExecutionTaskOutputWindow(bytes, 2, 64, "running"),
+      decodeExecutionTaskOutputWindow(bytes.subarray(0, 5), position, 10),
     ).toThrow(RangeError);
-    expect(() =>
-      decodeExecutionTaskOutputWindow(bytes, -1, 64, "running"),
-    ).toThrow(RangeError);
-    expect(() =>
-      decodeExecutionTaskOutputWindow(bytes, 0, 0, "running"),
-    ).toThrow(RangeError);
-    expect(() =>
-      decodeExecutionTaskOutputWindow(bytes, 0, 64, "paused" as never),
-    ).toThrow(RangeError);
+  });
+});
+
+describe("secret redaction values", () => {
+  const PEM = [
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW",
+    "QyNTUxOQAAACDx1wmKz4Bc0vDT+YQkGhQ1lZ0W2BGv2c7HEgM0bwAAAJiMnCk1jJwp",
+    "",
+    "short==",
+    "-----END OPENSSH PRIVATE KEY-----",
+  ];
+
+  it("is the value itself for a single-line secret", () => {
+    expect(executionSecretRedactionValues("sk-live-abc123XYZ")).toEqual([
+      "sk-live-abc123XYZ",
+    ]);
+  });
+
+  it("adds each line of a multi-line secret, longest first, the whole value first", () => {
+    for (const secret of [PEM.join("\n"), PEM.join("\r\n")]) {
+      expect(executionSecretRedactionValues(secret)).toEqual([
+        secret,
+        PEM[1],
+        PEM[2],
+      ]);
+    }
+  });
+
+  it("leaves out armour, blank lines and lines under 8 characters", () => {
+    expect(EXECUTION_SECRET_LINE_MIN_LENGTH).toBe(8);
+    const values = executionSecretRedactionValues(PEM.join("\n"));
+    expect(values).not.toContain(PEM[0]);
+    expect(values).not.toContain(PEM[5]);
+    expect(values).not.toContain("");
+    expect(values).not.toContain("short==");
+    expect(
+      executionSecretRedactionValues("1234567\n12345678\n  indented key  "),
+    ).toEqual([
+      "1234567\n12345678\n  indented key  ",
+      "  indented key  ",
+      "indented key",
+      "12345678",
+    ]);
+  });
+
+  it("hides every whole-line window into a PEM key", () => {
+    const secret = PEM.join("\n");
+    const file = `key:\n${secret}\ndone\n`;
+    const redact = (text: string) =>
+      executionSecretRedactionValues(secret).reduce(
+        (redacted, value) => redacted.split(value).join("[redacted]"),
+        text,
+      );
+    for (let tail = 1; tail <= file.length + 1; tail++) {
+      const bytes = encoder.encode(file);
+      const { position, length } = executionTaskOutputReadRange(
+        bytes.byteLength,
+        tail,
+      );
+      const { text } = decodeExecutionTaskOutputWindow(
+        bytes.slice(position, position + length),
+        position,
+        tail,
+      );
+      const shown = redact(text);
+      expect(shown).not.toContain(PEM[1]!.slice(0, 16));
+      expect(shown).not.toContain(PEM[2]!.slice(0, 16));
+    }
+  });
+
+  it("has nothing to redact for an empty secret", () => {
+    expect(executionSecretRedactionValues("")).toEqual([]);
   });
 });

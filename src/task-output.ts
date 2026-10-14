@@ -33,8 +33,12 @@ export const EXECUTION_TASK_OUTPUT_MAX_BYTES = 65_536;
  */
 export const EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH = 65_536;
 
-/** The longest task id. */
-export const EXECUTION_TASK_OUTPUT_TASK_ID_MAX_LENGTH = 256;
+/**
+ * The longest task id: 248, so that `<taskId>.output` fits the 255-byte
+ * filename limit of common filesystems and a derived path never fails to
+ * open for its length.
+ */
+export const EXECUTION_TASK_OUTPUT_TASK_ID_MAX_LENGTH = 248;
 
 /** The longest session id this route can name. */
 export const EXECUTION_TASK_OUTPUT_SESSION_ID_MAX_LENGTH = 256;
@@ -72,16 +76,6 @@ export const EXECUTION_TASK_OUTPUT_STATUSES = [
   "unknown",
 ] as const satisfies readonly AgentRunStatus[];
 
-/**
- * The statuses of a task whose process has ended, so its output file is
- * whole: a last line without a line break is shown, not held back.
- */
-const FINAL_STATUSES: ReadonlySet<string> = new Set([
-  "completed",
-  "failed",
-  "stopped",
-]);
-
 export interface ExecutionTaskOutputRequest {
   /**
    * 1 to 256 characters, with no `/`, `\\`, control character or lone
@@ -106,8 +100,8 @@ export interface ExecutionTaskOutputRequest {
  *   lines only (`decodeExecutionTaskOutputWindow`). It starts at most `tail`
  *   bytes before `totalBytes`: `totalBytes - startOffset <= tail`.
  *   `truncated` is true exactly when it starts after the file's first byte.
- *   `endOffset` is before `totalBytes` only while the task may still write:
- *   its last line, not yet ended by a line break, is held back.
+ *   `endOffset` is before `totalBytes` when the file's last line has no line
+ *   break yet: it is held back, whatever the task's status.
  * - `text` is that window decoded as UTF-8 and redacted by the host. Each
  *   invalid sequence is U+FFFD, and a byte order mark is a character like any
  *   other.
@@ -124,7 +118,7 @@ export interface ExecutionTaskOutputResponse {
   /** The byte the window starts at: 0 when it holds the file's start. */
   startOffset: number;
   /**
-   * The byte after the window's last: `totalBytes`, unless a running task's
+   * The byte after the window's last: `totalBytes`, unless the file's
    * unfinished last line is held back.
    */
   endOffset: number;
@@ -270,7 +264,7 @@ export function encodeExecutionTaskOutputResponse(
   });
   if (!decodeExecutionTaskOutputResponse(JSON.parse(body)).ok) {
     throw new TypeError(
-      `A task's output is a window from startOffset to endOffset, no later than totalBytes, starting at most ${EXECUTION_TASK_OUTPUT_MAX_BYTES} bytes before totalBytes and ending there once the task has ended; truncated exactly when startOffset is past 0; text of at most ${EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH} characters with no lone surrogate, empty for an empty window; a known status; and readAt an RFC 3339 timestamp`,
+      `A task's output is a window from startOffset to endOffset, no later than totalBytes, starting at most ${EXECUTION_TASK_OUTPUT_MAX_BYTES} bytes before totalBytes; truncated exactly when startOffset is past 0; text of at most ${EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH} characters with no lone surrogate, empty for an empty window; a known status; and readAt an RFC 3339 timestamp`,
     );
   }
   return body;
@@ -299,7 +293,6 @@ export function decodeExecutionTaskOutputResponse(
     raw.startOffset > raw.endOffset ||
     raw.endOffset > raw.totalBytes ||
     raw.totalBytes - raw.startOffset > EXECUTION_TASK_OUTPUT_MAX_BYTES ||
-    (FINAL_STATUSES.has(raw.status) && raw.endOffset !== raw.totalBytes) ||
     raw.truncated !== raw.startOffset > 0 ||
     (raw.startOffset === raw.endOffset && raw.text !== "") ||
     !isTimestamp(raw.readAt)
@@ -390,17 +383,20 @@ export interface ExecutionTaskOutputWindow {
  *   file's first byte, or a byte after `\n`. When the tail cuts a line, that
  *   line is left out whole; when no line starts within the tail, the window
  *   is empty at `totalBytes`.
- * - **Its end.** While the task may still write (`running`, `unknown`), a
- *   last line not yet ended by `\n` is held back: `endOffset` is the byte
- *   after the window's last `\n`, or `startOffset`. Once the task has ended
- *   the file is whole, and the window ends at `totalBytes`.
+ * - **Its end.** A last line not yet ended by `\n` is held back, whatever the
+ *   task's status: `endOffset` is the byte after the window's last `\n`, or
+ *   `startOffset`. An ended task's file is not necessarily whole: a process
+ *   killed by `stop-task`, an out-of-memory kill or a timeout leaves it where
+ *   its last block-buffered flush landed, possibly mid-secret. The price is
+ *   that a final line without `\n` is never shown.
  *
  * Why lines: a host redacts exact secret values, and a value it cannot see
  * whole it cannot recognise. A window cut one byte into a secret, or a file
- * that ends mid-secret because a running command flushed half a line, would
- * show what the redaction missed. No credential holds a line break, so whole
- * lines hold every secret whole or not at all. A secret value that does hold
- * one (a PEM key) the host redacts line by line too.
+ * that ends mid-secret because a command flushed or died half-way through a
+ * line, would show what the redaction missed. No credential holds a line
+ * break, so whole lines hold every secret whole or not at all. A secret value
+ * that does hold one (a PEM key) the host redacts line by line too
+ * (`executionSecretRedactionValues`).
  *
  * The bytes kept are decoded as UTF-8, each invalid sequence as U+FFFD, a
  * byte order mark kept. A character is never cut: no UTF-8 sequence holds
@@ -410,7 +406,6 @@ export function decodeExecutionTaskOutputWindow(
   bytes: Uint8Array,
   position: number,
   tail: number,
-  status: AgentRunStatus,
 ): ExecutionTaskOutputWindow {
   if (!isSafeNonNegativeInteger(position)) {
     throw new RangeError("position must be a whole number of bytes");
@@ -420,7 +415,6 @@ export function decodeExecutionTaskOutputWindow(
       `tail must be a whole number of bytes from 1 to ${EXECUTION_TASK_OUTPUT_MAX_BYTES}`,
     );
   }
-  if (!STATUSES.has(status)) throw new RangeError(`unknown status ${status}`);
   const totalBytes = position + bytes.byteLength;
   const floor = Math.max(0, totalBytes - tail);
   if (floor === 0 ? position !== 0 : position >= floor) {
@@ -436,7 +430,7 @@ export function decodeExecutionTaskOutputWindow(
     start = breakAt === -1 ? bytes.byteLength : breakAt + 1;
   }
   let end = bytes.byteLength;
-  if (!FINAL_STATUSES.has(status) && end > start && bytes[end - 1] !== LF) {
+  if (end > start && bytes[end - 1] !== LF) {
     const breakAt = bytes.lastIndexOf(LF, end - 1);
     end = breakAt < start ? start : breakAt + 1;
   }
@@ -449,6 +443,42 @@ export function decodeExecutionTaskOutputWindow(
       bytes.subarray(start, end),
     ),
   };
+}
+
+/** The shortest line of a multi-line secret redacted on its own. */
+export const EXECUTION_SECRET_LINE_MIN_LENGTH = 8;
+
+/** A PEM armour line: the same in every key, and no secret. */
+const PEM_ARMOUR = /^-----(BEGIN|END) [^-]*-----$/;
+
+/**
+ * The values a host redacts for one secret, longest first, so the whole
+ * value is replaced before any part of it. A single-line secret is itself.
+ * A multi-line one (a PEM key) is also each of its lines, split on `\r?\n`,
+ * so a window that starts or ends inside it — whole lines of it, but not the
+ * whole value — shows none of it. A line shorter than
+ * `EXECUTION_SECRET_LINE_MIN_LENGTH` characters, blank, or PEM armour
+ * (`-----BEGIN …-----`, `-----END …-----`) is left out: it would redact
+ * text that is no secret, and reveals nothing on its own.
+ *
+ * Exact-value redaction, this included, cannot catch a secret split
+ * mid-line by an interleaved write — unbuffered stderr landing inside a
+ * buffered stdout block — because no line then holds the value whole.
+ */
+export function executionSecretRedactionValues(secret: string): string[] {
+  if (typeof secret !== "string" || secret === "") return [];
+  const values = new Set([secret]);
+  for (const line of secret.split(/\r?\n/)) {
+    const bare = line.trim();
+    if (
+      bare.length >= EXECUTION_SECRET_LINE_MIN_LENGTH &&
+      !PEM_ARMOUR.test(bare)
+    ) {
+      values.add(line);
+      if (bare !== line) values.add(bare);
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
 }
 
 /**

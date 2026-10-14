@@ -760,8 +760,10 @@ the one `stop-task` takes.
 **The request names a task, never a file.** Its path holds a session id and a
 task id, and its query holds `tail` and nothing else.
 
-- **Task id.** 1 to 256 ASCII letters, digits, `.`, `_` or `-`, starting with
+- **Task id.** 1 to 248 ASCII letters, digits, `.`, `_` or `-`, starting with
   a letter or digit, so it cannot be a path, a separator or a dot segment.
+  248 leaves `<taskId>.output` within the 255-byte filename limit, so a
+  derived path never fails to open for its length.
 - **Session id.** 1 to 256 characters, as agents-daemon's
   `assertSafeStorageSegment` takes one: no `/`, `\`, control character (C0,
   DEL, C1) or lone surrogate, and not `.` or `..`. This holds before and after
@@ -792,58 +794,77 @@ check none of them.
   forge "Output is being written to: …". Nothing in the request is part of the
   path except the task id.
 - **The directory.** The file must sit directly inside **that session's own**
-  provider task directory, compared after resolving that directory's real
-  path. That means not the provider's temporary root (Claude's
-  `/tmp/claude-<uid>/…` holds every session's tasks), and not the session's
-  worktree, where a forged `<worktree>/.env` would pass.
+  provider task directory. That means not the provider's temporary root
+  (Claude's `/tmp/claude-<uid>/…` holds every session's tasks), and not the
+  session's worktree, where a forged `<worktree>/.env` would pass. The
+  comparison is exact: `realpath(sessionTaskDir) === realpath(dirname(path))`.
+  The host then opens `join(realDir, basename(path))`, never `path` itself.
 - **The file.**
   - Open it read-only, refusing a symlink as the last component
     (`O_NOFOLLOW`), and without blocking (`O_NONBLOCK`), so a FIFO cannot hang
-    the host.
+    the host. On Linux the host may also check that
+    `readlink("/proc/self/fd/<fd>")` names that same path.
   - `fstat` the open descriptor. It must be a regular file with `st_nlink`
     of 1, since a hard link passes a real-path check.
   - Size the read from that one `fstat`
     (`executionTaskOutputReadRange(size, tail)`), and read exactly that range
     with one `pread`, so a file that grows meanwhile cannot push the read past
     the tail.
-- **Refusals.**
+- **Refusals, never a 500.**
   - A file that fails any of these checks is `read-refused`.
-  - A file that does not exist is `no-output`.
+  - A file that does not exist, or a path that cannot be opened for its form
+    (`ENOENT`, `ENOTDIR`, `ENAMETOOLONG`), is `no-output`.
+  - A `pread` that returns fewer bytes than the range asked for is
+    `no-output`: the file shrank after its `fstat`, and the output it had is
+    gone. `decodeExecutionTaskOutputWindow` throws on such bytes rather than
+    make a window from them.
   - A refusal never names the path.
 - **Caching.** The host answers with `Cache-Control: no-store`.
 
 **The window holds whole lines** (`decodeExecutionTaskOutputWindow(bytes,
-position, tail, status)`, which the host calls on the bytes it read, before
-it redacts). A line ends at `\n` (0x0A).
+position, tail)`, which the host calls on the bytes it read, before it
+redacts). A line ends at `\n` (0x0A).
 
 - **Its start.** Within the tail, the window starts at the first line start:
   the file's first byte, or a byte after `\n`. The read reaches one byte
   before the tail, so a line the tail reaches exactly is kept. A line the tail
   cuts is left out whole. When no line starts within the tail, the window is
   empty at `totalBytes`.
-- **Its end.** While the task may still write (`running`, `unknown`), a last
-  line not yet ended by `\n` is held back: `endOffset` is the byte after the
-  window's last `\n`. Once the task has ended (`completed`, `failed`,
-  `stopped`) the file is whole, and the window ends at `totalBytes`.
+- **Its end.** A last line not yet ended by `\n` is held back, **whatever the
+  task's status**: `endOffset` is the byte after the window's last `\n`. An
+  ended task's file is not necessarily whole. A process stopped by
+  `stop-task`, killed for memory or a timeout, or whose shell exited 0 after
+  its child was killed, leaves its file where its last block-buffered flush
+  landed, possibly mid-secret. The cost: a final line without `\n` is never
+  shown, even once the task has ended.
 - **Why lines.** A host redacts exact secret values (agents-daemon's
   `redactCredentials`), and it cannot recognise a value it does not see whole.
   - The client sets `tail` to the byte, so it could cut 1 byte into a secret,
     and the host would show the rest of it.
-  - A running command flushes stdout in 4–8 KiB blocks, so its file often ends
-    mid-secret, and a prefix would show until the next flush.
+  - A command flushes stdout in 4–8 KiB blocks, so its file often ends
+    mid-secret: while it runs, until the next flush; once it is killed,
+    for good.
   - No credential holds a line break, so whole lines hold every secret whole
     or not at all. Matching edge fragments against known secrets would need a
     minimum fragment length, and anything shorter would still leak; line
     boundaries need no knowledge of the secret.
   - A secret value that does hold a line break (a PEM key) is redacted line by
-    line as well as whole, so a window that starts inside it shows none of it.
+    line as well as whole, so a window that starts or ends inside it shows
+    none of it. `executionSecretRedactionValues(secret)` gives the values to
+    redact, longest first: the whole value, then each line (split on
+    `\r?\n`) of at least 8 characters (`EXECUTION_SECRET_LINE_MIN_LENGTH`),
+    leaving out blank lines and PEM armour (`-----BEGIN …-----`,
+    `-----END …-----`), which are no secret and would redact text that is not.
+  - What exact-value redaction cannot catch, this included: a secret split
+    mid-line by an interleaved write, such as unbuffered stderr landing inside
+    a buffered stdout block. No line then holds the value whole.
 - **No character is cut.** No UTF-8 sequence holds 0x0A, so a line boundary
   is always a character boundary.
 
 The window is decoded as UTF-8. Each invalid sequence becomes U+FFFD (the
-WHATWG decoder with replacement), a byte order mark is kept as a character,
-and a character an ended task left unfinished is U+FFFD. Then the host
-redacts it as it redacts every other text it sends, such as tool results.
+WHATWG decoder with replacement), and a byte order mark is kept as a
+character. Then the host redacts it as it redacts every other text it sends,
+such as tool results.
 
 **The answer** (`decodeExecutionTaskOutputResponse`,
 `encodeExecutionTaskOutputResponse`):
@@ -867,8 +888,8 @@ redacts it as it redacts every other text it sends, such as tool results.
   - `totalBytes` is the file's size when the host read it.
   - `startOffset` is at most 65,536 bytes before `totalBytes`, and at most the
     `tail` asked for.
-  - `endOffset` is `totalBytes` unless a running task's unfinished last line
-    is held back. An ended task's never is.
+  - `endOffset` is `totalBytes` unless the file's unfinished last line is
+    held back, whatever the task's status.
   - `truncated` is true exactly when `startOffset` is past 0.
   - An empty window has empty `text`.
   - All three offsets are byte positions in the file, not positions in `text`.
@@ -878,14 +899,14 @@ redacts it as it redacts every other text it sends, such as tool results.
   makes the text longer than the cap, the host makes the window again from
   the same bytes with half the tail, and halves again until it fits.
 - **`status` and `readAt`.** `status` is the task's status in the host's
-  record when the host read the file. It uses the `SessionTask` values:
+  record when the host read the file. It does not change the window. It uses the `SessionTask` values:
   `running`, `completed`, `failed`, `stopped` or `unknown`. `readAt` is an
   RFC 3339 timestamp with every field in range: no `2026-02-30`, no `T24:00`,
-  no leap second.
+  no leap second, no `+05:60`.
 
 The decoder ignores fields it does not know. It checks every field it knows,
-including the window's bound, the order of the offsets, an ended task's end,
-and the consistency of `truncated`, so it refuses an answer past the cap
+including the window's bound, the order of the offsets and the consistency
+of `truncated`, so it refuses an answer past the cap
 rather than reading it. The encoders throw on anything the decoders would
 refuse.
 

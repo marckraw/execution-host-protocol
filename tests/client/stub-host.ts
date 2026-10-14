@@ -147,6 +147,8 @@ export interface StubTask {
   status: AgentRunStatus;
   output: Uint8Array | null;
   outsidePolicy?: boolean;
+  /** What the file holds by the time it is read, when it shrank after `fstat`. */
+  shrunkTo?: Uint8Array;
 }
 
 /**
@@ -431,7 +433,15 @@ export function createStubHost(): StubHost {
         method === "GET" &&
         /^\/v0\/execution\/sessions\/[^/]+\/tasks\/[^/]+\/output$/.test(path)
       ) {
-        const target = `${path}${url.search}`;
+        // The raw target, as on the request line: `URL` would already have
+        // normalized it, dot segments and all.
+        const target = (
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url
+        ).replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "");
         host.taskOutputRequests.push({
           target,
           authorization: headers.get("Authorization"),
@@ -454,17 +464,18 @@ export function createStubHost(): StubHost {
         if (task === undefined) return refuse("task-unknown");
         if (task.output === null) return refuse("no-output");
         if (task.outsidePolicy) return refuse("read-refused");
-        // One "fstat", then one "pread" of the range it sizes.
+        // One "fstat", then one "pread" of the range it sizes. A file that
+        // shrank in between reads short: the output it had is gone.
         const { position, length } = executionTaskOutputReadRange(
           task.output.byteLength,
           tail,
         );
-        const window = decodeExecutionTaskOutputWindow(
-          task.output.slice(position, position + length),
+        const read = (task.shrunkTo ?? task.output).slice(
           position,
-          tail,
-          task.status,
+          position + length,
         );
+        if (read.byteLength < length) return refuse("no-output");
+        const window = decodeExecutionTaskOutputWindow(read, position, tail);
         return new Response(
           encodeExecutionTaskOutputResponse({
             sessionId,

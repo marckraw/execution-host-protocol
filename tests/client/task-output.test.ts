@@ -183,17 +183,59 @@ describe("taskOutput", () => {
     expect(output.text).not.toContain("sk-live");
   });
 
-  it("shows an ended task's last line, finished or not", async () => {
-    host.tasks.get("session-1")!.set("ended", {
-      status: "completed",
-      output: encoder.encode("ok\nno line break"),
+  it.each(["completed", "failed", "stopped"] as const)(
+    "holds back a %s task's frozen last line: a killed command stops mid-flush",
+    async (status) => {
+      // stop-task, an OOM or a timeout kill leaves the file where its last
+      // block-buffered flush landed: here, one character short of a secret.
+      const secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRS";
+      host.tasks.get("session-1")!.set("ended", {
+        status,
+        output: encoder.encode(
+          `lint ok\nANTHROPIC_API_KEY=${secret.slice(0, -1)}`,
+        ),
+      });
+
+      const output = await client().taskOutput("session-1", "ended");
+
+      expect(output).toMatchObject({
+        status,
+        text: "lint ok\n",
+        startOffset: 0,
+        endOffset: 8,
+        totalBytes: 8 + 18 + secret.length - 1,
+      });
+      expect(output.text).not.toContain(secret.slice(0, 8));
+    },
+  );
+
+  it("has the stub read the raw target, as hosts are told to", async () => {
+    // `URL` would fold `%2E%2E` into a dot segment and reach another route;
+    // read raw, the target is refused for what it is.
+    const answer = await host.fetch(
+      "https://host.test/v0/execution/sessions/session-1%2F%2E%2E/tasks/t1/output?tail=64",
+      { headers: { Authorization: `Bearer ${host.token}` } },
+    );
+
+    expect(answer.status).toBe(400);
+    expect(await answer.json()).toMatchObject({ code: "rejected" });
+    expect(host.taskOutputRequests.at(-1)?.target).toBe(
+      "/v0/execution/sessions/session-1%2F%2E%2E/tasks/t1/output?tail=64",
+    );
+  });
+
+  it("reads a file that shrank between fstat and pread as no-output", async () => {
+    host.tasks.get("session-1")!.set("shrinking", {
+      status: "running",
+      output: encoder.encode("a line\n".repeat(100)),
+      shrunkTo: encoder.encode("a line\n"),
     });
 
-    expect(await client().taskOutput("session-1", "ended")).toMatchObject({
-      text: "ok\nno line break",
-      endOffset: 16,
-      totalBytes: 16,
-    });
+    expect(
+      await failureOf(
+        client().taskOutput("session-1", "shrinking", { tail: 64 }),
+      ),
+    ).toMatchObject({ code: "no-output", status: 404 });
   });
 
   it("reads a whole short file as not truncated", async () => {
@@ -448,10 +490,6 @@ describe("taskOutput", () => {
       "a window past the cap",
       () =>
         json({ ...ANSWER, endOffset: 65_537, totalBytes: 65_537, text: "x" }),
-    ],
-    [
-      "an ended task's line held back",
-      () => json({ ...ANSWER, status: "completed", endOffset: 2 }),
     ],
     [
       "text past its cap",

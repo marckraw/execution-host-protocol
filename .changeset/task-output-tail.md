@@ -17,9 +17,12 @@ both caps: the decoders refuse anything past them, and the encoders throw on
 it.
 
 The window holds whole lines only, so a host that redacts exact secret values
-never shows a fragment of one. A line the tail cuts is left out, and while a
-task runs its unfinished last line is held back (`endOffset` before
-`totalBytes`).
+never shows a fragment of one. A line the tail cuts is left out, and an
+unfinished last line is held back whatever the task's status (`endOffset`
+before `totalBytes`): a killed command's file can end mid-secret.
+`executionSecretRedactionValues` expands a multi-line secret (a PEM key) into
+the values a host redacts. Task ids are at most 248 characters, so
+`<taskId>.output` fits a filename.
 
 Session ids are safe path segments: 1 to 256 characters, with no `/`, `\`,
 control character or dot segment, before or after NFKC normalization.
@@ -27,8 +30,9 @@ control character or dot segment, before or after NFKC normalization.
 The README spells out where a host may read from: the path from the
 provider's structured event, or derived inside the session's own task
 directory, never parsed from tool-result text. It also covers how the host
-checks the file: `O_NOFOLLOW`, `fstat`, a regular file with one link, and one
-`pread`.
+checks the file: an exact real-path comparison of its directory,
+`O_NOFOLLOW`, `fstat`, a regular file with one link, and one `pread`, with
+every failure a coded refusal rather than a 500.
 
 The root gains:
 
