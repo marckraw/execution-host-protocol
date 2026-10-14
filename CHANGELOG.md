@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.25.0
+
+### Minor Changes
+
+- c26c6b2: `downloadAttachment` takes a `kind` that sets its ceiling: `"tool"` (the default) stays at 8 MiB, `"inline"` reads an upload up to the host's 10 MiB (MAR-3973).
+
 ## 0.24.0
 
 ### Minor Changes
