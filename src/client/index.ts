@@ -80,3 +80,10 @@ export {
   type ExecutionEventStreamOptions,
   type ExecutionStreamFrame,
 } from "./stream.js";
+export {
+  ExecutionTaskOutputError,
+  hostReadsTaskOutput,
+  type ExecutionTaskOutputErrorCode,
+  type ExecutionTaskOutputOptions,
+  type ExecutionTaskOutputResult,
+} from "./task-output.js";

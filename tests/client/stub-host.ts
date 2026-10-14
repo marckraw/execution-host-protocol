@@ -1,6 +1,13 @@
 import {
   decodeExecutionOneShotRequest,
+  decodeExecutionTaskOutputRequest,
+  decodeExecutionTaskOutputWindow,
+  executionTaskOutputReadRange,
+  encodeExecutionTaskOutputResponse,
   EXECUTION_PROTOCOL_VERSION,
+  EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES,
+  type AgentRunStatus,
+  type ExecutionTaskOutputRefusalCode,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
   checkExecutionInlineAttachments,
@@ -123,7 +130,35 @@ export interface StubHost {
   oneShotRoute: "oneshot.v1" | "released";
   /** The prompts the host actually ran. */
   oneShotRuns: string[];
+  /**
+   * The tasks each session's record knows, by session and then task id
+   * (MAR-3981): a task's status, the bytes of its output file (null for a
+   * task with none), and whether its recorded path is outside what the host's
+   * policy reads.
+   */
+  tasks: Map<string, Map<string, StubTask>>;
+  /** Off, the host predates `tasks.output.v1`: its 404 for the route has no code. */
+  servesTaskOutput: boolean;
+  /** Every task-output request: its target exactly as sent, and its token. */
+  taskOutputRequests: Array<{ target: string; authorization: string | null }>;
 }
+
+export interface StubTask {
+  status: AgentRunStatus;
+  output: Uint8Array | null;
+  outsidePolicy?: boolean;
+  /** What the file holds by the time it is read, when it shrank after `fstat`. */
+  shrunkTo?: Uint8Array;
+}
+
+/**
+ * The secret the stub redacts from task output: by its exact value, as
+ * agents-daemon's `redactCredentials` does, so only a window of whole lines
+ * keeps a cut fragment of it from showing.
+ */
+export const STUB_SECRET = "sk-live-abc123XYZ";
+/** When the stub reads a task's output. */
+export const STUB_READ_AT = "2026-10-14T05:30:00.000Z";
 
 const encoder = new TextEncoder();
 
@@ -235,6 +270,9 @@ export function createStubHost(): StubHost {
     oneShotAnswer: null,
     oneShotRoute: "oneshot.v1",
     oneShotRuns: [],
+    tasks: new Map(),
+    servesTaskOutput: true,
+    taskOutputRequests: [],
 
     emit(event, sessionId = "session-1") {
       const envelope: ExecutionHostEventEnvelope = {
@@ -387,6 +425,73 @@ export function createStubHost(): StubHost {
             ...(body.requires === undefined ? {} : { requires: body.requires }),
           },
           201,
+        );
+      }
+
+      if (
+        host.servesTaskOutput &&
+        method === "GET" &&
+        /^\/v0\/execution\/sessions\/[^/]+\/tasks\/[^/]+\/output$/.test(path)
+      ) {
+        // The raw target, as on the request line: `URL` would already have
+        // normalized it, dot segments and all.
+        const target = (
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url
+        ).replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "");
+        host.taskOutputRequests.push({
+          target,
+          authorization: headers.get("Authorization"),
+        });
+        // Each refusal quotes the output file's path and the token, as no
+        // host should, to show neither reaches an error.
+        const refuse = (code: ExecutionTaskOutputRefusalCode) =>
+          json(
+            {
+              error: `${code}: /Users/piotr/.claude/tasks/x.output for Bearer ${host.token}`,
+              code,
+            },
+            EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES[code],
+          );
+        const asked = decodeExecutionTaskOutputRequest(target);
+        if (!asked.ok) return refuse("rejected");
+        const { sessionId, taskId, tail } = asked.value;
+        if (!host.sessions.has(sessionId)) return refuse("session-unknown");
+        const task = host.tasks.get(sessionId)?.get(taskId);
+        if (task === undefined) return refuse("task-unknown");
+        if (task.output === null) return refuse("no-output");
+        if (task.outsidePolicy) return refuse("read-refused");
+        // One "fstat", then one "pread" of the range it sizes. A file that
+        // shrank in between reads short: the output it had is gone.
+        const { position, length } = executionTaskOutputReadRange(
+          task.output.byteLength,
+          tail,
+        );
+        const read = (task.shrunkTo ?? task.output).slice(
+          position,
+          position + length,
+        );
+        if (read.byteLength < length) return refuse("no-output");
+        const window = decodeExecutionTaskOutputWindow(read, position, tail);
+        return new Response(
+          encodeExecutionTaskOutputResponse({
+            sessionId,
+            taskId,
+            status: task.status,
+            ...window,
+            text: window.text.split(STUB_SECRET).join("[redacted]"),
+            readAt: STUB_READ_AT,
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "Cache-Control": "no-store",
+            },
+          },
         );
       }
 

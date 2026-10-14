@@ -90,6 +90,15 @@ import {
   type ExecutionSessionSnapshot,
 } from "./snapshot.js";
 import {
+  prepareTaskOutput,
+  readTaskOutputAnswer,
+  TASK_OUTPUT_ANSWER_MAX_BYTES,
+  TASK_OUTPUT_REFUSAL_MAX_BYTES,
+  taskOutputRefusal,
+  type ExecutionTaskOutputOptions,
+  type ExecutionTaskOutputResult,
+} from "./task-output.js";
+import {
   streamSessionEvents,
   type ExecutionEventStreamOptions,
   type ExecutionStreamFrame,
@@ -302,6 +311,23 @@ export interface ExecutionHostClient {
     attachmentId: string,
     options?: ExecutionAttachmentDownloadOptions,
   ): Promise<ExecutionAttachmentDownloadResult>;
+  /**
+   * The end of one task's output (`GET .../tasks/:taskId/output?tail=`,
+   * `tasks.output.v1`, MAR-3981): whole lines from at most the last `tail`
+   * bytes of the file (default and most 65536), as host-redacted text, with
+   * the task's status and where the window sits in the file. Names a task, never a file: an id the route cannot name
+   * or an option it does not take is a `TypeError`, a `tail` out of bounds a
+   * `RangeError`, before anything is sent. It does not read `/health` first;
+   * gate on `hostReadsTaskOutput(health)`. Every refusal is an
+   * `ExecutionTaskOutputError` with a code; a host without the route is
+   * `unsupported`. Only a host that cannot be reached, or does not answer
+   * within the health timeout, is an `ExecutionHostError`.
+   */
+  taskOutput(
+    sessionId: string,
+    taskId: string,
+    options?: ExecutionTaskOutputOptions,
+  ): Promise<ExecutionTaskOutputResult>;
   /**
    * One connection to the session's event stream, decoded but not sequenced.
    * Most readers want `followSession`. When the caller's `signal` aborts the
@@ -1034,6 +1060,40 @@ export function createExecutionHostClient(
         }
         throw error;
       }
+    },
+
+    taskOutput: async (sessionId, taskId, taskOptions = {}) => {
+      // Every option read once, here, before anything is awaited.
+      const { target, tail } = prepareTaskOutput(
+        sessionId,
+        taskId,
+        taskOptions,
+      );
+      const { signal, timeoutMs = healthTimeoutMs } = taskOptions;
+      const asked = { sessionId, taskId, tail };
+      return request(
+        "task output",
+        target,
+        { method: "GET", authenticated: true, timeoutMs, signal },
+        async (response, answer): Promise<ExecutionTaskOutputResult> => {
+          if (!response.ok) {
+            // An unreadable refusal still has a status; a caller's abort is
+            // still theirs.
+            const refusal = await answer
+              .atMost(TASK_OUTPUT_REFUSAL_MAX_BYTES)
+              .catch((error: unknown) => {
+                if (signal?.aborted) throw error;
+                return null;
+              });
+            throw taskOutputRefusal(response.status, refusal ?? "", asked);
+          }
+          return readTaskOutputAnswer(
+            response.status,
+            await answer.atMost(TASK_OUTPUT_ANSWER_MAX_BYTES),
+            asked,
+          );
+        },
+      );
     },
 
     events: (sessionId, streamOptions) =>
