@@ -94,6 +94,7 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.decodeExecutionTaskOutputRequest, "function");
   assert.equal(typeof loaded.decodeExecutionTaskOutputResponse, "function");
   assert.equal(typeof loaded.decodeExecutionTaskOutputWindow, "function");
+  assert.equal(typeof loaded.executionTaskOutputReadRange, "function");
   assert.equal(loaded.EXECUTION_TASK_OUTPUT_MAX_BYTES, 65_536);
   assert.ok(
     loaded.EXECUTION_PROTOCOL_CAPABILITY_IDS.includes("tasks.output.v1"),

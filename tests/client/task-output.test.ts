@@ -17,15 +17,19 @@ import {
   createStubHost,
   HEALTH_BODY,
   STUB_READ_AT,
+  STUB_SECRET,
   type StubHost,
 } from "./stub-host.js";
 
 const encoder = new TextEncoder();
 
-/** 70 KiB of a `pnpm check`: a secret early on, and one near the end. */
+/** 70 KiB of a `pnpm check`, a secret near the end. */
 const LONG_OUTPUT = encoder.encode(
-  `${"lint ok\n".repeat(8_960)}token sk-live-abc123 leaked\n✓ 212 tests passed\n`,
+  `${"lint ok\n".repeat(8_960)}token ${STUB_SECRET} leaked\n✓ 212 tests passed\n`,
 );
+
+/** A small file, a secret on its first line. */
+const SECRET_OUTPUT = `token ${STUB_SECRET} leaked\nend\n`;
 
 let host: StubHost;
 /** Every request the client made, in order. */
@@ -36,6 +40,14 @@ beforeEach(() => {
     "session-1",
     new Map([
       ["b7x2k9q1", { status: "running", output: LONG_OUTPUT }],
+      ["t1", { status: "running", output: encoder.encode(SECRET_OUTPUT) }],
+      [
+        "flushing",
+        {
+          status: "running",
+          output: encoder.encode(`ok\ntoken ${STUB_SECRET.slice(0, 10)}`),
+        },
+      ],
       ["short", { status: "completed", output: encoder.encode("done ✓\n") }],
       ["subagent", { status: "completed", output: null }],
       [
@@ -115,11 +127,14 @@ describe("taskOutput", () => {
       sessionId: "session-1",
       taskId: "b7x2k9q1",
       status: "running",
-      startOffset: LONG_OUTPUT.byteLength - 65_536,
+      // The first line start within the tail: "lint ok\n" lines are 8 bytes.
+      startOffset: Math.ceil((LONG_OUTPUT.byteLength - 65_536) / 8) * 8,
+      endOffset: LONG_OUTPUT.byteLength,
       totalBytes: LONG_OUTPUT.byteLength,
       truncated: true,
       readAt: STUB_READ_AT,
     });
+    expect(output.text.startsWith("lint ok\n")).toBe(true);
     expect(output.text.endsWith("✓ 212 tests passed\n")).toBe(true);
   });
 
@@ -127,7 +142,58 @@ describe("taskOutput", () => {
     const output = await client().taskOutput("session-1", "b7x2k9q1");
 
     expect(output.text).toContain("token [redacted] leaked");
-    expect(output.text).not.toContain("sk-live-abc123");
+    expect(output.text).not.toContain(STUB_SECRET);
+  });
+
+  it("never shows a fragment of a secret, whatever tail it asks for", async () => {
+    const texts = new Set<string>();
+    for (let tail = 1; tail <= SECRET_OUTPUT.length + 1; tail++) {
+      texts.add((await client().taskOutput("session-1", "t1", { tail })).text);
+    }
+
+    // Byte by byte into the secret, the client sees whole lines or nothing.
+    expect([...texts].sort()).toEqual([
+      "",
+      "end\n",
+      "token [redacted] leaked\nend\n",
+    ]);
+    expect(await client().taskOutput("session-1", "t1", { tail: 28 })).toEqual({
+      sessionId: "session-1",
+      taskId: "t1",
+      status: "running",
+      text: "end\n",
+      startOffset: 31,
+      endOffset: 35,
+      totalBytes: 35,
+      truncated: true,
+      readAt: STUB_READ_AT,
+    });
+  });
+
+  it("holds back a running command's half-flushed last line", async () => {
+    const output = await client().taskOutput("session-1", "flushing");
+
+    expect(output).toMatchObject({
+      text: "ok\n",
+      startOffset: 0,
+      endOffset: 3,
+      totalBytes: 19,
+      truncated: false,
+    });
+    expect(output.text).not.toContain("sk-live");
+  });
+
+  it("shows an ended task's last line, finished or not", async () => {
+    host.tasks.get("session-1")!.set("ended", {
+      status: "completed",
+      output: encoder.encode("ok\nno line break"),
+    });
+
+    expect(await client().taskOutput("session-1", "ended")).toMatchObject({
+      text: "ok\nno line break",
+      endOffset: 16,
+      totalBytes: 16,
+    });
   });
 
   it("reads a whole short file as not truncated", async () => {
@@ -137,15 +203,16 @@ describe("taskOutput", () => {
       status: "completed",
       text: "done ✓\n",
       startOffset: 0,
+      endOffset: 9,
       totalBytes: 9,
       truncated: false,
       readAt: STUB_READ_AT,
     });
   });
 
-  it("asks for the tail it is given, and gets a cut character repaired", async () => {
-    // The last 3 bytes are "✓"'s final 2 and a newline: the window starts
-    // past the cut character, at the newline.
+  it("asks for the tail it is given, and gets the line it cut left out", async () => {
+    // The last 3 bytes are "✓"'s final 2 and a newline: the line they end
+    // starts before the tail, so no line starts within it.
     const output = await client().taskOutput("session-1", "short", {
       tail: 3,
     });
@@ -154,21 +221,22 @@ describe("taskOutput", () => {
       "/v0/execution/sessions/session-1/tasks/short/output?tail=3",
     );
     expect(output).toMatchObject({
-      text: "\n",
-      startOffset: 8,
+      text: "",
+      startOffset: 9,
+      endOffset: 9,
       totalBytes: 9,
       truncated: true,
     });
   });
 
   it("encodes the session id", async () => {
-    host.sessions.add("accent/8f 2c");
-    host.tasks.set("accent/8f 2c", host.tasks.get("session-1")!);
+    host.sessions.add("accent 8f2c?");
+    host.tasks.set("accent 8f2c?", host.tasks.get("session-1")!);
 
-    await client().taskOutput("accent/8f 2c", "short");
+    await client().taskOutput("accent 8f2c?", "short");
 
     expect(requests[0]?.target).toBe(
-      "/v0/execution/sessions/accent%2F8f%202c/tasks/short/output?tail=65536",
+      "/v0/execution/sessions/accent%208f2c%3F/tasks/short/output?tail=65536",
     );
   });
 
@@ -187,6 +255,26 @@ describe("taskOutput", () => {
     [
       "a dot-segment session",
       () => client().taskOutput("..", "b7x2k9q1"),
+      TypeError,
+    ],
+    [
+      "a session id holding a path",
+      () => client().taskOutput("../../etc", "b7x2k9q1"),
+      TypeError,
+    ],
+    [
+      "a session id of fullwidth dots",
+      () => client().taskOutput("\uff0e\uff0e", "b7x2k9q1"),
+      TypeError,
+    ],
+    [
+      "a session id holding NUL",
+      () => client().taskOutput("a\u0000b", "b7x2k9q1"),
+      TypeError,
+    ],
+    [
+      "a 100,000-character session id",
+      () => client().taskOutput("s".repeat(100_000), "b7x2k9q1"),
       TypeError,
     ],
     [
@@ -307,8 +395,20 @@ describe("taskOutput", () => {
       500,
     ],
     [
-      "a 404 coded with a code this build does not know",
+      "a 404 coded with a code this build does not know: a newer host's",
       json({ error: "x", code: "task-expired" }, 404),
+      "rejected",
+      404,
+    ],
+    [
+      "a 404 coded with a code past its status",
+      json({ error: "x", code: "read-refused" }, 404),
+      "rejected",
+      404,
+    ],
+    [
+      "a 404 whose body is not JSON",
+      new Response("Not Found", { status: 404 }),
       "unsupported",
       404,
     ],
@@ -332,6 +432,7 @@ describe("taskOutput", () => {
     status: "running",
     text: "ok\n",
     startOffset: 0,
+    endOffset: 3,
     totalBytes: 3,
     truncated: false,
     readAt: STUB_READ_AT,
@@ -345,7 +446,12 @@ describe("taskOutput", () => {
     ],
     [
       "a window past the cap",
-      () => json({ ...ANSWER, totalBytes: 65_537, text: "x" }),
+      () =>
+        json({ ...ANSWER, endOffset: 65_537, totalBytes: 65_537, text: "x" }),
+    ],
+    [
+      "an ended task's line held back",
+      () => json({ ...ANSWER, status: "completed", endOffset: 2 }),
     ],
     [
       "text past its cap",
@@ -370,6 +476,7 @@ describe("taskOutput", () => {
           ...ANSWER,
           text: "x",
           startOffset: 10,
+          endOffset: 1_034,
           totalBytes: 1_034,
           truncated: true,
         }),
@@ -379,6 +486,10 @@ describe("taskOutput", () => {
       "a body past 512 KiB",
       () =>
         new Response(`{"text":"${"\\u0041".repeat(90_000)}"}`, { status: 200 }),
+    ],
+    [
+      "a valid answer padded past 512 KiB with a field it does not know",
+      () => json({ ...ANSWER, padding: "x".repeat(600_000) }),
     ],
   ])("refuses %s as malformed", async (_name, answer, tail) => {
     const error = await failureOf(
@@ -398,6 +509,7 @@ describe("taskOutput", () => {
       ...ANSWER,
       text: "x",
       startOffset: 10,
+      endOffset: 1_010,
       totalBytes: 1_010,
       truncated: true,
     };
@@ -481,6 +593,7 @@ describe("taskOutput over HTTP", () => {
           status: "completed",
           text: "212 tests ✓\n",
           startOffset: 0,
+          endOffset: 14,
           totalBytes: 14,
           truncated: false,
           readAt: STUB_READ_AT,
@@ -499,19 +612,20 @@ describe("taskOutput over HTTP", () => {
     });
 
     expect(
-      await http.taskOutput("accent/8f 2c", "b7x2k9q1", { tail: 4_096 }),
+      await http.taskOutput("accent 8f2c?", "b7x2k9q1", { tail: 4_096 }),
     ).toEqual({
-      sessionId: "accent/8f 2c",
+      sessionId: "accent 8f2c?",
       taskId: "b7x2k9q1",
       status: "completed",
       text: "212 tests ✓\n",
       startOffset: 0,
+      endOffset: 14,
       totalBytes: 14,
       truncated: false,
       readAt: STUB_READ_AT,
     });
     expect(targets).toEqual([
-      "/v0/execution/sessions/accent%2F8f%202c/tasks/b7x2k9q1/output?tail=4096",
+      "/v0/execution/sessions/accent%208f2c%3F/tasks/b7x2k9q1/output?tail=4096",
     ]);
   });
 });

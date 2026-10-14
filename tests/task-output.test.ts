@@ -6,12 +6,14 @@ import {
   decodeExecutionTaskOutputWindow,
   encodeExecutionTaskOutputRequest,
   encodeExecutionTaskOutputResponse,
+  executionTaskOutputReadRange,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
   EXECUTION_TASK_OUTPUT_MAX_BYTES,
   EXECUTION_TASK_OUTPUT_REFUSAL_CODES,
   EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES,
   EXECUTION_TASK_OUTPUT_STATUSES,
   EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH,
+  type AgentRunStatus,
   type ExecutionTaskOutputResponse,
 } from "../src/index.js";
 
@@ -24,6 +26,7 @@ const OUTPUT: ExecutionTaskOutputResponse = {
   status: "running",
   text: "✓ packages/protocol (212 tests)\n",
   startOffset: 139_264,
+  endOffset: 204_800,
   totalBytes: 204_800,
   truncated: true,
   readAt: "2026-10-14T05:30:00.000Z",
@@ -62,20 +65,22 @@ describe("task-output requests", () => {
   it("encodes the session id as a path segment", () => {
     expect(
       encodeExecutionTaskOutputRequest({
-        sessionId: "accent/8f 2c?",
+        sessionId: "accent 8f2c?",
         taskId: "t.1_a-B",
         tail: 1,
       }),
     ).toBe(
-      "/v0/execution/sessions/accent%2F8f%202c%3F/tasks/t.1_a-B/output?tail=1",
+      "/v0/execution/sessions/accent%208f2c%3F/tasks/t.1_a-B/output?tail=1",
     );
   });
 
   it("decodes what it encodes", () => {
     for (const request of [
       { sessionId: "session-1", taskId: "b7x2k9q1", tail: 1 },
-      { sessionId: "accent/8f 2c?", taskId: "t.1_a-B", tail: 65_536 },
-      { sessionId: "é", taskId: "x".repeat(256), tail: 4_096 },
+      { sessionId: "accent 8f2c?", taskId: "t.1_a-B", tail: 65_536 },
+      { sessionId: "é😀", taskId: "x".repeat(256), tail: 4_096 },
+      { sessionId: "s".repeat(256), taskId: "b7x2k9q1", tail: 4_096 },
+      { sessionId: "a..b", taskId: "b7x2k9q1", tail: 4_096 },
     ]) {
       expect(
         decodeExecutionTaskOutputRequest(
@@ -90,13 +95,10 @@ describe("task-output requests", () => {
       ok: true,
       value: { sessionId: "session-1", taskId: "b7x2k9q1", tail: 65_536 },
     });
-    expect(decodeExecutionTaskOutputRequest(`${ROUTE}?`)).toMatchObject({
-      ok: true,
-      value: { tail: 65_536 },
-    });
   });
 
   it.each<[string, string]>([
+    ["an empty query", `${ROUTE}?`],
     ["a tail of nothing", `${ROUTE}?tail=0`],
     ["a tail past the cap", `${ROUTE}?tail=65537`],
     ["a far larger tail", `${ROUTE}?tail=99999999999`],
@@ -148,6 +150,28 @@ describe("task-output requests", () => {
       "a broken escape",
       "/v0/execution/sessions/session%E0%A4%A/tasks/b7x2k9q1/output",
     ],
+    ...(
+      [
+        ["a session id climbing out", "..%2F..%2Fetc"],
+        ["a session id that is a path", "%2Fetc%2Fpasswd"],
+        ["a session id holding a slash", "accent%2F8f2c"],
+        ["a session id holding a backslash", "..%5C.."],
+        ["a session id holding NUL", "a%00b"],
+        ["a session id holding a line break", "a%0Ab"],
+        ["a session id holding DEL", "a%7Fb"],
+        ["a session id holding a C1 control", "a%C2%85b"],
+        ["a session id of fullwidth dots", "%EF%BC%8E%EF%BC%8E"],
+        ["a session id of a two-dot leader", "%E2%80%A5"],
+        ["a session id holding a fullwidth solidus", "a%EF%BC%8Fb"],
+        ["a session id holding a fullwidth backslash", "a%EF%BC%BCb"],
+        ["a session id holding a lone surrogate", "a%ED%A0%80b"],
+        ["a session id past its bound", "s".repeat(257)],
+        ["a 100,000-character session id", "s".repeat(100_000)],
+      ] as const
+    ).map(([name, segment]): [string, string] => [
+      name,
+      `/v0/execution/sessions/${segment}/tasks/b7x2k9q1/output`,
+    ]),
   ])("refuses %s", (_name, target) => {
     expect(decodeExecutionTaskOutputRequest(target)).toEqual({
       ok: false,
@@ -179,7 +203,23 @@ describe("task-output requests", () => {
     ]) {
       expect(at({ taskId })).toThrow(TypeError);
     }
-    for (const sessionId of ["", ".", "..", null]) {
+    for (const sessionId of [
+      "",
+      ".",
+      "..",
+      "../../etc",
+      "/etc/passwd",
+      "a/b",
+      "..\\..",
+      "a\u0000b",
+      "a\nb",
+      "a\u0085b",
+      "\uff0e\uff0e",
+      "a\uff0fb",
+      "a\ud800b",
+      "s".repeat(257),
+      null,
+    ]) {
       expect(at({ sessionId })).toThrow(TypeError);
     }
     expect(at({ tail: 65_536 })()).toBe(`${ROUTE}?tail=65536`);
@@ -192,6 +232,7 @@ describe("task-output answers", () => {
       readAt: OUTPUT.readAt,
       truncated: OUTPUT.truncated,
       totalBytes: OUTPUT.totalBytes,
+      endOffset: OUTPUT.endOffset,
       startOffset: OUTPUT.startOffset,
       text: OUTPUT.text,
       status: OUTPUT.status,
@@ -205,6 +246,7 @@ describe("task-output answers", () => {
       "status",
       "text",
       "startOffset",
+      "endOffset",
       "totalBytes",
       "truncated",
       "readAt",
@@ -228,24 +270,51 @@ describe("task-output answers", () => {
       ...OUTPUT,
       text: "x".repeat(EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH),
       startOffset: 1_000,
+      endOffset: 1_000 + EXECUTION_TASK_OUTPUT_MAX_BYTES,
       totalBytes: 1_000 + EXECUTION_TASK_OUTPUT_MAX_BYTES,
     };
     expect(decodeExecutionTaskOutputResponse(atCaps).ok).toBe(true);
     expect(() => encodeExecutionTaskOutputResponse(atCaps)).not.toThrow();
   });
 
-  it("reads a whole file, an empty one, and one past 2^32 bytes", () => {
+  it("reads a whole file, an empty one, a held-back line, and one past 2^32 bytes", () => {
     for (const answer of [
-      { ...OUTPUT, startOffset: 0, totalBytes: 31, truncated: false },
-      { ...OUTPUT, text: "", startOffset: 0, totalBytes: 0, truncated: false },
+      {
+        ...OUTPUT,
+        startOffset: 0,
+        endOffset: 31,
+        totalBytes: 31,
+        truncated: false,
+      },
+      {
+        ...OUTPUT,
+        text: "",
+        startOffset: 0,
+        endOffset: 0,
+        totalBytes: 0,
+        truncated: false,
+      },
+      // A running task's unfinished last line, held back.
+      { ...OUTPUT, endOffset: 204_000 },
+      { ...OUTPUT, status: "unknown", endOffset: 204_000 },
+      // No line starts within the tail: an empty window at the end.
+      {
+        ...OUTPUT,
+        text: "",
+        startOffset: 204_800,
+        endOffset: 204_800,
+      },
       {
         ...OUTPUT,
         startOffset: 2 ** 32,
+        endOffset: 2 ** 32 + 65_536,
         totalBytes: 2 ** 32 + 65_536,
         truncated: true,
       },
       { ...OUTPUT, readAt: "2026-10-14T07:30:00+02:00" },
       { ...OUTPUT, readAt: "2026-10-14T05:30:00Z" },
+      { ...OUTPUT, readAt: "2028-02-29T23:59:59.999999999-12:00" },
+      { ...OUTPUT, text: "😀 ok" },
     ]) {
       expect(decodeExecutionTaskOutputResponse(answer)).toEqual({
         ok: true,
@@ -267,12 +336,44 @@ describe("task-output answers", () => {
   it.each<[string, Record<string, unknown>]>([
     [
       "a window past the cap",
-      { startOffset: 0, totalBytes: 65_537, truncated: false },
+      {
+        startOffset: 0,
+        endOffset: 65_537,
+        totalBytes: 65_537,
+        truncated: false,
+      },
+    ],
+    [
+      "a window past the cap, its end held back inside it",
+      { startOffset: 0, endOffset: 10, totalBytes: 65_537, truncated: false },
     ],
     [
       "a far larger window",
-      { startOffset: 1, totalBytes: 10_000_000, truncated: true },
+      {
+        startOffset: 1,
+        endOffset: 10_000_000,
+        totalBytes: 10_000_000,
+        truncated: true,
+      },
     ],
+    ["no end", { endOffset: undefined }],
+    ["a window ending past the file's end", { endOffset: 204_801 }],
+    ["a window ending before it starts", { endOffset: 139_263 }],
+    ["an end as a string", { endOffset: "204800" }],
+    [
+      "a completed task's line held back",
+      { status: "completed", endOffset: 204_000 },
+    ],
+    [
+      "a failed task's line held back",
+      { status: "failed", endOffset: 204_000 },
+    ],
+    [
+      "a stopped task's line held back",
+      { status: "stopped", endOffset: 204_000 },
+    ],
+    ["a lone high surrogate in the text", { text: "a\ud800b" }],
+    ["a lone low surrogate in the text", { text: "a\udc00b" }],
     [
       "text past its cap",
       { text: "x".repeat(EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH + 1) },
@@ -280,15 +381,19 @@ describe("task-output answers", () => {
     ["a window starting past the file's end", { startOffset: 204_801 }],
     ["a negative offset", { startOffset: -1, truncated: false }],
     ["a fractional offset", { startOffset: 1.5 }],
-    ["an offset past 2^53", { startOffset: 2 ** 53, totalBytes: 2 ** 53 + 1 }],
+    [
+      "an offset past 2^53",
+      { startOffset: 2 ** 53, endOffset: 2 ** 53 + 1, totalBytes: 2 ** 53 + 1 },
+    ],
     ["a size as a string", { totalBytes: "204800" }],
     [
       "truncated with the file's start in view",
-      { truncated: true, startOffset: 0, totalBytes: 10 },
+      { truncated: true, startOffset: 0, endOffset: 10, totalBytes: 10 },
     ],
     ["not truncated with the start out of view", { truncated: false }],
     ["truncated as a string", { truncated: "true" }],
     ["text in an empty window", { startOffset: 204_800 }],
+    ["text in a window emptied by a held-back line", { endOffset: 139_264 }],
     ["a status this build does not know", { status: "paused" }],
     ["no status", { status: undefined }],
     ["text that is not a string", { text: null }],
@@ -299,6 +404,15 @@ describe("task-output answers", () => {
     ["a date without a time", { readAt: "2026-10-14" }],
     ["a time without a zone", { readAt: "2026-10-14T05:30:00" }],
     ["an impossible time", { readAt: "2026-13-45T05:30:00Z" }],
+    ["a day the month does not have", { readAt: "2026-02-30T05:30:00Z" }],
+    ["a leap day in a common year", { readAt: "2026-02-29T05:30:00Z" }],
+    ["hour 24", { readAt: "2026-10-14T24:00:00Z" }],
+    ["minute 60", { readAt: "2026-10-14T05:60:00Z" }],
+    ["a leap second", { readAt: "2026-12-31T23:59:60Z" }],
+    ["month 0", { readAt: "2026-00-14T05:30:00Z" }],
+    ["day 0", { readAt: "2026-10-00T05:30:00Z" }],
+    ["an offset of 24 hours", { readAt: "2026-10-14T05:30:00+24:00" }],
+    ["a lowercase separator", { readAt: "2026-10-14t05:30:00z" }],
     ["a time as a number", { readAt: 1_791_955_800_000 }],
   ])("refuses %s", (_name, overrides) => {
     const answer = { ...OUTPUT, ...overrides };
@@ -353,91 +467,217 @@ describe("task-output refusals", () => {
   });
 });
 
-describe("task-output windows", () => {
-  const window = (text: string, from: number) => {
-    const bytes = encoder.encode(text);
-    return decodeExecutionTaskOutputWindow(bytes.subarray(from), from);
-  };
-
-  it("decodes a whole file as it is", () => {
-    expect(window("ok ✓\n", 0)).toEqual({ startOffset: 0, text: "ok ✓\n" });
-  });
-
-  it.each<[string, string, number, number]>([
-    // [text, what is left, where the tail reached, where the window starts]
-    ["aé b", " b", 2, 3], // 2 bytes: cut after the first
-    ["a✓ b", " b", 2, 4], // 3 bytes: cut after the first
-    ["a✓ b", " b", 3, 4], // 3 bytes: cut after the second
-    ["a😀 b", " b", 2, 5], // 4 bytes: cut after the first
-    ["a😀 b", " b", 4, 5], // 4 bytes: cut after the third
+describe("task-output read ranges", () => {
+  it.each<[number, number, number, number]>([
+    // [size, tail, position, length]
+    [0, 10, 0, 0],
+    [5, 10, 0, 5],
+    [10, 10, 0, 10],
+    [11, 10, 0, 11],
+    [100, 10, 89, 11],
+    [2 ** 40, 65_536, 2 ** 40 - 65_537, 65_537],
   ])(
-    "repairs a tail that cut a character: %j from %i",
-    (text, rest, from, startOffset) => {
-      expect(window(text, from)).toEqual({ startOffset, text: rest });
+    "reads a file of %i bytes for a tail of %i from %i, %i bytes",
+    (size, tail, position, length) => {
+      expect(executionTaskOutputReadRange(size, tail)).toEqual({
+        position,
+        length,
+      });
     },
   );
 
-  it("starts on a character the tail did not cut", () => {
-    expect(window("a✓ b", 1)).toEqual({ startOffset: 1, text: "✓ b" });
+  it("refuses a size or a tail out of bounds", () => {
+    expect(() => executionTaskOutputReadRange(-1, 10)).toThrow(RangeError);
+    expect(() => executionTaskOutputReadRange(10, 0)).toThrow(RangeError);
+    expect(() => executionTaskOutputReadRange(10, 65_537)).toThrow(RangeError);
   });
+});
 
-  it("skips at most 3 continuation bytes, the rest are invalid", () => {
-    const bytes = new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x41]);
-    expect(decodeExecutionTaskOutputWindow(bytes, 10)).toEqual({
-      startOffset: 13,
-      text: "�A",
-    });
-  });
+describe("task-output windows", () => {
+  /** A file's window, read as a host reads it. */
+  const windowOf = (
+    file: string | Uint8Array,
+    tail: number,
+    status: AgentRunStatus = "running",
+  ) => {
+    const bytes = typeof file === "string" ? encoder.encode(file) : file;
+    const { position, length } = executionTaskOutputReadRange(
+      bytes.byteLength,
+      tail,
+    );
+    return decodeExecutionTaskOutputWindow(
+      bytes.slice(position, position + length),
+      position,
+      tail,
+      status,
+    );
+  };
 
-  it("skips nothing at the file's start: a continuation byte there is invalid", () => {
-    expect(
-      decodeExecutionTaskOutputWindow(new Uint8Array([0x80, 0x41]), 0),
-    ).toEqual({ startOffset: 0, text: "�A" });
-  });
-
-  it("decodes invalid bytes, and a character still being written, as U+FFFD", () => {
-    const bytes = new Uint8Array([0x41, 0xff, 0x42, 0xe2, 0x9c]);
-    expect(decodeExecutionTaskOutputWindow(bytes, 0)).toEqual({
+  it("holds a whole file the tail covers", () => {
+    expect(windowOf("ok ✓\nnext\n", 64)).toEqual({
       startOffset: 0,
-      text: "A�B�",
+      endOffset: 12,
+      totalBytes: 12,
+      truncated: false,
+      text: "ok ✓\nnext\n",
     });
+  });
+
+  it("leaves out a line the tail cut, whole", () => {
+    expect(windowOf("first\nsecond\n", 10)).toEqual({
+      startOffset: 6,
+      endOffset: 13,
+      totalBytes: 13,
+      truncated: true,
+      text: "second\n",
+    });
+  });
+
+  it("keeps a line the tail reaches exactly", () => {
+    expect(windowOf("first\nsecond\n", 7)).toMatchObject({
+      startOffset: 6,
+      text: "second\n",
+    });
+  });
+
+  it("starts at the file's start when the tail covers one byte more than the file", () => {
+    expect(windowOf("ab\ncd\n", 5)).toMatchObject({
+      startOffset: 3,
+      truncated: true,
+      text: "cd\n",
+    });
+  });
+
+  it("never shows a fragment of a secret the tail cut, at any tail", () => {
+    const file = "token sk-live-abc123XYZ leaked\nend\n";
+    const seen = new Set<string>();
+    for (let tail = 1; tail <= file.length + 1; tail++) {
+      // Redacted by exact value, as agents-daemon's `redactCredentials` does.
+      const { text } = windowOf(file, tail);
+      seen.add(text.split("sk-live-abc123XYZ").join("[redacted]"));
+    }
+    expect([...seen].sort()).toEqual([
+      "",
+      "end\n",
+      "token [redacted] leaked\nend\n",
+    ]);
+  });
+
+  it("holds back a running task's last line until it ends", () => {
+    const file = "done\npartial sk-li";
+    for (const status of ["running", "unknown"] as const) {
+      expect(windowOf(file, 64, status)).toEqual({
+        startOffset: 0,
+        endOffset: 5,
+        totalBytes: 18,
+        truncated: false,
+        text: "done\n",
+      });
+    }
+  });
+
+  it("shows an ended task's last line, the file being whole", () => {
+    for (const status of ["completed", "failed", "stopped"] as const) {
+      expect(windowOf("done\nlast", 64, status)).toMatchObject({
+        endOffset: 9,
+        totalBytes: 9,
+        text: "done\nlast",
+      });
+    }
+  });
+
+  it("is empty when no line starts within the tail", () => {
+    expect(windowOf("x".repeat(100), 10)).toEqual({
+      startOffset: 100,
+      endOffset: 100,
+      totalBytes: 100,
+      truncated: true,
+      text: "",
+    });
+  });
+
+  it("is empty while a running task's only line is unfinished", () => {
+    expect(windowOf("compiling", 64)).toMatchObject({
+      startOffset: 0,
+      endOffset: 0,
+      text: "",
+    });
+  });
+
+  it("never cuts a character: a line boundary is one", () => {
+    // Every tail into "é" or "😀" leaves the cut line out whole.
+    const file = "aé\n😀 b\nend\n";
+    for (let tail = 1; tail <= encoder.encode(file).byteLength; tail++) {
+      expect(windowOf(file, tail).text).not.toContain("\ufffd");
+    }
+  });
+
+  it("decodes invalid bytes, and an ended task's unfinished character, as U+FFFD", () => {
+    expect(
+      windowOf(
+        new Uint8Array([0x41, 0xff, 0x42, 0x0a, 0x43, 0xe2, 0x9c]),
+        64,
+        "completed",
+      ),
+    ).toMatchObject({ text: "A\ufffdB\nC\ufffd" });
+  });
+
+  it("holds back a running task's unfinished character with its line", () => {
+    expect(
+      windowOf(new Uint8Array([0x41, 0x0a, 0x43, 0xe2, 0x9c]), 64),
+    ).toMatchObject({ endOffset: 2, totalBytes: 5, text: "A\n" });
   });
 
   it("keeps a byte order mark", () => {
-    expect(window("﻿ok", 0)).toEqual({ startOffset: 0, text: "﻿ok" });
+    expect(windowOf("\ufeffok\n", 64).text).toBe("\ufeffok\n");
   });
 
-  it("never decodes a window past the cap into text past its cap", () => {
+  it("never makes a window past the tail, or text past its cap", () => {
     let seed = 7;
-    const random = new Uint8Array(EXECUTION_TASK_OUTPUT_MAX_BYTES);
+    const random = new Uint8Array(EXECUTION_TASK_OUTPUT_MAX_BYTES + 100);
     for (let i = 0; i < random.length; i++) {
       seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
       random[i] = seed & 0xff;
     }
     for (const bytes of [
       random,
+      new Uint8Array(EXECUTION_TASK_OUTPUT_MAX_BYTES + 1).fill(0x0a),
       new Uint8Array(EXECUTION_TASK_OUTPUT_MAX_BYTES).fill(0xff),
-      encoder.encode("😀".repeat(EXECUTION_TASK_OUTPUT_MAX_BYTES / 4)),
+      encoder.encode("😀\n".repeat(EXECUTION_TASK_OUTPUT_MAX_BYTES / 5)),
     ]) {
-      const decoded = decodeExecutionTaskOutputWindow(bytes, 100);
-      expect(decoded.text.length).toBeLessThanOrEqual(
-        EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH,
-      );
-      expect(
-        encodeExecutionTaskOutputResponse({
-          ...OUTPUT,
-          text: decoded.text,
-          startOffset: decoded.startOffset,
-          totalBytes: 100 + bytes.byteLength,
-          truncated: true,
-        }),
-      ).toBeTypeOf("string");
+      for (const status of ["running", "completed"] as const) {
+        const window = windowOf(bytes, EXECUTION_TASK_OUTPUT_MAX_BYTES, status);
+        expect(window.totalBytes - window.startOffset).toBeLessThanOrEqual(
+          EXECUTION_TASK_OUTPUT_MAX_BYTES,
+        );
+        expect(window.text.length).toBeLessThanOrEqual(
+          EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH,
+        );
+        expect(
+          encodeExecutionTaskOutputResponse({ ...OUTPUT, ...window, status }),
+        ).toBeTypeOf("string");
+      }
     }
   });
 
-  it("refuses an offset that is not a whole number of bytes", () => {
-    expect(() => decodeExecutionTaskOutputWindow(new Uint8Array(), -1)).toThrow(
-      RangeError,
-    );
+  it("refuses bytes that do not reach before the tail, or the file's start", () => {
+    const bytes = encoder.encode("abcdef\n");
+    // A file of 107 bytes, a tail of 7: the read must start by byte 99.
+    expect(() =>
+      decodeExecutionTaskOutputWindow(bytes, 100, 7, "running"),
+    ).toThrow(RangeError);
+    // A file of 9 bytes, all within the tail: the read must start at 0.
+    expect(() =>
+      decodeExecutionTaskOutputWindow(bytes, 2, 64, "running"),
+    ).toThrow(RangeError);
+    expect(() =>
+      decodeExecutionTaskOutputWindow(bytes, -1, 64, "running"),
+    ).toThrow(RangeError);
+    expect(() =>
+      decodeExecutionTaskOutputWindow(bytes, 0, 0, "running"),
+    ).toThrow(RangeError);
+    expect(() =>
+      decodeExecutionTaskOutputWindow(bytes, 0, 64, "paused" as never),
+    ).toThrow(RangeError);
   });
 });

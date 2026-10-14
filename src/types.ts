@@ -100,10 +100,12 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "items.toolAttachments.v1",
   /**
    * The host answers `GET /v0/execution/sessions/:sessionId/tasks/:taskId/output`:
-   * at most 64 KiB from the end of one task's output file, host-redacted
-   * UTF-8 text, with the task's status (MAR-3981). It reads only a task its
-   * record of the session knows, from the path it recorded, never one named
-   * by the request.
+   * at most 64 KiB of the file, from the end of one task's output file, as
+   * whole lines of host-redacted UTF-8 text, with the task's status
+   * (MAR-3981). It reads only a task its record of the session knows, from
+   * the path the provider's structured event gave or derived inside that
+   * session's own task directory, never one named by the request or parsed
+   * from tool-result text.
    */
   "tasks.output.v1",
 ] as const;

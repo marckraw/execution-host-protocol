@@ -753,35 +753,97 @@ to a session.
 On a host advertising `tasks.output.v1` (MAR-3981), authenticated
 `GET /v0/execution/sessions/:sessionId/tasks/:taskId/output?tail=<bytes>`
 returns the end of what one task — a background command such as `pnpm check`
-— has written to its output file, with the task's status. `taskId` is the one
-the task's evidence named (`task.changed`), and the one `stop-task` takes.
+— has written to its output file, at most 64 KiB of the file, with the task's
+status. `taskId` is the one the task's evidence named (`task.changed`), and
+the one `stop-task` takes.
 
 **The request names a task, never a file.** Its path holds a session id and a
-task id, and its query holds `tail` and nothing else. A task id is 1 to 256
-ASCII letters, digits, `.`, `_` or `-`, starting with a letter or digit, so it
-cannot be a path, a separator or a dot segment. `tail` is a whole number of
-bytes from 1 to 65,536 (`EXECUTION_TASK_OUTPUT_MAX_BYTES`), written in decimal
-without sign or leading zeros. Without it, the host reads 65,536 bytes.
+task id, and its query holds `tail` and nothing else.
+
+- **Task id.** 1 to 256 ASCII letters, digits, `.`, `_` or `-`, starting with
+  a letter or digit, so it cannot be a path, a separator or a dot segment.
+- **Session id.** 1 to 256 characters, as agents-daemon's
+  `assertSafeStorageSegment` takes one: no `/`, `\`, control character (C0,
+  DEL, C1) or lone surrogate, and not `.` or `..`. This holds before and after
+  NFKC normalization, so a fullwidth `．．` or `／` is refused too.
+- **`tail`.** A whole number of bytes from 1 to 65,536
+  (`EXECUTION_TASK_OUTPUT_MAX_BYTES`), written in decimal without sign or
+  leading zeros. Without it, the host reads 65,536 bytes.
+
 `encodeExecutionTaskOutputRequest` writes the target and throws on anything
 past these bounds. `decodeExecutionTaskOutputRequest` reads a target as it is
-on the request line (`/v0/…/output?tail=4096`). It is strict: a second `tail`,
-a `path` or `file` parameter, or any other parameter is refused, not ignored.
+on the request line (`/v0/…/output?tail=4096`). A host passes it the raw
+target it received, not its framework's decoded params, which may have been
+normalized on the way. It is strict: an empty `?`, a second `tail`, a `path`
+or `file` parameter, or any other parameter is refused, not ignored.
 
-**What a host promises under `tasks.output.v1`:**
+**Where the host reads from.** These rules are for the host; the client can
+check none of them.
 
-- It serves only a task its own record of the session knows, from the path
-  it recorded for that task. Nothing in the request ever becomes part of a
-  path it opens.
-- It refuses, with `read-refused`, a recorded path that resolves (symlinks
-  followed) outside the session's worktree and the provider's own task
-  directory.
-- It reads at most `tail` bytes, from the end of the file.
-- It redacts the text as it redacts every other text it sends, such as tool
-  results. A secret that the window's start cuts in two is not shown in
-  part: the host redacts with the bytes before the window in view, or
-  redacts the cut line whole.
-- Its refusals never name the output file's path.
-- It answers with `Cache-Control: no-store`.
+- **The task.** The host serves only a task its own record of the session
+  knows. Otherwise it answers `task-unknown`.
+- **The path.** The host takes the path from the provider's structured event
+  for the task, or derives it as
+  `<the session's own provider task directory>/<taskId>.output`. The
+  derivation is safe given the task-id grammar, and lets a running task be
+  read before the provider has named its file. Claude Code names it only when
+  the task ends. The host **never** takes a path from tool-result text, or any
+  other text a model or a tool wrote: any `Read`, MCP or `WebFetch` result can
+  forge "Output is being written to: …". Nothing in the request is part of the
+  path except the task id.
+- **The directory.** The file must sit directly inside **that session's own**
+  provider task directory, compared after resolving that directory's real
+  path. That means not the provider's temporary root (Claude's
+  `/tmp/claude-<uid>/…` holds every session's tasks), and not the session's
+  worktree, where a forged `<worktree>/.env` would pass.
+- **The file.**
+  - Open it read-only, refusing a symlink as the last component
+    (`O_NOFOLLOW`), and without blocking (`O_NONBLOCK`), so a FIFO cannot hang
+    the host.
+  - `fstat` the open descriptor. It must be a regular file with `st_nlink`
+    of 1, since a hard link passes a real-path check.
+  - Size the read from that one `fstat`
+    (`executionTaskOutputReadRange(size, tail)`), and read exactly that range
+    with one `pread`, so a file that grows meanwhile cannot push the read past
+    the tail.
+- **Refusals.**
+  - A file that fails any of these checks is `read-refused`.
+  - A file that does not exist is `no-output`.
+  - A refusal never names the path.
+- **Caching.** The host answers with `Cache-Control: no-store`.
+
+**The window holds whole lines** (`decodeExecutionTaskOutputWindow(bytes,
+position, tail, status)`, which the host calls on the bytes it read, before
+it redacts). A line ends at `\n` (0x0A).
+
+- **Its start.** Within the tail, the window starts at the first line start:
+  the file's first byte, or a byte after `\n`. The read reaches one byte
+  before the tail, so a line the tail reaches exactly is kept. A line the tail
+  cuts is left out whole. When no line starts within the tail, the window is
+  empty at `totalBytes`.
+- **Its end.** While the task may still write (`running`, `unknown`), a last
+  line not yet ended by `\n` is held back: `endOffset` is the byte after the
+  window's last `\n`. Once the task has ended (`completed`, `failed`,
+  `stopped`) the file is whole, and the window ends at `totalBytes`.
+- **Why lines.** A host redacts exact secret values (agents-daemon's
+  `redactCredentials`), and it cannot recognise a value it does not see whole.
+  - The client sets `tail` to the byte, so it could cut 1 byte into a secret,
+    and the host would show the rest of it.
+  - A running command flushes stdout in 4–8 KiB blocks, so its file often ends
+    mid-secret, and a prefix would show until the next flush.
+  - No credential holds a line break, so whole lines hold every secret whole
+    or not at all. Matching edge fragments against known secrets would need a
+    minimum fragment length, and anything shorter would still leak; line
+    boundaries need no knowledge of the secret.
+  - A secret value that does hold a line break (a PEM key) is redacted line by
+    line as well as whole, so a window that starts inside it shows none of it.
+- **No character is cut.** No UTF-8 sequence holds 0x0A, so a line boundary
+  is always a character boundary.
+
+The window is decoded as UTF-8. Each invalid sequence becomes U+FFFD (the
+WHATWG decoder with replacement), a byte order mark is kept as a character,
+and a character an ended task left unfinished is U+FFFD. Then the host
+redacts it as it redacts every other text it sends, such as tool results.
 
 **The answer** (`decodeExecutionTaskOutputResponse`,
 `encodeExecutionTaskOutputResponse`):
@@ -793,54 +855,52 @@ a `path` or `file` parameter, or any other parameter is refused, not ignored.
   "status": "running",
   "text": "✓ packages/protocol (212 tests)\n",
   "startOffset": 139264,
+  "endOffset": 204800,
   "totalBytes": 204800,
   "truncated": true,
   "readAt": "2026-10-14T05:30:00.000Z"
 }
 ```
 
-- **The window.** The window is the file's bytes from `startOffset` to
-  `totalBytes`. `totalBytes` is the file's size when the host read it. The
-  window is never longer than 65,536 bytes, and never longer than the `tail`
-  asked for. `truncated` is true exactly when `startOffset` is past 0. An
-  empty window has empty `text`. Both offsets are byte positions in the file,
-  not positions in `text`.
-- **`text` is host-redacted text, not the file's bytes.** It is the window
-  decoded as UTF-8, then redacted. Each invalid byte sequence becomes U+FFFD
-  (the WHATWG decoder with replacement), and a byte order mark is kept as a
-  character.
-- **A cut character is repaired.** When the tail cuts a character, the window
-  starts after that character: the host skips up to 3 leading continuation
-  bytes, and `startOffset` moves past them. At the file's start nothing is
-  skipped. A character still being written at the file's end decodes as
-  U+FFFD until the next read. `decodeExecutionTaskOutputWindow(bytes, offset)`
-  is this step, for a host to call before it redacts.
-- **The text has a cap too.** `text` is at most 65,536 UTF-16 code units
-  (`EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH`). A window of 65,536 bytes never
-  decodes to more. If redaction makes the text longer than the cap, the host
-  reads a shorter window instead.
+- **The window and its offsets.**
+  - The window is the file's bytes from `startOffset` to `endOffset`.
+  - `totalBytes` is the file's size when the host read it.
+  - `startOffset` is at most 65,536 bytes before `totalBytes`, and at most the
+    `tail` asked for.
+  - `endOffset` is `totalBytes` unless a running task's unfinished last line
+    is held back. An ended task's never is.
+  - `truncated` is true exactly when `startOffset` is past 0.
+  - An empty window has empty `text`.
+  - All three offsets are byte positions in the file, not positions in `text`.
+- **`text` is host-redacted text, not the file's bytes.** It is at most 65,536
+  UTF-16 code units (`EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH`), with no lone
+  surrogate. A window of 65,536 bytes never decodes to more. If redaction
+  makes the text longer than the cap, the host makes the window again from
+  the same bytes with half the tail, and halves again until it fits.
 - **`status` and `readAt`.** `status` is the task's status in the host's
   record when the host read the file. It uses the `SessionTask` values:
   `running`, `completed`, `failed`, `stopped` or `unknown`. `readAt` is an
-  RFC 3339 timestamp.
+  RFC 3339 timestamp with every field in range: no `2026-02-30`, no `T24:00`,
+  no leap second.
 
 The decoder ignores fields it does not know. It checks every field it knows,
-including the window's bound and the consistency of `truncated`, so it
-refuses an answer past the cap rather than reading it. The encoders throw on
-anything the decoders would refuse.
+including the window's bound, the order of the offsets, an ended task's end,
+and the consistency of `truncated`, so it refuses an answer past the cap
+rather than reading it. The encoders throw on anything the decoders would
+refuse.
 
 **Refusals** are a status and a body `{ error, code }`
 (`decodeExecutionTaskOutputRefusal`). A host sends each code only with its
 status (`EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES`), and codes every 404 it
 sends from this route:
 
-| Status | `code`            | Meaning                                                                                                                        |
-| ------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| 404    | `session-unknown` | The host has no session by that id.                                                                                            |
-| 404    | `task-unknown`    | The session's record knows no task by that id.                                                                                 |
-| 404    | `no-output`       | The task has no output file. It never had one, as a subagent does not, or the file is gone.                                    |
-| 403    | `read-refused`    | The host's policy will not read it: the recorded path is outside what it reads, or it serves no output for tasks of this kind. |
-| 400    | `rejected`        | The request is out of bounds: a `tail`, a task id, or a query parameter it does not take.                                      |
+| Status | `code`            | Meaning                                                                                                                                                   |
+| ------ | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 404    | `session-unknown` | The host has no session by that id.                                                                                                                       |
+| 404    | `task-unknown`    | The session's record knows no task by that id.                                                                                                            |
+| 404    | `no-output`       | The task has no output file. It never had one, as a subagent does not, or the file is gone.                                                               |
+| 403    | `read-refused`    | The host's policy will not read it: the file is not directly inside the session's own task directory, is not a regular file, or is linked more than once. |
+| 400    | `rejected`        | The request is out of bounds: a `tail`, an id, or a query parameter it does not take.                                                                     |
 
 **The client.**
 `taskOutput(sessionId, taskId, { tail?, signal?, timeoutMs? })` resolves the
@@ -853,17 +913,25 @@ answer above:
   a running task would pay for the probe on every read. To decide whether to
   offer the read at all, check `hostReadsTaskOutput(await host.health())`
   once.
-- **Refusals.** Every refusal is an `ExecutionTaskOutputError` with a `code`.
-  The client takes the host's code only when it comes with the status in the
-  table above; otherwise it goes by the status alone. A 404 with no code is
-  `unsupported`: no such route, either from a host that does not advertise
-  `tasks.output.v1` or from a proxy in front of one. Any other refusal is
-  `rejected`, including a 401 and a 403 that carries no `read-refused`;
-  `status` says which. A 2xx that does not decode, is about another session
-  or task, or holds a window longer than the `tail` asked for is `malformed`.
-  The error's `reason` is the client's own sentence, never the host's.
+- **Refusals.**
+  - Every refusal is an `ExecutionTaskOutputError` with a `code`. The error's
+    `reason` is the client's own sentence, never the host's.
+  - The client takes the host's code only when it comes with the status in
+    the table above.
+  - Only a 404 with no code at all is `unsupported`: no such route, either
+    from a host that does not advertise `tasks.output.v1` or from a proxy in
+    front of one. A 404 with a code this build does not know is a newer
+    host's, and is `rejected`, so a caller never hides the read for good.
+  - Any other refusal is `rejected`, including a 401 and a 403 that carries
+    no `read-refused`. `status` says which.
+  - A 2xx that does not decode, is about another session or task, or starts
+    its window further back than the `tail` asked for is `malformed`.
 - **Bounded reads.** The client reads at most 512 KiB of an answer's body and
   64 KiB of a refusal's, however much more the host sends.
+- **No `cache` option on the request.** The client relies on the host's
+  `no-store`. React Native's `fetch` (whatwg-fetch) turns a GET's
+  `cache: "no-store"` into an extra `_=<time>` query parameter, which the
+  strict target reader refuses.
 - **Transport failures.** A host that cannot be reached, or does not answer
   within the health timeout, is an `ExecutionHostError`. A caller's abort is
   rethrown as it came.

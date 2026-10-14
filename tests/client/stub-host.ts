@@ -2,6 +2,7 @@ import {
   decodeExecutionOneShotRequest,
   decodeExecutionTaskOutputRequest,
   decodeExecutionTaskOutputWindow,
+  executionTaskOutputReadRange,
   encodeExecutionTaskOutputResponse,
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES,
@@ -148,8 +149,12 @@ export interface StubTask {
   outsidePolicy?: boolean;
 }
 
-/** What the stub redacts from task output, as a host redacts a secret. */
-export const STUB_SECRET = /sk-live-[A-Za-z0-9]+/g;
+/**
+ * The secret the stub redacts from task output: by its exact value, as
+ * agents-daemon's `redactCredentials` does, so only a window of whole lines
+ * keeps a cut fragment of it from showing.
+ */
+export const STUB_SECRET = "sk-live-abc123XYZ";
 /** When the stub reads a task's output. */
 export const STUB_READ_AT = "2026-10-14T05:30:00.000Z";
 
@@ -449,20 +454,24 @@ export function createStubHost(): StubHost {
         if (task === undefined) return refuse("task-unknown");
         if (task.output === null) return refuse("no-output");
         if (task.outsidePolicy) return refuse("read-refused");
-        const totalBytes = task.output.byteLength;
+        // One "fstat", then one "pread" of the range it sizes.
+        const { position, length } = executionTaskOutputReadRange(
+          task.output.byteLength,
+          tail,
+        );
         const window = decodeExecutionTaskOutputWindow(
-          task.output.subarray(Math.max(0, totalBytes - tail)),
-          Math.max(0, totalBytes - tail),
+          task.output.slice(position, position + length),
+          position,
+          tail,
+          task.status,
         );
         return new Response(
           encodeExecutionTaskOutputResponse({
             sessionId,
             taskId,
             status: task.status,
-            text: window.text.replace(STUB_SECRET, "[redacted]"),
-            startOffset: window.startOffset,
-            totalBytes,
-            truncated: window.startOffset > 0,
+            ...window,
+            text: window.text.split(STUB_SECRET).join("[redacted]"),
             readAt: STUB_READ_AT,
           }),
           {

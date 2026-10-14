@@ -25,7 +25,8 @@ export type ExecutionTaskOutputResult = ExecutionTaskOutputResponse;
 
 /**
  * `unsupported`: the host answered 404 with no code, as a host without the
- * route — one that does not advertise `tasks.output.v1` — or a proxy does.
+ * route — one that does not advertise `tasks.output.v1` — or a proxy does. A
+ * 404 coded with a code this build does not know is `rejected`.
  * `session-unknown`, `task-unknown`, `no-output`, `read-refused`, `rejected`:
  * the host's refusal, by its code, honoured only with the status the protocol
  * gives it. `rejected` is also any other refusal (an uncoded 400, a 401, a
@@ -123,22 +124,29 @@ export function prepareTaskOutput(
 
 /**
  * What a refusal means: the host's code where it gave a known one with the
- * status the protocol gives it, else its status. A 404 with no code is no
- * route: a host with the route codes every 404.
+ * status the protocol gives it, else its status. Only a 404 with no code at
+ * all is no route: a host with the route codes every 404, so one coded with
+ * a code this build does not know (a newer host's) is `rejected`, never
+ * `unsupported`, and a caller does not hide the read for good.
  */
 export function taskOutputRefusal(
   status: number,
   body: string,
   asked: { sessionId: string; taskId: string },
 ): ExecutionTaskOutputError {
-  const coded = decodeExecutionTaskOutputRefusal(parseOrNull(body));
+  const parsed = parseOrNull(body);
+  const coded = decodeExecutionTaskOutputRefusal(parsed);
+  const hasCode =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    typeof (parsed as { code?: unknown }).code === "string";
   let code: Exclude<ExecutionTaskOutputErrorCode, "malformed">;
   if (
     coded.ok &&
     EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES[coded.value.code] === status
   ) {
     code = coded.value.code;
-  } else if (status === 404) code = "unsupported";
+  } else if (status === 404 && !hasCode) code = "unsupported";
   else code = "rejected";
   return new ExecutionTaskOutputError(code, REASONS[code], {
     status,

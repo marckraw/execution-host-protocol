@@ -11,10 +11,24 @@ cannot form a path. `tail` is 1 to 65,536 bytes, and the request decoder
 refuses any other query parameter.
 
 The answer carries `status`, the host-redacted UTF-8 `text`, `startOffset`,
-`totalBytes`, `truncated` and `readAt`. Its window is at most 64 KiB, and its
-text at most 65,536 characters. The codecs enforce both caps: the decoders
-refuse anything past them, and the encoders throw on it. A tail that cuts a
-character starts after that character.
+`endOffset`, `totalBytes`, `truncated` and `readAt`. It covers at most 64 KiB
+of the file, and its text is at most 65,536 characters. The codecs enforce
+both caps: the decoders refuse anything past them, and the encoders throw on
+it.
+
+The window holds whole lines only, so a host that redacts exact secret values
+never shows a fragment of one. A line the tail cuts is left out, and while a
+task runs its unfinished last line is held back (`endOffset` before
+`totalBytes`).
+
+Session ids are safe path segments: 1 to 256 characters, with no `/`, `\`,
+control character or dot segment, before or after NFKC normalization.
+
+The README spells out where a host may read from: the path from the
+provider's structured event, or derived inside the session's own task
+directory, never parsed from tool-result text. It also covers how the host
+checks the file: `O_NOFOLLOW`, `fstat`, a regular file with one link, and one
+`pread`.
 
 The root gains:
 
@@ -22,7 +36,8 @@ The root gains:
 - the caps;
 - the refusal codes `session-unknown`, `task-unknown`, `no-output`,
   `read-refused` and `rejected`, each with its status;
-- `decodeExecutionTaskOutputWindow`, which turns the window's bytes into text
+- `executionTaskOutputReadRange` and `decodeExecutionTaskOutputWindow`, which
+  size the host's one read and turn the bytes read into a line-aligned window
   before the host redacts it.
 
 The client gains `taskOutput(sessionId, taskId, { tail?, signal?, timeoutMs? })`,

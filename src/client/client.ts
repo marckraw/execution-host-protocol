@@ -313,9 +313,9 @@ export interface ExecutionHostClient {
   ): Promise<ExecutionAttachmentDownloadResult>;
   /**
    * The end of one task's output (`GET .../tasks/:taskId/output?tail=`,
-   * `tasks.output.v1`, MAR-3981): at most `tail` bytes (default and most
-   * 65536) of host-redacted text, with the task's status and where the window
-   * sits in the file. Names a task, never a file: an id the route cannot name
+   * `tasks.output.v1`, MAR-3981): whole lines from at most the last `tail`
+   * bytes of the file (default and most 65536), as host-redacted text, with
+   * the task's status and where the window sits in the file. Names a task, never a file: an id the route cannot name
    * or an option it does not take is a `TypeError`, a `tail` out of bounds a
    * `RangeError`, before anything is sent. It does not read `/health` first;
    * gate on `hostReadsTaskOutput(health)`. Every refusal is an
