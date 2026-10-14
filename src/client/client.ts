@@ -149,7 +149,10 @@ export interface ExecutionAttachmentDownloadOptions extends ExecutionRequestOpti
   /**
    * What the attachment is, which sets the ceiling (MAR-3973): `tool` (the
    * default), an image on a tool result, 8 MiB; `inline`, an image or file
-   * sent with a message, 10 MiB.
+   * sent with a message, 10 MiB. The caller's word, not checked: a host serves
+   * both from one route. Pass `inline` only for an attachment on a message,
+   * never for a tool-result item's `attachments` (`items.toolAttachments.v1`);
+   * a tool image over 8 MiB is refused only when labelled a tool.
    */
   kind?: ExecutionAttachmentDownloadKind;
   /**

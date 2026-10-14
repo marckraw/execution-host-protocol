@@ -224,12 +224,28 @@ describe("bounded attachment downloads (MAR-3928)", () => {
     expect(text).not.toHaveBeenCalled();
   });
 
-  it.each([0, -1, 1.5, NaN, Infinity, EXECUTION_TOOL_ATTACHMENT_MAX_BYTES + 1])(
-    "refuses invalid maxBytes %s before fetching",
-    async (maxBytes) => {
+  it.each(
+    (
+      [
+        [undefined, EXECUTION_TOOL_ATTACHMENT_MAX_BYTES],
+        ["tool", EXECUTION_TOOL_ATTACHMENT_MAX_BYTES],
+        ["inline", EXECUTION_INLINE_ATTACHMENT_MAX_BYTES],
+      ] as const
+    ).flatMap(([kind, ceiling]) =>
+      [0, -1, 1.5, NaN, Infinity, ceiling + 1].map(
+        (maxBytes) => [kind ?? "default", maxBytes, kind] as const,
+      ),
+    ),
+  )(
+    "refuses invalid maxBytes for kind %s: %s, before fetching",
+    async (_name, maxBytes, kind) => {
       const fetch = vi.fn<typeof globalThis.fetch>();
       await expect(
-        clientFor(fetch).downloadAttachment("s", "a", { maxBytes }),
+        clientFor(fetch).downloadAttachment(
+          "s",
+          "a",
+          kind === undefined ? { maxBytes } : { kind, maxBytes },
+        ),
       ).rejects.toThrow(RangeError);
       expect(fetch).not.toHaveBeenCalled();
     },
