@@ -1,7 +1,10 @@
 import { getEventListeners } from "node:events";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EXECUTION_TOOL_ATTACHMENT_MAX_BYTES } from "../../src/index.js";
+import {
+  EXECUTION_INLINE_ATTACHMENT_MAX_BYTES,
+  EXECUTION_TOOL_ATTACHMENT_MAX_BYTES,
+} from "../../src/index.js";
 import {
   createExecutionHostClient,
   ExecutionHostError,
@@ -221,12 +224,28 @@ describe("bounded attachment downloads (MAR-3928)", () => {
     expect(text).not.toHaveBeenCalled();
   });
 
-  it.each([0, -1, 1.5, NaN, Infinity, EXECUTION_TOOL_ATTACHMENT_MAX_BYTES + 1])(
-    "refuses invalid maxBytes %s before fetching",
-    async (maxBytes) => {
+  it.each(
+    (
+      [
+        [undefined, EXECUTION_TOOL_ATTACHMENT_MAX_BYTES],
+        ["tool", EXECUTION_TOOL_ATTACHMENT_MAX_BYTES],
+        ["inline", EXECUTION_INLINE_ATTACHMENT_MAX_BYTES],
+      ] as const
+    ).flatMap(([kind, ceiling]) =>
+      [0, -1, 1.5, NaN, Infinity, ceiling + 1].map(
+        (maxBytes) => [kind ?? "default", maxBytes, kind] as const,
+      ),
+    ),
+  )(
+    "refuses invalid maxBytes for kind %s: %s, before fetching",
+    async (_name, maxBytes, kind) => {
       const fetch = vi.fn<typeof globalThis.fetch>();
       await expect(
-        clientFor(fetch).downloadAttachment("s", "a", { maxBytes }),
+        clientFor(fetch).downloadAttachment(
+          "s",
+          "a",
+          kind === undefined ? { maxBytes } : { kind, maxBytes },
+        ),
       ).rejects.toThrow(RangeError);
       expect(fetch).not.toHaveBeenCalled();
     },
@@ -443,4 +462,137 @@ describe("bounded attachment downloads (MAR-3928)", () => {
     expect(held.cancel).not.toHaveBeenCalled();
     expect(held.body.locked).toBe(false);
   });
+});
+
+describe("a download's ceiling follows its kind (MAR-3973)", () => {
+  const MiB = 1024 * 1024;
+  const kinds = [
+    ["tool, by default", undefined, EXECUTION_TOOL_ATTACHMENT_MAX_BYTES],
+    ["tool", "tool", EXECUTION_TOOL_ATTACHMENT_MAX_BYTES],
+    ["inline", "inline", EXECUTION_INLINE_ATTACHMENT_MAX_BYTES],
+  ] as const;
+
+  it("has the ceilings a host admits: 8 MiB tool images, 10 MiB inline uploads", () => {
+    // agents-daemon's MAX_INLINE_IMAGE_BYTES is 10 * 1024 * 1024.
+    expect(EXECUTION_TOOL_ATTACHMENT_MAX_BYTES).toBe(8 * MiB);
+    expect(EXECUTION_INLINE_ATTACHMENT_MAX_BYTES).toBe(10 * MiB);
+  });
+
+  it.each(kinds)(
+    "%s: reads one byte under and exactly at the ceiling",
+    async (_name, kind, ceiling) => {
+      for (const size of [ceiling - 1, ceiling]) {
+        const held = bodyOf([new Uint8Array(size).fill(7)]);
+        const result = await clientFor(
+          async () => held.response,
+        ).downloadAttachment("s", "a", kind === undefined ? {} : { kind });
+        expect(result.sizeBytes).toBe(size);
+        expect(result.bytes.byteLength).toBe(size);
+        expect(result.bytes[size - 1]).toBe(7);
+        expect(held.cancel).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(kinds)(
+    "%s: refuses one byte over the ceiling, counted or claimed",
+    async (_name, kind, ceiling) => {
+      const options = kind === undefined ? {} : { kind };
+      // A trailing chunk keeps the stream open, so the refusal must cancel it.
+      const counted = bodyOf([
+        new Uint8Array(ceiling),
+        new Uint8Array(1),
+        new Uint8Array(1),
+      ]);
+      await expect(
+        clientFor(async () => counted.response).downloadAttachment(
+          "s",
+          "a",
+          options,
+        ),
+      ).rejects.toMatchObject({ kind: "malformed" });
+      expect(counted.cancel).toHaveBeenCalledOnce();
+      expect(counted.body.locked).toBe(false);
+
+      const getReader = vi.fn();
+      const cancel = vi.fn(async () => {});
+      const claimed = {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "Content-Length": String(ceiling + 1) }),
+        body: { getReader, cancel },
+      } as unknown as Response;
+      await expect(
+        clientFor(async () => claimed).downloadAttachment("s", "a", options),
+      ).rejects.toMatchObject({ kind: "malformed" });
+      expect(getReader).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(kinds)(
+    "%s: takes maxBytes up to the ceiling and refuses one past it before fetching",
+    async (_name, kind, ceiling) => {
+      const held = bodyOf([new Uint8Array([1, 2, 3])]);
+      await expect(
+        clientFor(async () => held.response).downloadAttachment("s", "a", {
+          kind,
+          maxBytes: ceiling,
+        }),
+      ).resolves.toMatchObject({ sizeBytes: 3 });
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      await expect(
+        clientFor(fetch).downloadAttachment("s", "a", {
+          kind,
+          maxBytes: ceiling + 1,
+        }),
+      ).rejects.toThrow(RangeError);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still refuses a tool image over 8 MiB, however the caller asks", async () => {
+    const overTool = EXECUTION_TOOL_ATTACHMENT_MAX_BYTES + 1;
+    // A body past 8 MiB, under the inline ceiling, read as a tool image.
+    for (const options of [{}, { kind: "tool" as const }]) {
+      const held = bodyOf([new Uint8Array(overTool), new Uint8Array(1)]);
+      await expect(
+        clientFor(async () => held.response).downloadAttachment(
+          "s",
+          "a",
+          options,
+        ),
+      ).rejects.toMatchObject({ kind: "malformed" });
+      expect(held.cancel).toHaveBeenCalledOnce();
+    }
+    // Nor can a tool download be given the inline ceiling.
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const options of [
+      { maxBytes: overTool },
+      { maxBytes: EXECUTION_INLINE_ATTACHMENT_MAX_BYTES },
+      { kind: "tool" as const, maxBytes: overTool },
+      {
+        kind: "tool" as const,
+        maxBytes: EXECUTION_INLINE_ATTACHMENT_MAX_BYTES,
+      },
+    ]) {
+      await expect(
+        clientFor(fetch).downloadAttachment("s", "a", options),
+      ).rejects.toThrow(RangeError);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "", "image", "file", "Inline", 8])(
+    "refuses kind %s before fetching",
+    async (kind) => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      await expect(
+        clientFor(fetch).downloadAttachment("s", "a", {
+          kind: kind as unknown as "tool",
+        }),
+      ).rejects.toThrow(TypeError);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 });

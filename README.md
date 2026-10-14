@@ -1026,13 +1026,22 @@ and a host's refusal, has the token replaced by `[token]`, and the `cause` an
 error carries is a scrubbed copy, never the original.
 
 **Attachment downloads (MAR-3928).**
-`downloadAttachment(sessionId, attachmentId, { signal?, timeoutMs?, maxBytes? })`
+`downloadAttachment(sessionId, attachmentId, { signal?, timeoutMs?, kind?, maxBytes? })`
 uses the same authenticated transport, including injected tailnet routing, for
 `GET /v0/execution/sessions/:id/attachments/:attachmentId`. Both IDs are encoded;
 empty IDs and dot segments are refused. It returns
 `{ bytes: Uint8Array, sizeBytes: number }` after consuming the whole body.
-`sizeBytes` is measured, and `maxBytes` defaults to the image ceiling of
-8,388,608 bytes; a caller may choose a positive whole number below it.
+`sizeBytes` is measured. The ceiling follows `kind` (MAR-3973): `"tool"`, the
+default, is an image on a tool result, at most
+`EXECUTION_TOOL_ATTACHMENT_MAX_BYTES` (8,388,608 bytes); `"inline"` is an image
+or file sent with a message, at most `EXECUTION_INLINE_ATTACHMENT_MAX_BYTES`
+(10,485,760 bytes, what a host takes). `kind` is the caller's word, not
+checked: a host serves both kinds from the one route. Pass `"inline"` only for
+an attachment on a message, never for a tool-result item's `attachments`
+(`items.toolAttachments.v1`); a tool image over 8 MiB is refused only when the
+caller labels it a tool. `maxBytes` defaults to the kind's ceiling, and a
+caller may choose a positive whole number up to it; one past it, or any other
+`kind`, is refused before anything is sent. No download is unbounded.
 Content-Length can refuse an oversized body early, but every actual chunk is
 counted even when the header is absent or false. A body without a readable
 stream is refused rather than buffered without a bound. The request timeout

@@ -2,6 +2,10 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { createExecutionHostClient } from "../../src/client/index.js";
+import {
+  EXECUTION_INLINE_ATTACHMENT_MAX_BYTES,
+  EXECUTION_TOOL_ATTACHMENT_MAX_BYTES,
+} from "../../src/index.js";
 
 let server: Server | undefined;
 afterEach(async () => {
@@ -74,5 +78,33 @@ describe("attachment downloads over HTTP", () => {
     await bodyStarted;
     caller.abort(reason);
     expect(await result).toBe(reason);
+  });
+
+  it("downloads an inline upload between 8 and 10 MiB, which a tool download refuses (MAR-3973)", async () => {
+    // What a host stores: an upload past the tool image ceiling, within its own.
+    const size = EXECUTION_TOOL_ATTACHMENT_MAX_BYTES + 1024 * 1024;
+    expect(size).toBeLessThan(EXECUTION_INLINE_ATTACHMENT_MAX_BYTES);
+    const upload = new Uint8Array(size).fill(42);
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/pdf" });
+      response.write(upload.subarray(0, 1024 * 1024));
+      response.end(upload.subarray(1024 * 1024));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address() as { port: number };
+    const client = createExecutionHostClient({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      token: "test-token",
+    });
+    const result = await client.downloadAttachment("s", "upload", {
+      kind: "inline",
+    });
+    expect(result.sizeBytes).toBe(size);
+    // Byte-for-byte, without a deep equality walk over millions of entries.
+    expect(Buffer.compare(result.bytes, upload)).toBe(0);
+    await expect(
+      client.downloadAttachment("s", "upload"),
+    ).rejects.toMatchObject({ kind: "malformed" });
   });
 });

@@ -1,6 +1,20 @@
+import { EXECUTION_INLINE_ATTACHMENT_MAX_BYTES } from "../attachments.js";
 import { EXECUTION_TOOL_ATTACHMENT_MAX_BYTES } from "../tool-attachments.js";
 import { readOrAbort } from "./body-read.js";
 import { ExecutionHostError, type ExecutionHostErrorKind } from "./http.js";
+
+/**
+ * What a download is of, which sets its ceiling (MAR-3973): `tool`, an image
+ * on a tool result, at most `EXECUTION_TOOL_ATTACHMENT_MAX_BYTES` (8 MiB);
+ * `inline`, an image or file sent with a message, at most
+ * `EXECUTION_INLINE_ATTACHMENT_MAX_BYTES` (10 MiB), what a host takes.
+ */
+export type ExecutionAttachmentDownloadKind = "tool" | "inline";
+
+const ceilingOfKind: Record<ExecutionAttachmentDownloadKind, number> = {
+  tool: EXECUTION_TOOL_ATTACHMENT_MAX_BYTES,
+  inline: EXECUTION_INLINE_ATTACHMENT_MAX_BYTES,
+};
 
 export interface ExecutionAttachmentDownloadResult {
   /** Fully consumed bytes, at most the requested ceiling. No stream escapes. */
@@ -24,14 +38,20 @@ export function attachmentPathId(value: string): string {
   return encodeURIComponent(value);
 }
 
-export function attachmentByteLimit(value: number | undefined): number {
-  const maxBytes = value ?? EXECUTION_TOOL_ATTACHMENT_MAX_BYTES;
-  if (
-    !Number.isSafeInteger(maxBytes) ||
-    maxBytes < 1 ||
-    maxBytes > EXECUTION_TOOL_ATTACHMENT_MAX_BYTES
-  ) {
-    throw new RangeError("maxBytes must be a whole number from 1 to 8388608");
+/** The kind's ceiling, or a smaller `maxBytes`; never more, never unbounded. */
+export function attachmentByteLimit(
+  kind: unknown,
+  value: number | undefined,
+): number {
+  if (kind !== "tool" && kind !== "inline") {
+    throw new TypeError('kind must be "tool" or "inline"');
+  }
+  const ceiling = ceilingOfKind[kind];
+  const maxBytes = value ?? ceiling;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > ceiling) {
+    throw new RangeError(
+      `maxBytes must be a whole number from 1 to ${ceiling} for a ${kind} attachment`,
+    );
   }
   return maxBytes;
 }
