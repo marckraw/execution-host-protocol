@@ -10,7 +10,7 @@
  * Lengths are in UTF-16 code units.
  */
 
-/** Questions in one request; later ones are dropped. */
+/** Questions in one request; a request with more is dropped whole. */
 export const EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT = 8;
 /** Options in one question; later ones are dropped. */
 export const EXECUTION_INTERACTION_OPTIONS_MAX_COUNT = 16;

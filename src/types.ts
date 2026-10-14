@@ -431,8 +431,8 @@ export interface ExecutionInteractionFormField {
 /**
  * Structured human input requested by a provider. Unknown future kinds are
  * dropped by tolerant readers. A `choice` is read within the bounds in
- * `interactions.ts`: an option past them is dropped, and a question past
- * them drops the whole request (MAR-4002).
+ * `interactions.ts`: an option past them is dropped, and any question that
+ * cannot be shown drops the whole request (MAR-4002).
  */
 export type ExecutionInteractionRequest =
   | { kind: "text"; prompt: string }
@@ -1157,8 +1157,8 @@ export type ExecutionDecodeFailureReason =
 /**
  * `dropped-invalid-field`: what is at `path` could not be read and was left
  * out. `dropped-excess-entries`: the list at `path` was cut at its cap, and
- * its later entries left unread (host profiles, MAR-3725; a choice request's
- * questions and options, MAR-4002).
+ * its later entries left unread (host profiles, MAR-3725; a choice question's
+ * options, MAR-4002).
  */
 export interface ExecutionDecodeWarning {
   reason: "dropped-invalid-field" | "dropped-excess-entries";

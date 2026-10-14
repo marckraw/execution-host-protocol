@@ -123,31 +123,47 @@ describe("structured choice bounds (MAR-4002)", () => {
     });
   });
 
-  it("cuts questions past the cap, and names the list once", () => {
-    const questions = Array.from(
-      { length: EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT + 3 },
-      (_, index) => question(index),
+  it("drops the whole request past the questions cap, named alone", () => {
+    const { item, request, warnings } = decodeRequest(
+      choice(
+        Array.from(
+          { length: EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT + 1 },
+          (_, index) => question(index),
+        ),
+      ),
     );
-    const { request, warnings } = decodeRequest(choice(questions));
-    expect(request).toEqual(
-      choice(questions.slice(0, EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT)),
-    );
+    // Every question past the cap would be answered empty by the host.
+    expect(request).toBeUndefined();
+    expect(item).not.toHaveProperty("request");
+    expect(item.prompt).toBe(inputRequest.prompt);
     expect(warnings).toEqual([
-      { reason: "dropped-excess-entries", path: `${REQUEST}.questions` },
+      { reason: "dropped-invalid-field", path: REQUEST },
     ]);
   });
 
-  it("does not read a question past the cap, however broken", () => {
-    const questions = [
-      ...Array.from(
-        { length: EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT },
-        (_, i) => question(i),
+  it("reads no question of a request past the cap", () => {
+    let reads = 0;
+    const watched = (index: number) =>
+      new Proxy(question(index), {
+        get(target, key, receiver) {
+          reads += 1;
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    const decoded = decodeExecutionConversationItem({
+      ...inputRequest,
+      request: choice(
+        Array.from(
+          { length: EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT + 1 },
+          (_, index) => watched(index),
+        ),
       ),
-      "not a question",
-    ];
-    expect(decodeRequest(choice(questions)).warnings).toEqual([
-      { reason: "dropped-excess-entries", path: `${REQUEST}.questions` },
-    ]);
+    });
+    expect(decoded).toMatchObject({
+      ok: true,
+      warnings: [{ reason: "dropped-invalid-field", path: "item.request" }],
+    });
+    expect(reads).toBe(0);
   });
 
   it("cuts options past the cap, and keeps the question", () => {

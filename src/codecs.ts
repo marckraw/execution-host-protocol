@@ -1283,15 +1283,17 @@ function decodeInteractionRequest(
 }
 
 /**
- * A choice request, read within its bounds (MAR-4002). An answer must answer
- * every question it asked, and a host fills one a client never showed with
- * an empty answer, so a question that cannot be read, or whose `id`, text or
- * `header` is past its bound, drops the whole request, named alone. So does
- * a question left with no option by the drops below. Within a question, an
- * option that cannot be read, or whose `label` is past its bound, is
- * dropped, and a `description` or `preview` past its bound is dropped from
- * its option: a person picks from what is left. A list past its cap is cut
- * there, and named once as `dropped-excess-entries`.
+ * A choice request, read within its bounds (MAR-4002). Any question the host
+ * asked that cannot be shown means no request: an answer must answer every
+ * question, and a host fills one a client never showed with an empty answer.
+ * So more questions than the cap, or a question that cannot be read, whose
+ * `id`, text or `header` is past its bound, or that is left with no option,
+ * drops the whole request, named alone, and none of its questions is read
+ * past the count. Within a question, an option that cannot be read, or whose
+ * `label` is past its bound, is dropped, and a `description` or `preview`
+ * past its bound is dropped from its option: a person picks from what is
+ * left. Options past their cap are cut, and named once as
+ * `dropped-excess-entries`.
  */
 function decodeChoiceRequest(
   raw: Record<string, unknown>,
@@ -1304,21 +1306,19 @@ function decodeChoiceRequest(
     value: undefined,
     warnings: [{ reason: "dropped-invalid-field" as const, path }],
   };
-  if (!Array.isArray(raw.questions) || raw.questions.length === 0) {
+  if (
+    !Array.isArray(raw.questions) ||
+    raw.questions.length === 0 ||
+    raw.questions.length > EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT
+  ) {
     return dropped;
   }
-  const questionsPath = `${path}.questions`;
   const warnings: ExecutionDecodeWarning[] = [];
-  if (raw.questions.length > EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT) {
-    warnings.push({ reason: "dropped-excess-entries", path: questionsPath });
-  }
   const questions: ExecutionInteractionQuestion[] = [];
-  for (const [index, entry] of raw.questions
-    .slice(0, EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT)
-    .entries()) {
+  for (const [index, entry] of raw.questions.entries()) {
     const question = decodeInteractionQuestion(
       entry,
-      `${questionsPath}.${index}`,
+      `${path}.questions.${index}`,
       warnings,
     );
     if (question === null) return dropped;

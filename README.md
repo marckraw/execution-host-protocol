@@ -790,9 +790,9 @@ and Codex's `request_user_input` ask:
   there, so a reader that ignores `request` can still answer by typing.
 - `request` is fixed when the item is added. A patch never carries it, and a
   reader ignores one that does.
-- A `choice` stays within the bounds below, in the provider's order. Above
-  them, readers drop the excess, so what the host sent is not what a client
-  shows.
+- A `choice` stays within the bounds below, in the provider's order. Past
+  them, readers drop an option, or the whole request, so what the host sent
+  is not what a client shows.
 - It takes a `send-message` whose `options.interactionResponse` answers the
   request, and gives the answer to the provider: each question by its `id`,
   and each option by its `label`, as the request gave them.
@@ -806,7 +806,7 @@ neither bounds any other text. Lengths are UTF-16 code units.
 
 | Field                | Bound                 | Past it                                                                  |
 | -------------------- | --------------------- | ------------------------------------------------------------------------ |
-| `questions`          | 8 questions           | Later questions dropped, and never read.                                 |
+| `questions`          | 8 questions           | The whole request is dropped, and no question read.                      |
 | a question's options | 16 options            | Later options dropped, and never read.                                   |
 | a question's `id`    | 1 to 4,000 characters | The whole request is dropped.                                            |
 | `question`           | 1 to 4,000            | The whole request is dropped.                                            |
@@ -822,27 +822,27 @@ Required text past its bound is dropped, never cut. An answer names a
 question by its `id` and an option by its `label`, so a cut one would answer
 something the agent did not ask.
 
-**A question within the cap is never dropped alone.** An answer must answer
-every question the client showed, and a host fills a question the client
+**Any question the host asked that cannot be shown means no request.** An
+answer must answer every question, and a host fills a question the client
 never showed with an empty answer, which the agent reads as the person's. So
-a request that loses a question loses everything, and a person answers its
+a request that would lose a question, whether past the cap, unreadable, past
+a bound or left with no option, is dropped whole, and a person answers its
 `prompt` by typing. An option is different: a person picks from what is left.
-Questions past the cap are still cut, and would be answered empty. Neither
-provider asks more than 4 today, so a host should never send that many.
 
 **Readers.** `decodeExecutionEventEnvelope`,
 `decodeExecutionConversationItem` and the client's snapshot read a `choice`
 within these bounds.
 
-- A question that cannot be read, or is past a bound, or whose every option
-  was dropped, drops the request, with one `dropped-invalid-field` warning at
-  `….request`. So does a request with no question.
+- More than 8 questions, or a question that cannot be read, is past a
+  bound, or has every option dropped, drops the request, with one
+  `dropped-invalid-field` warning at `….request`. So does a request with no
+  question.
 - An option that cannot be read, or whose `label` is past its bound, is
   dropped with a `dropped-invalid-field` warning at its path
   (`event.delta.item.request.questions.1.options.2`). A `description` or
   `preview` past its bound is dropped the same way, and its option kept.
-- A list past its cap is cut. The cut is named once, as
-  `dropped-excess-entries` at the list's path.
+- Options past their cap are cut. The cut is named once, as
+  `dropped-excess-entries` at the options' path.
 - A request of another kind is dropped whole when it cannot be read, as is
   one of a kind this build does not know.
 - The item and its `prompt` are always kept.
