@@ -88,4 +88,35 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof client.oneShot, "function");
 }
 
+// Task output (MAR-3981): the contract and its caps at the root, the method,
+// its error and the capability check on the client.
+for (const loaded of [commonJs, esModule]) {
+  assert.equal(typeof loaded.decodeExecutionTaskOutputRequest, "function");
+  assert.equal(typeof loaded.decodeExecutionTaskOutputResponse, "function");
+  assert.equal(typeof loaded.decodeExecutionTaskOutputWindow, "function");
+  assert.equal(loaded.EXECUTION_TASK_OUTPUT_MAX_BYTES, 65_536);
+  assert.ok(
+    loaded.EXECUTION_PROTOCOL_CAPABILITY_IDS.includes("tasks.output.v1"),
+  );
+  assert.equal(loaded.ExecutionTaskOutputError, undefined);
+}
+for (const loaded of [commonJsClient, esModuleClient]) {
+  assert.equal(typeof loaded.ExecutionTaskOutputError, "function");
+  assert.equal(typeof loaded.hostReadsTaskOutput, "function");
+  const client = loaded.createExecutionHostClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "check",
+    fetch: async () => new Response(null, { status: 404 }),
+  });
+  assert.equal(
+    await client
+      .taskOutput("s", "t")
+      .catch(
+        (error) =>
+          error instanceof loaded.ExecutionTaskOutputError && error.code,
+      ),
+    "unsupported",
+  );
+}
+
 console.log("Package exports resolve from CommonJS and ESM, root and client.");

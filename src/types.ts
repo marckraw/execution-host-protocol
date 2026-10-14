@@ -98,6 +98,14 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "attachments.inline-file.v1",
   /** Persisted, immutable session image references on tool-result items (MAR-3926). */
   "items.toolAttachments.v1",
+  /**
+   * The host answers `GET /v0/execution/sessions/:sessionId/tasks/:taskId/output`:
+   * at most 64 KiB from the end of one task's output file, host-redacted
+   * UTF-8 text, with the task's status (MAR-3981). It reads only a task its
+   * record of the session knows, from the path it recorded, never one named
+   * by the request.
+   */
+  "tasks.output.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];

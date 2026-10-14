@@ -1,6 +1,12 @@
 import {
   decodeExecutionOneShotRequest,
+  decodeExecutionTaskOutputRequest,
+  decodeExecutionTaskOutputWindow,
+  encodeExecutionTaskOutputResponse,
   EXECUTION_PROTOCOL_VERSION,
+  EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES,
+  type AgentRunStatus,
+  type ExecutionTaskOutputRefusalCode,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
   checkExecutionInlineAttachments,
@@ -123,7 +129,29 @@ export interface StubHost {
   oneShotRoute: "oneshot.v1" | "released";
   /** The prompts the host actually ran. */
   oneShotRuns: string[];
+  /**
+   * The tasks each session's record knows, by session and then task id
+   * (MAR-3981): a task's status, the bytes of its output file (null for a
+   * task with none), and whether its recorded path is outside what the host's
+   * policy reads.
+   */
+  tasks: Map<string, Map<string, StubTask>>;
+  /** Off, the host predates `tasks.output.v1`: its 404 for the route has no code. */
+  servesTaskOutput: boolean;
+  /** Every task-output request: its target exactly as sent, and its token. */
+  taskOutputRequests: Array<{ target: string; authorization: string | null }>;
 }
+
+export interface StubTask {
+  status: AgentRunStatus;
+  output: Uint8Array | null;
+  outsidePolicy?: boolean;
+}
+
+/** What the stub redacts from task output, as a host redacts a secret. */
+export const STUB_SECRET = /sk-live-[A-Za-z0-9]+/g;
+/** When the stub reads a task's output. */
+export const STUB_READ_AT = "2026-10-14T05:30:00.000Z";
 
 const encoder = new TextEncoder();
 
@@ -235,6 +263,9 @@ export function createStubHost(): StubHost {
     oneShotAnswer: null,
     oneShotRoute: "oneshot.v1",
     oneShotRuns: [],
+    tasks: new Map(),
+    servesTaskOutput: true,
+    taskOutputRequests: [],
 
     emit(event, sessionId = "session-1") {
       const envelope: ExecutionHostEventEnvelope = {
@@ -387,6 +418,60 @@ export function createStubHost(): StubHost {
             ...(body.requires === undefined ? {} : { requires: body.requires }),
           },
           201,
+        );
+      }
+
+      if (
+        host.servesTaskOutput &&
+        method === "GET" &&
+        /^\/v0\/execution\/sessions\/[^/]+\/tasks\/[^/]+\/output$/.test(path)
+      ) {
+        const target = `${path}${url.search}`;
+        host.taskOutputRequests.push({
+          target,
+          authorization: headers.get("Authorization"),
+        });
+        // Each refusal quotes the output file's path and the token, as no
+        // host should, to show neither reaches an error.
+        const refuse = (code: ExecutionTaskOutputRefusalCode) =>
+          json(
+            {
+              error: `${code}: /Users/piotr/.claude/tasks/x.output for Bearer ${host.token}`,
+              code,
+            },
+            EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES[code],
+          );
+        const asked = decodeExecutionTaskOutputRequest(target);
+        if (!asked.ok) return refuse("rejected");
+        const { sessionId, taskId, tail } = asked.value;
+        if (!host.sessions.has(sessionId)) return refuse("session-unknown");
+        const task = host.tasks.get(sessionId)?.get(taskId);
+        if (task === undefined) return refuse("task-unknown");
+        if (task.output === null) return refuse("no-output");
+        if (task.outsidePolicy) return refuse("read-refused");
+        const totalBytes = task.output.byteLength;
+        const window = decodeExecutionTaskOutputWindow(
+          task.output.subarray(Math.max(0, totalBytes - tail)),
+          Math.max(0, totalBytes - tail),
+        );
+        return new Response(
+          encodeExecutionTaskOutputResponse({
+            sessionId,
+            taskId,
+            status: task.status,
+            text: window.text.replace(STUB_SECRET, "[redacted]"),
+            startOffset: window.startOffset,
+            totalBytes,
+            truncated: window.startOffset > 0,
+            readAt: STUB_READ_AT,
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "Cache-Control": "no-store",
+            },
+          },
         );
       }
 

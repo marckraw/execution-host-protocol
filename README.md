@@ -444,6 +444,8 @@ outlive its answer: a test run it backgrounded, a subagent it sent off.
 - **`stop-task`** (`{ kind: "stop-task", taskId }`, `commands.stopTask.v1`)
   stops one task, by the `taskId` its evidence named, and leaves the session
   and its turn running.
+- **A task's output** (`tasks.output.v1`) is readable by the same `taskId`:
+  see [a task's output](#a-tasks-output).
 
 ### Evidence
 
@@ -746,6 +748,129 @@ resolves `{ text }`:
 Not part of `oneshot.v1`: streaming, tools, images, several turns, or any link
 to a session.
 
+## A task's output
+
+On a host advertising `tasks.output.v1` (MAR-3981), authenticated
+`GET /v0/execution/sessions/:sessionId/tasks/:taskId/output?tail=<bytes>`
+returns the end of what one task — a background command such as `pnpm check`
+— has written to its output file, with the task's status. `taskId` is the one
+the task's evidence named (`task.changed`), and the one `stop-task` takes.
+
+**The request names a task, never a file.** Its path holds a session id and a
+task id, and its query holds `tail` and nothing else. A task id is 1 to 256
+ASCII letters, digits, `.`, `_` or `-`, starting with a letter or digit, so it
+cannot be a path, a separator or a dot segment. `tail` is a whole number of
+bytes from 1 to 65,536 (`EXECUTION_TASK_OUTPUT_MAX_BYTES`), written in decimal
+without sign or leading zeros. Without it, the host reads 65,536 bytes.
+`encodeExecutionTaskOutputRequest` writes the target and throws on anything
+past these bounds. `decodeExecutionTaskOutputRequest` reads a target as it is
+on the request line (`/v0/…/output?tail=4096`). It is strict: a second `tail`,
+a `path` or `file` parameter, or any other parameter is refused, not ignored.
+
+**What a host promises under `tasks.output.v1`:**
+
+- It serves only a task its own record of the session knows, from the path
+  it recorded for that task. Nothing in the request ever becomes part of a
+  path it opens.
+- It refuses, with `read-refused`, a recorded path that resolves (symlinks
+  followed) outside the session's worktree and the provider's own task
+  directory.
+- It reads at most `tail` bytes, from the end of the file.
+- It redacts the text as it redacts every other text it sends, such as tool
+  results. A secret that the window's start cuts in two is not shown in
+  part: the host redacts with the bytes before the window in view, or
+  redacts the cut line whole.
+- Its refusals never name the output file's path.
+- It answers with `Cache-Control: no-store`.
+
+**The answer** (`decodeExecutionTaskOutputResponse`,
+`encodeExecutionTaskOutputResponse`):
+
+```json
+{
+  "sessionId": "session-1",
+  "taskId": "b7x2k9q1",
+  "status": "running",
+  "text": "✓ packages/protocol (212 tests)\n",
+  "startOffset": 139264,
+  "totalBytes": 204800,
+  "truncated": true,
+  "readAt": "2026-10-14T05:30:00.000Z"
+}
+```
+
+- **The window.** The window is the file's bytes from `startOffset` to
+  `totalBytes`. `totalBytes` is the file's size when the host read it. The
+  window is never longer than 65,536 bytes, and never longer than the `tail`
+  asked for. `truncated` is true exactly when `startOffset` is past 0. An
+  empty window has empty `text`. Both offsets are byte positions in the file,
+  not positions in `text`.
+- **`text` is host-redacted text, not the file's bytes.** It is the window
+  decoded as UTF-8, then redacted. Each invalid byte sequence becomes U+FFFD
+  (the WHATWG decoder with replacement), and a byte order mark is kept as a
+  character.
+- **A cut character is repaired.** When the tail cuts a character, the window
+  starts after that character: the host skips up to 3 leading continuation
+  bytes, and `startOffset` moves past them. At the file's start nothing is
+  skipped. A character still being written at the file's end decodes as
+  U+FFFD until the next read. `decodeExecutionTaskOutputWindow(bytes, offset)`
+  is this step, for a host to call before it redacts.
+- **The text has a cap too.** `text` is at most 65,536 UTF-16 code units
+  (`EXECUTION_TASK_OUTPUT_TEXT_MAX_LENGTH`). A window of 65,536 bytes never
+  decodes to more. If redaction makes the text longer than the cap, the host
+  reads a shorter window instead.
+- **`status` and `readAt`.** `status` is the task's status in the host's
+  record when the host read the file. It uses the `SessionTask` values:
+  `running`, `completed`, `failed`, `stopped` or `unknown`. `readAt` is an
+  RFC 3339 timestamp.
+
+The decoder ignores fields it does not know. It checks every field it knows,
+including the window's bound and the consistency of `truncated`, so it
+refuses an answer past the cap rather than reading it. The encoders throw on
+anything the decoders would refuse.
+
+**Refusals** are a status and a body `{ error, code }`
+(`decodeExecutionTaskOutputRefusal`). A host sends each code only with its
+status (`EXECUTION_TASK_OUTPUT_REFUSAL_STATUSES`), and codes every 404 it
+sends from this route:
+
+| Status | `code`            | Meaning                                                                                                                        |
+| ------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 404    | `session-unknown` | The host has no session by that id.                                                                                            |
+| 404    | `task-unknown`    | The session's record knows no task by that id.                                                                                 |
+| 404    | `no-output`       | The task has no output file. It never had one, as a subagent does not, or the file is gone.                                    |
+| 403    | `read-refused`    | The host's policy will not read it: the recorded path is outside what it reads, or it serves no output for tasks of this kind. |
+| 400    | `rejected`        | The request is out of bounds: a `tail`, a task id, or a query parameter it does not take.                                      |
+
+**The client.**
+`taskOutput(sessionId, taskId, { tail?, signal?, timeoutMs? })` resolves the
+answer above:
+
+- **Before sending.** An id the route cannot name, or an option the method
+  does not take (`path`, `file`, …), is a `TypeError`. A `tail` out of bounds
+  is a `RangeError`. In either case nothing is sent.
+- **No `/health` read.** A GET has nothing to protect, and a panel refreshing
+  a running task would pay for the probe on every read. To decide whether to
+  offer the read at all, check `hostReadsTaskOutput(await host.health())`
+  once.
+- **Refusals.** Every refusal is an `ExecutionTaskOutputError` with a `code`.
+  The client takes the host's code only when it comes with the status in the
+  table above; otherwise it goes by the status alone. A 404 with no code is
+  `unsupported`: no such route, either from a host that does not advertise
+  `tasks.output.v1` or from a proxy in front of one. Any other refusal is
+  `rejected`, including a 401 and a 403 that carries no `read-refused`;
+  `status` says which. A 2xx that does not decode, is about another session
+  or task, or holds a window longer than the `tail` asked for is `malformed`.
+  The error's `reason` is the client's own sentence, never the host's.
+- **Bounded reads.** The client reads at most 512 KiB of an answer's body and
+  64 KiB of a refusal's, however much more the host sends.
+- **Transport failures.** A host that cannot be reached, or does not answer
+  within the health timeout, is an `ExecutionHostError`. A caller's abort is
+  rethrown as it came.
+
+Not part of `tasks.output.v1`: a stream of output as it grows, a read from
+anywhere but the end, raw bytes, or a subagent's transcript.
+
 ## The client
 
 Three clients spoke this protocol, each with what the others lacked (MAR-3638):
@@ -794,7 +919,8 @@ token; `handshake()` adds the token probe and never throws. `projects()`,
 `providers()` (the catalogue: each provider, its models and the efforts each
 takes), `snapshot()` (null for a session the host does not have),
 `patchSession()` (a session's title, or the model and effort its next turn runs
-on), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above) and
+on), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above),
+`taskOutput()` (the end of a task's output, above) and
 `events()` — one connection, decoded but
 not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
