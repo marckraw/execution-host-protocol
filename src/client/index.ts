@@ -28,7 +28,10 @@ export {
   type ExecutionStartResult,
   type ExecutionWarningsNotice,
 } from "./client.js";
-export { type ExecutionAttachmentDownloadResult } from "./attachment-download.js";
+export {
+  type ExecutionAttachmentDownloadKind,
+  type ExecutionAttachmentDownloadResult,
+} from "./attachment-download.js";
 export {
   executionRetryDelayMs,
   type ExecutionFollowEnd,

@@ -70,6 +70,7 @@ import {
   attachmentPathId,
   cancelAttachmentBody,
   readAttachmentBytes,
+  type ExecutionAttachmentDownloadKind,
   type ExecutionAttachmentDownloadResult,
 } from "./attachment-download.js";
 import {
@@ -145,7 +146,16 @@ export interface ExecutionRequestOptions {
 }
 
 export interface ExecutionAttachmentDownloadOptions extends ExecutionRequestOptions {
-  /** Defaults to 8 MiB; a positive whole number no greater than that ceiling. */
+  /**
+   * What the attachment is, which sets the ceiling (MAR-3973): `tool` (the
+   * default), an image on a tool result, 8 MiB; `inline`, an image or file
+   * sent with a message, 10 MiB.
+   */
+  kind?: ExecutionAttachmentDownloadKind;
+  /**
+   * Defaults to the kind's ceiling; a positive whole number no greater than
+   * it.
+   */
   maxBytes?: number;
 }
 
@@ -302,8 +312,9 @@ export interface ExecutionHostClient {
   ): Promise<ExecutionSessionSnapshot | null>;
   /**
    * Authenticated GET of a session attachment, with both IDs encoded. Reads
-   * at most 8 MiB (or a smaller maxBytes) within the request deadline, through
-   * injected fetch. Throws ExecutionHostError with fixed client reasons;
+   * at most the kind's ceiling — 8 MiB for a tool image (the default), 10 MiB
+   * for an inline upload — or a smaller maxBytes, within the request deadline,
+   * through injected fetch. Throws ExecutionHostError with fixed client reasons;
    * a caller's abort is rethrown. MIME and length claims are not validation.
    */
   downloadAttachment(
@@ -1017,11 +1028,12 @@ export function createExecutionHostClient(
       downloadOptions = {},
     ) => {
       const {
+        kind = "tool",
         maxBytes: requestedBytes,
         signal,
         timeoutMs = requestTimeoutMs,
       } = downloadOptions;
-      const maxBytes = attachmentByteLimit(requestedBytes);
+      const maxBytes = attachmentByteLimit(kind, requestedBytes);
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
         throw new RangeError(
           "timeoutMs must be a finite positive number of milliseconds",
