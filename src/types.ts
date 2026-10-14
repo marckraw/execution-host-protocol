@@ -431,8 +431,8 @@ export interface ExecutionInteractionFormField {
 /**
  * Structured human input requested by a provider. Unknown future kinds are
  * dropped by tolerant readers. A `choice` is read within the bounds in
- * `interactions.ts`: what is past them is dropped, and the rest kept
- * (MAR-4002).
+ * `interactions.ts`: an option past them is dropped, and a question past
+ * them drops the whole request (MAR-4002).
  */
 export type ExecutionInteractionRequest =
   | { kind: "text"; prompt: string }

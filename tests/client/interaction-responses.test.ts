@@ -117,6 +117,22 @@ describe("an answer naming choices (MAR-4002)", () => {
     expect(host.commandRequests).toEqual([]);
   });
 
+  it("is refused on a host whose /health has no executionProtocol", async () => {
+    const { executionProtocol: _, ...noDescriptor } = HEALTH_BODY;
+    host.healthBody = noDescriptor;
+    const { requests, fetch } = counted(host);
+    const refusal = (await client(fetch)
+      .command("session-1", answer)
+      .catch((error: unknown) => error)) as ExecutionInteractionResponseError;
+    expect(refusal).toBeInstanceOf(ExecutionInteractionResponseError);
+    expect(refusal.code).toBe("interactions-unsupported");
+    expect(refusal.reason).toContain(
+      "does not advertise interactions.structured",
+    );
+    expect(requests).toEqual(["GET /health"]);
+    expect(host.commandRequests).toEqual([]);
+  });
+
   it("is refused on a host whose descriptor is unreadable", async () => {
     host.healthBody = {
       ...HEALTH_BODY,

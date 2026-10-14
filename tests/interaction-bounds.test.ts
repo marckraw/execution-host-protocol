@@ -104,7 +104,7 @@ describe("structured choice bounds (MAR-4002)", () => {
     expect(JSON.stringify(decoded.ok && decoded.value)).toBe(raw);
   });
 
-  it("keeps the recorded fixture, with an empty description, as it was", () => {
+  it("keeps the hand-made fixture, and an empty description, as they were", () => {
     const request = choice([
       question(0, {
         options: [{ label: "Local", description: "" }, { label: "Remote" }],
@@ -174,23 +174,38 @@ describe("structured choice bounds (MAR-4002)", () => {
     ]);
   });
 
+  it("keeps a Claude question whose id is its own long text", () => {
+    // AskUserQuestion gives a question no id; agents-daemon uses its text.
+    const text = `${"Which of these migration strategies should we use ".repeat(6)}?`;
+    expect(text.length).toBeGreaterThan(300);
+    const claude = question(0, { id: text, question: text });
+    const { request, warnings } = decodeRequest(choice([claude]));
+    expect(request).toEqual(choice([claude]));
+    expect(warnings).toEqual([]);
+  });
+
   it.each([
     ["id", EXECUTION_INTERACTION_QUESTION_ID_MAX_LENGTH],
     ["question", EXECUTION_INTERACTION_QUESTION_MAX_LENGTH],
     ["header", EXECUTION_INTERACTION_HEADER_MAX_LENGTH],
   ])(
-    "drops a question whose %s is past %i, and keeps the others",
+    "drops the whole request when a question's %s is past %i",
     (field, max) => {
-      const { request, warnings } = decodeRequest(
+      const { item, request, warnings } = decodeRequest(
         choice([
-          question(0),
+          question(0, {
+            options: [option(0), { label: "" }],
+          }),
           question(1, { [field]: "x".repeat(max + 1) }),
           question(2),
         ]),
       );
-      expect(request).toEqual(choice([question(0), question(2)]));
+      // A partial request would be answered partly, and the host would fill
+      // the question nobody saw with an empty answer.
+      expect(request).toBeUndefined();
+      expect(item.prompt).toBe(inputRequest.prompt);
       expect(warnings).toEqual([
-        { reason: "dropped-invalid-field", path: `${REQUEST}.questions.1` },
+        { reason: "dropped-invalid-field", path: REQUEST },
       ]);
     },
   );
@@ -275,14 +290,35 @@ describe("structured choice bounds (MAR-4002)", () => {
     ]);
   });
 
-  it("drops one malformed question, not the request", () => {
-    const { request, warnings } = decodeRequest(
-      choice([question(0, { multiSelect: "yes" }), question(1)]),
+  it.each([
+    ["is malformed", question(1, { multiSelect: "yes" })],
+    ["is not a question", "q1"],
+    [
+      "has every option dropped",
+      question(1, {
+        options: [
+          { label: "x".repeat(EXECUTION_INTERACTION_LABEL_MAX_LENGTH + 1) },
+          { description: "no label" },
+        ],
+      }),
+    ],
+  ])("drops the whole request when one question %s", (_, broken) => {
+    const { item, request, warnings } = decodeRequest(
+      choice([question(0), broken]),
     );
-    expect(request).toEqual(choice([question(1)]));
+    expect(request).toBeUndefined();
+    expect(item).not.toHaveProperty("request");
     expect(warnings).toEqual([
-      { reason: "dropped-invalid-field", path: `${REQUEST}.questions.0` },
+      { reason: "dropped-invalid-field", path: REQUEST },
     ]);
+  });
+
+  it("keeps a question that came with no options, as it did before", () => {
+    const { request, warnings } = decodeRequest(
+      choice([question(0, { options: [] })]),
+    );
+    expect(request).toEqual(choice([question(0, { options: [] })]));
+    expect(warnings).toEqual([]);
   });
 
   it.each([

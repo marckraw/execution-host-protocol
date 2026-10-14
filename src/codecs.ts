@@ -1283,12 +1283,15 @@ function decodeInteractionRequest(
 }
 
 /**
- * A choice request, read part by part within its bounds (MAR-4002): a list
- * past its cap is cut there, and named once as `dropped-excess-entries`; a
- * question or option that cannot be read, or whose `id`, text, `header` or
- * `label` is past its bound, is dropped; a `description` or `preview` past
- * its bound is dropped from its option. What is left is kept. Only a request
- * left with no question is dropped, and named alone.
+ * A choice request, read within its bounds (MAR-4002). An answer must answer
+ * every question it asked, and a host fills one a client never showed with
+ * an empty answer, so a question that cannot be read, or whose `id`, text or
+ * `header` is past its bound, drops the whole request, named alone. So does
+ * a question left with no option by the drops below. Within a question, an
+ * option that cannot be read, or whose `label` is past its bound, is
+ * dropped, and a `description` or `preview` past its bound is dropped from
+ * its option: a person picks from what is left. A list past its cap is cut
+ * there, and named once as `dropped-excess-entries`.
  */
 function decodeChoiceRequest(
   raw: Record<string, unknown>,
@@ -1297,22 +1300,31 @@ function decodeChoiceRequest(
   value: ExecutionInteractionRequest | undefined;
   warnings: ExecutionDecodeWarning[];
 } {
+  const dropped = {
+    value: undefined,
+    warnings: [{ reason: "dropped-invalid-field" as const, path }],
+  };
+  if (!Array.isArray(raw.questions) || raw.questions.length === 0) {
+    return dropped;
+  }
+  const questionsPath = `${path}.questions`;
   const warnings: ExecutionDecodeWarning[] = [];
-  const questions = Array.isArray(raw.questions)
-    ? decodeBoundedList(
-        raw.questions,
-        `${path}.questions`,
-        EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT,
-        decodeInteractionQuestion,
-        warnings,
-      )
-    : [];
-  return questions.length > 0
-    ? { value: { kind: "choice", questions }, warnings }
-    : {
-        value: undefined,
-        warnings: [{ reason: "dropped-invalid-field", path }],
-      };
+  if (raw.questions.length > EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT) {
+    warnings.push({ reason: "dropped-excess-entries", path: questionsPath });
+  }
+  const questions: ExecutionInteractionQuestion[] = [];
+  for (const [index, entry] of raw.questions
+    .slice(0, EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT)
+    .entries()) {
+    const question = decodeInteractionQuestion(
+      entry,
+      `${questionsPath}.${index}`,
+      warnings,
+    );
+    if (question === null) return dropped;
+    questions.push(question);
+  }
+  return { value: { kind: "choice", questions }, warnings };
 }
 
 /**
@@ -1363,17 +1375,20 @@ function decodeInteractionQuestion(
   ) {
     return null;
   }
+  const options = decodeBoundedList(
+    raw.options,
+    `${path}.options`,
+    EXECUTION_INTERACTION_OPTIONS_MAX_COUNT,
+    decodeInteractionOption,
+    warnings,
+  );
+  // A question whose every option was dropped offers nothing to press.
+  if (options.length === 0 && raw.options.length > 0) return null;
   return {
     id: raw.id,
     question: raw.question,
     header: raw.header,
-    options: decodeBoundedList(
-      raw.options,
-      `${path}.options`,
-      EXECUTION_INTERACTION_OPTIONS_MAX_COUNT,
-      decodeInteractionOption,
-      warnings,
-    ),
+    options,
     multiSelect: raw.multiSelect,
   };
 }

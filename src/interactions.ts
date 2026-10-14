@@ -14,10 +14,15 @@
 export const EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT = 8;
 /** Options in one question; later ones are dropped. */
 export const EXECUTION_INTERACTION_OPTIONS_MAX_COUNT = 16;
-/** A question's `id`, which an answer's `questionId` names. */
-export const EXECUTION_INTERACTION_QUESTION_ID_MAX_LENGTH = 256;
 /** A question's text. */
 export const EXECUTION_INTERACTION_QUESTION_MAX_LENGTH = 4_000;
+/**
+ * A question's `id`, which an answer's `questionId` names. As long as a
+ * question's text: AskUserQuestion gives a question no id, so agents-daemon
+ * uses its text as one.
+ */
+export const EXECUTION_INTERACTION_QUESTION_ID_MAX_LENGTH =
+  EXECUTION_INTERACTION_QUESTION_MAX_LENGTH;
 /** A question's `header`, the short chip shown beside it. */
 export const EXECUTION_INTERACTION_HEADER_MAX_LENGTH = 64;
 /** An option's `label`, which an answer's `values` names. */

@@ -804,35 +804,45 @@ providers ask today. Claude Code's `AskUserQuestion` (Agent SDK 0.3.299,
 2 to 3 options. Both tell the model to keep a header to 12 characters, and
 neither bounds any other text. Lengths are UTF-16 code units.
 
-| Field                | Bound               | Past it                                       |
-| -------------------- | ------------------- | --------------------------------------------- |
-| `questions`          | 8 questions         | Later questions dropped, and never read.      |
-| a question's options | 16 options          | Later options dropped, and never read.        |
-| a question's `id`    | 1 to 256 characters | The question is dropped.                      |
-| `question`           | 1 to 4,000          | The question is dropped.                      |
-| `header`             | 1 to 64             | The question is dropped.                      |
-| an option's `label`  | 1 to 256            | The option is dropped.                        |
-| `description`        | at most 2,000       | The description is dropped; the option stays. |
-| `preview`            | at most 8,000       | The preview is dropped; the option stays.     |
+| Field                | Bound                 | Past it                                                                  |
+| -------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `questions`          | 8 questions           | Later questions dropped, and never read.                                 |
+| a question's options | 16 options            | Later options dropped, and never read.                                   |
+| a question's `id`    | 1 to 4,000 characters | The whole request is dropped.                                            |
+| `question`           | 1 to 4,000            | The whole request is dropped.                                            |
+| `header`             | 1 to 64               | The whole request is dropped.                                            |
+| an option's `label`  | 1 to 256              | The option is dropped. A question left with no option drops the request. |
+| `description`        | at most 2,000         | The description is dropped; the option stays.                            |
+| `preview`            | at most 8,000         | The preview is dropped; the option stays.                                |
+
+A question's `id` is as long as its text because `AskUserQuestion` gives a
+question no id, and agents-daemon uses the question's text as one.
 
 Required text past its bound is dropped, never cut. An answer names a
 question by its `id` and an option by its `label`, so a cut one would answer
-something the agent did not ask. A question whose text or header is too long
-to show whole is dropped rather than shown partly; its `prompt` is still
-there.
+something the agent did not ask.
+
+**A question within the cap is never dropped alone.** An answer must answer
+every question the client showed, and a host fills a question the client
+never showed with an empty answer, which the agent reads as the person's. So
+a request that loses a question loses everything, and a person answers its
+`prompt` by typing. An option is different: a person picks from what is left.
+Questions past the cap are still cut, and would be answered empty. Neither
+provider asks more than 4 today, so a host should never send that many.
 
 **Readers.** `decodeExecutionEventEnvelope`,
 `decodeExecutionConversationItem` and the client's snapshot read a `choice`
-part by part, and keep everything within bounds.
+within these bounds.
 
-- A question or option that cannot be read, or is past a bound, is dropped
-  with a `dropped-invalid-field` warning at its path
-  (`event.delta.item.request.questions.1.options.2`). The rest is kept: one
-  bad option no longer costs the whole request.
+- A question that cannot be read, or is past a bound, or whose every option
+  was dropped, drops the request, with one `dropped-invalid-field` warning at
+  `….request`. So does a request with no question.
+- An option that cannot be read, or whose `label` is past its bound, is
+  dropped with a `dropped-invalid-field` warning at its path
+  (`event.delta.item.request.questions.1.options.2`). A `description` or
+  `preview` past its bound is dropped the same way, and its option kept.
 - A list past its cap is cut. The cut is named once, as
   `dropped-excess-entries` at the list's path.
-- A request left with no question is dropped, with one warning at
-  `….request`.
 - A request of another kind is dropped whole when it cannot be read, as is
   one of a kind this build does not know.
 - The item and its `prompt` are always kept.
@@ -1159,9 +1169,19 @@ on), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above),
 not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
 `not-found`, `http`, `malformed`), the status, and the host's own words. The
-one exception is a start whose `requires` the host cannot be trusted with:
-`ExecutionStartRequirementsError` (see
-[start requirements](#host-identity-devices-and-start-requirements)).
+exceptions each have their own error, and none is an `ExecutionHostError`:
+
+- a start whose `requires` the host cannot be trusted with:
+  `ExecutionStartRequirementsError` (see
+  [start requirements](#host-identity-devices-and-start-requirements));
+- inline attachments the client will not send:
+  `ExecutionInlineAttachmentsError` (see
+  [files beside images](#files-beside-images));
+- an answer naming choices to a host without `interactions.structured`:
+  `ExecutionInteractionResponseError` (see
+  [questions with choices](#questions-with-choices));
+- a one-shot or a task's output: `ExecutionOneShotError` and
+  `ExecutionTaskOutputError`, above.
 
 **The token** goes in the `Authorization` header and nowhere else. One no
 header could carry — a line break, a control character, anything outside ASCII
