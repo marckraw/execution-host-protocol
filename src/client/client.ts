@@ -35,6 +35,10 @@ import {
   withoutHostWords,
 } from "./attachments.js";
 import {
+  hostTakesStructuredInteractions,
+  interactionResponseRefusal,
+} from "./interactions.js";
+import {
   followExecutionSession,
   type ExecutionFollowOptions,
   type ExecutionSessionFollow,
@@ -277,7 +281,11 @@ export interface ExecutionHostClient {
    * does), and is refused here, unsent, with code `files-unsupported` when
    * the host does not advertise `attachments.inline-file.v1`; its failures
    * then carry the client's words only, never the host's or a file's
-   * (MAR-3783). Images only, or none: one request, as before.
+   * (MAR-3783). One carrying `options.interactionResponse` reads the same
+   * one `/health`, and is refused here, unsent, with an
+   * `ExecutionInteractionResponseError` when the host does not advertise
+   * `interactions.structured` (MAR-4002). Images only, or none, and no
+   * `interactionResponse`: one request, as before.
    */
   command(
     sessionId: string,
@@ -904,9 +912,14 @@ export function createExecutionHostClient(
       const withFiles =
         command.kind === "send-message" &&
         carriesFiles(operation, command.inlineAttachments);
+      const withChoices =
+        command.kind === "send-message" &&
+        command.options?.interactionResponse !== undefined;
       // A host that predates files refuses the whole command, text and all,
-      // so the only safe place to refuse is here, before it is sent.
-      if (withFiles) {
+      // and one that predates structured answers may drop the choices and
+      // read the text alone, so the only safe place to refuse is here,
+      // before it is sent (MAR-4002).
+      if (withFiles || withChoices) {
         const probed = await health({
           signal: commandOptions.signal,
           timeoutMs: Math.min(
@@ -914,8 +927,11 @@ export function createExecutionHostClient(
             commandOptions.timeoutMs ?? healthTimeoutMs,
           ),
         });
-        if (!hostTakesInlineFiles(probed)) {
+        if (withFiles && !hostTakesInlineFiles(probed)) {
           throw inlineFilesRefusal(operation, probed);
+        }
+        if (withChoices && !hostTakesStructuredInteractions(probed)) {
+          throw interactionResponseRefusal(operation, probed);
         }
       }
       const told = (error: unknown): never => {

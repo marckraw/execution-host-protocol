@@ -25,6 +25,8 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(loaded.EXECUTION_INLINE_ATTACHMENT_NAME_MAX_LENGTH, 255);
   assert.equal(loaded.EXECUTION_INLINE_ATTACHMENT_MIME_TYPE_MAX_LENGTH, 255);
   assert.equal(loaded.EXECUTION_TOOL_ATTACHMENTS_MAX_COUNT, 8);
+  assert.equal(loaded.EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT, 8);
+  assert.equal(loaded.EXECUTION_INTERACTION_OPTIONS_MAX_COUNT, 16);
   assert.equal(loaded.EXECUTION_TOOL_ATTACHMENT_MAX_BYTES, 8_388_608);
   assert.equal(
     loaded.EXECUTION_TOOL_ATTACHMENT_MIME_TYPE_MAX_LENGTH,
@@ -52,6 +54,8 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof loaded.hostEnforcesStartRequirements, "function");
   assert.equal(typeof loaded.ExecutionInlineAttachmentsError, "function");
   assert.equal(typeof loaded.hostTakesInlineFiles, "function");
+  assert.equal(typeof loaded.ExecutionInteractionResponseError, "function");
+  assert.equal(typeof loaded.hostTakesStructuredInteractions, "function");
   assert.equal(typeof loaded.decodeExecutionSessionSnapshot, "function");
   const client = loaded.createExecutionHostClient({
     baseUrl: "http://127.0.0.1:1",

@@ -748,6 +748,161 @@ resolves `{ text }`:
 Not part of `oneshot.v1`: streaming, tools, images, several turns, or any link
 to a session.
 
+## Questions with choices
+
+On a host advertising `interactions.structured` (MAR-1637), an agent's
+question can carry what a person may press, not only what they may type. An
+`input-request` item has a `prompt`, the question as text, and beside it an
+optional `request`, the same question in a structured form: `text`, `choice`,
+`plan`, `form` or `url`. A `choice` is what Claude Code's `AskUserQuestion`
+and Codex's `request_user_input` ask:
+
+```json
+{
+  "id": "input-1",
+  "kind": "input-request",
+  "state": "streaming",
+  "prompt": "Which target?",
+  "request": {
+    "kind": "choice",
+    "questions": [
+      {
+        "id": "target",
+        "question": "Which target?",
+        "header": "Target",
+        "options": [
+          { "label": "Local", "description": "Run on this Mac." },
+          { "label": "Remote" }
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}
+```
+
+(`createdAt`, `updatedAt` and `providerMeta` are left out here.)
+
+**What a host promises under `interactions.structured`.**
+
+- It fills `request` when its provider asked in one of these forms, and
+  leaves it out when the provider asked in plain text. `prompt` is always
+  there, so a reader that ignores `request` can still answer by typing.
+- `request` is fixed when the item is added. A patch never carries it, and a
+  reader ignores one that does.
+- A `choice` stays within the bounds below, in the provider's order. Past
+  them, readers drop an option, or the whole request, so what the host sent
+  is not what a client shows.
+- It takes a `send-message` whose `options.interactionResponse` answers the
+  request, and gives the answer to the provider: each question by its `id`,
+  and each option by its `label`, as the request gave them.
+
+**Bounds** (MAR-4002; `interactions.ts`). They leave headroom over what the
+providers ask today. Claude Code's `AskUserQuestion` (Agent SDK 0.3.299,
+`sdk-tools.d.ts`) takes 1 to 4 questions of 2 to 4 options. Codex's
+`request_user_input` (`request_user_input_spec.rs`) takes 1 to 3 questions of
+2 to 3 options. Both tell the model to keep a header to 12 characters, and
+neither bounds any other text. Lengths are UTF-16 code units.
+
+| Field                | Bound                 | Past it                                                                  |
+| -------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `questions`          | 8 questions           | The whole request is dropped, and no question read.                      |
+| a question's options | 16 options            | Later options dropped, and never read.                                   |
+| a question's `id`    | 1 to 4,000 characters | The whole request is dropped.                                            |
+| `question`           | 1 to 4,000            | The whole request is dropped.                                            |
+| `header`             | 1 to 64               | The whole request is dropped.                                            |
+| an option's `label`  | 1 to 256              | The option is dropped. A question left with no option drops the request. |
+| `description`        | at most 2,000         | The description is dropped; the option stays.                            |
+| `preview`            | at most 8,000         | The preview is dropped; the option stays.                                |
+
+A question's `id` is as long as its text because `AskUserQuestion` gives a
+question no id, and agents-daemon uses the question's text as one.
+
+Required text past its bound is dropped, never cut. An answer names a
+question by its `id` and an option by its `label`, so a cut one would answer
+something the agent did not ask.
+
+**Any question the host asked that cannot be shown means no request.** An
+answer must answer every question, and a host fills a question the client
+never showed with an empty answer, which the agent reads as the person's. So
+a request that would lose a question, whether past the cap, unreadable, past
+a bound or left with no option, is dropped whole, and a person answers its
+`prompt` by typing. An option is different: a person picks from what is left.
+
+**Readers.** `decodeExecutionEventEnvelope`,
+`decodeExecutionConversationItem` and the client's snapshot read a `choice`
+within these bounds.
+
+- More than 8 questions, or a question that cannot be read, is past a
+  bound, or has every option dropped, drops the request, with one
+  `dropped-invalid-field` warning at `….request`. So does a request with no
+  question.
+- An option that cannot be read, or whose `label` is past its bound, is
+  dropped with a `dropped-invalid-field` warning at its path
+  (`event.delta.item.request.questions.1.options.2`). A `description` or
+  `preview` past its bound is dropped the same way, and its option kept.
+- Options past their cap are cut. The cut is named once, as
+  `dropped-excess-entries` at the options' path.
+- A request of another kind is dropped whole when it cannot be read, as is
+  one of a kind this build does not know.
+- The item and its `prompt` are always kept.
+
+An item within bounds reads byte for byte as it did before.
+
+**The answer** is a `send-message`. Its `text` is the answer as a person
+would read it, and `options.interactionResponse` gives the labels picked
+(more than one only where `multiSelect` is true):
+
+```json
+{
+  "protocolVersion": 1,
+  "sessionId": "session-1",
+  "commandId": "c-1",
+  "command": {
+    "kind": "send-message",
+    "text": "Local",
+    "options": {
+      "deliveryMode": "answer",
+      "queuedInputId": "input-1",
+      "interactionResponse": {
+        "kind": "choice",
+        "answers": [{ "questionId": "target", "values": ["Local"] }]
+      }
+    }
+  }
+}
+```
+
+`decodeExecutionCommandEnvelope` reads it as strictly as any command: an
+`interactionResponse` it cannot read refuses the command (`invalid-payload`).
+It does not check the answer against the request, which it never sees, and
+it does not bound the values: a person's own answer, the "Other" both
+providers offer, may be long.
+
+**The client.** `command()` never sends an `interactionResponse` to a host
+that has not said it takes one.
+
+- **Before sending.** A `send-message` carrying `options.interactionResponse`
+  first reads `/health`, within the health timeout or the caller's
+  `timeoutMs` when shorter. A message that also carries a file shares the one
+  read.
+- **Refusal.** If the host does not advertise `interactions.structured`, or
+  its descriptor is unreadable, the client throws an
+  `ExecutionInteractionResponseError` with code `interactions-unsupported`
+  and sends nothing. The answer is still the caller's to send as text.
+- **A failed probe** is its `ExecutionHostError`, with `operation: "health"`.
+- **Without `interactionResponse`** nothing changes: no probe, one request,
+  the same bytes.
+- **Asking ahead.** To decide whether to draw choices as buttons at all,
+  call `hostTakesStructuredInteractions(await host.health())` once.
+
+One race is left. A host rolled back between the probe and the send may drop
+the choices and read `text` alone, so a client puts the picked labels in
+`text` too.
+
+Not part of `interactions.structured`: ids for options, a request that
+changes after it is added, or choices on an `approval-request`.
+
 ## A task's output
 
 On a host advertising `tasks.output.v1` (MAR-3981), authenticated
@@ -1014,9 +1169,19 @@ on), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above),
 not sequenced — cover the rest. A refusal is an
 `ExecutionHostError` with a `kind` to branch on (`network`, `timeout`, `auth`,
 `not-found`, `http`, `malformed`), the status, and the host's own words. The
-one exception is a start whose `requires` the host cannot be trusted with:
-`ExecutionStartRequirementsError` (see
-[start requirements](#host-identity-devices-and-start-requirements)).
+exceptions each have their own error, and none is an `ExecutionHostError`:
+
+- a start whose `requires` the host cannot be trusted with:
+  `ExecutionStartRequirementsError` (see
+  [start requirements](#host-identity-devices-and-start-requirements));
+- inline attachments the client will not send:
+  `ExecutionInlineAttachmentsError` (see
+  [files beside images](#files-beside-images));
+- an answer naming choices to a host without `interactions.structured`:
+  `ExecutionInteractionResponseError` (see
+  [questions with choices](#questions-with-choices));
+- a one-shot or a task's output: `ExecutionOneShotError` and
+  `ExecutionTaskOutputError`, above.
 
 **The token** goes in the `Authorization` header and nowhere else. One no
 header could carry — a line break, a control character, anything outside ASCII
