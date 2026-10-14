@@ -15,6 +15,13 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "automation.create-pr",
   "attachments.inline-image",
   "commands.cancelQueued",
+  /**
+   * The host fills an `input-request` item's `request` when its provider asks
+   * in a structured way, within the bounds in `interactions.ts`, and takes a
+   * `send-message` answering one with `options.interactionResponse`. A host
+   * without it may drop that answer's choices and read its text alone, so
+   * the shared client refuses to send one there (MAR-4002).
+   */
   "interactions.structured",
   "turns.fileChanges",
   "turns.fileChanges.combined",
@@ -421,7 +428,12 @@ export interface ExecutionInteractionFormField {
   multiline?: boolean;
 }
 
-/** Structured human input requested by a provider. Unknown future kinds are dropped by tolerant readers. */
+/**
+ * Structured human input requested by a provider. Unknown future kinds are
+ * dropped by tolerant readers. A `choice` is read within the bounds in
+ * `interactions.ts`: what is past them is dropped, and the rest kept
+ * (MAR-4002).
+ */
 export type ExecutionInteractionRequest =
   | { kind: "text"; prompt: string }
   | { kind: "choice"; questions: ExecutionInteractionQuestion[] }
@@ -439,6 +451,12 @@ export type ExecutionInteractionRequest =
     }
   | { kind: "url"; title: string; message: string; url: string };
 
+/**
+ * A structured answer to an input request, sent as a `send-message`'s
+ * `options.interactionResponse` to a host advertising
+ * `interactions.structured`. A `choice` answer names each question by its
+ * `id` and each option by its `label`.
+ */
 export type ExecutionInteractionResponse =
   | {
       kind: "choice";
@@ -1139,7 +1157,8 @@ export type ExecutionDecodeFailureReason =
 /**
  * `dropped-invalid-field`: what is at `path` could not be read and was left
  * out. `dropped-excess-entries`: the list at `path` was cut at its cap, and
- * its later entries left unread (host profiles only, MAR-3725).
+ * its later entries left unread (host profiles, MAR-3725; a choice request's
+ * questions and options, MAR-4002).
  */
 export interface ExecutionDecodeWarning {
   reason: "dropped-invalid-field" | "dropped-excess-entries";

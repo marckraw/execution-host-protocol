@@ -12,6 +12,16 @@ import {
   isStringArray,
 } from "./guards.js";
 import {
+  EXECUTION_INTERACTION_DESCRIPTION_MAX_LENGTH,
+  EXECUTION_INTERACTION_HEADER_MAX_LENGTH,
+  EXECUTION_INTERACTION_LABEL_MAX_LENGTH,
+  EXECUTION_INTERACTION_OPTIONS_MAX_COUNT,
+  EXECUTION_INTERACTION_PREVIEW_MAX_LENGTH,
+  EXECUTION_INTERACTION_QUESTION_ID_MAX_LENGTH,
+  EXECUTION_INTERACTION_QUESTION_MAX_LENGTH,
+  EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT,
+} from "./interactions.js";
+import {
   EXECUTION_ACTOR_KINDS,
   EXECUTION_ATTENTION_STATES,
   EXECUTION_PROTOCOL_VERSION,
@@ -43,6 +53,7 @@ import {
   type ExecutionHostEventEnvelope,
   type ExecutionInlineAttachment,
   type ExecutionInteractionFormField,
+  type ExecutionInteractionChoiceOption,
   type ExecutionInteractionQuestion,
   type ExecutionInteractionRequest,
   type ExecutionInteractionResponse,
@@ -1219,7 +1230,9 @@ function decodeOptionalInteractionRequest(
   value: ExecutionInteractionRequest | undefined;
   warnings: ExecutionDecodeWarning[];
 } {
-  return decodeOptionalField(raw, path, decodeInteractionRequest);
+  return isRecord(raw) && raw.kind === "choice"
+    ? decodeChoiceRequest(raw, path)
+    : decodeOptionalField(raw, path, decodeInteractionRequest);
 }
 
 function decodeInteractionRequest(
@@ -1230,10 +1243,6 @@ function decodeInteractionRequest(
     return isNonEmptyString(raw.prompt)
       ? { kind: "text", prompt: raw.prompt }
       : null;
-  }
-  if (raw.kind === "choice") {
-    const questions = decodeInteractionQuestions(raw.questions);
-    return questions ? { kind: "choice", questions } : null;
   }
   if (raw.kind === "plan") {
     if (!isNonEmptyString(raw.plan)) return null;
@@ -1273,51 +1282,140 @@ function decodeInteractionRequest(
   return null;
 }
 
-function decodeInteractionQuestions(
-  raw: unknown,
-): ExecutionInteractionQuestion[] | null {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-  const questions: ExecutionInteractionQuestion[] = [];
-  for (const question of raw) {
-    if (
-      !isRecord(question) ||
-      !isNonEmptyString(question.id) ||
-      !isNonEmptyString(question.question) ||
-      !isNonEmptyString(question.header) ||
-      typeof question.multiSelect !== "boolean" ||
-      !Array.isArray(question.options)
-    ) {
-      return null;
-    }
-    const options = question.options.flatMap((option) => {
-      if (!isRecord(option) || !isNonEmptyString(option.label)) return [];
-      if (
-        !isOptionalString(option.description) ||
-        !isOptionalString(option.preview)
-      ) {
-        return [];
-      }
-      return [
-        {
-          label: option.label,
-          ...optionalProperty(
-            "description",
-            option.description as string | undefined,
-          ),
-          ...optionalProperty("preview", option.preview as string | undefined),
-        },
-      ];
-    });
-    if (options.length !== question.options.length) return null;
-    questions.push({
-      id: question.id,
-      question: question.question,
-      header: question.header,
-      options,
-      multiSelect: question.multiSelect,
-    });
+/**
+ * A choice request, read part by part within its bounds (MAR-4002): a list
+ * past its cap is cut there, and named once as `dropped-excess-entries`; a
+ * question or option that cannot be read, or whose `id`, text, `header` or
+ * `label` is past its bound, is dropped; a `description` or `preview` past
+ * its bound is dropped from its option. What is left is kept. Only a request
+ * left with no question is dropped, and named alone.
+ */
+function decodeChoiceRequest(
+  raw: Record<string, unknown>,
+  path: string,
+): {
+  value: ExecutionInteractionRequest | undefined;
+  warnings: ExecutionDecodeWarning[];
+} {
+  const warnings: ExecutionDecodeWarning[] = [];
+  const questions = Array.isArray(raw.questions)
+    ? decodeBoundedList(
+        raw.questions,
+        `${path}.questions`,
+        EXECUTION_INTERACTION_QUESTIONS_MAX_COUNT,
+        decodeInteractionQuestion,
+        warnings,
+      )
+    : [];
+  return questions.length > 0
+    ? { value: { kind: "choice", questions }, warnings }
+    : {
+        value: undefined,
+        warnings: [{ reason: "dropped-invalid-field", path }],
+      };
+}
+
+/**
+ * The entries of `raw` that `read` makes sense of, up to `max`. Entries past
+ * it are not read, so the work and the warnings stay bounded.
+ */
+function decodeBoundedList<T>(
+  raw: unknown[],
+  path: string,
+  max: number,
+  read: (
+    entry: unknown,
+    path: string,
+    warnings: ExecutionDecodeWarning[],
+  ) => T | null,
+  warnings: ExecutionDecodeWarning[],
+): T[] {
+  if (raw.length > max) {
+    warnings.push({ reason: "dropped-excess-entries", path });
   }
-  return questions;
+  const value: T[] = [];
+  for (const [index, entry] of raw.slice(0, max).entries()) {
+    const decoded = read(entry, `${path}.${index}`, warnings);
+    if (decoded === null) {
+      warnings.push({
+        reason: "dropped-invalid-field",
+        path: `${path}.${index}`,
+      });
+    } else {
+      value.push(decoded);
+    }
+  }
+  return value;
+}
+
+function decodeInteractionQuestion(
+  raw: unknown,
+  path: string,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionInteractionQuestion | null {
+  if (
+    !isRecord(raw) ||
+    !isBoundedString(raw.id, EXECUTION_INTERACTION_QUESTION_ID_MAX_LENGTH) ||
+    !isBoundedString(raw.question, EXECUTION_INTERACTION_QUESTION_MAX_LENGTH) ||
+    !isBoundedString(raw.header, EXECUTION_INTERACTION_HEADER_MAX_LENGTH) ||
+    typeof raw.multiSelect !== "boolean" ||
+    !Array.isArray(raw.options)
+  ) {
+    return null;
+  }
+  return {
+    id: raw.id,
+    question: raw.question,
+    header: raw.header,
+    options: decodeBoundedList(
+      raw.options,
+      `${path}.options`,
+      EXECUTION_INTERACTION_OPTIONS_MAX_COUNT,
+      decodeInteractionOption,
+      warnings,
+    ),
+    multiSelect: raw.multiSelect,
+  };
+}
+
+function decodeInteractionOption(
+  raw: unknown,
+  path: string,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionInteractionChoiceOption | null {
+  if (
+    !isRecord(raw) ||
+    !isBoundedString(raw.label, EXECUTION_INTERACTION_LABEL_MAX_LENGTH)
+  ) {
+    return null;
+  }
+  const description = decodeOptionalField(
+    raw.description,
+    `${path}.description`,
+    (value) =>
+      isTextWithin(value, EXECUTION_INTERACTION_DESCRIPTION_MAX_LENGTH)
+        ? value
+        : null,
+  );
+  const preview = decodeOptionalField(
+    raw.preview,
+    `${path}.preview`,
+    (value) =>
+      isTextWithin(value, EXECUTION_INTERACTION_PREVIEW_MAX_LENGTH)
+        ? value
+        : null,
+  );
+  warnings.push(...description.warnings, ...preview.warnings);
+  return {
+    label: raw.label,
+    ...optionalProperty("description", description.value),
+    ...optionalProperty("preview", preview.value),
+  };
+}
+
+/** A string of at most `maxLength` UTF-16 code units, empty included. */
+function isTextWithin(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.length <= maxLength;
 }
 
 function decodeInteractionFormFields(

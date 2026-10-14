@@ -43,6 +43,11 @@ export {
   type ExecutionSessionFollow,
 } from "./follow.js";
 export {
+  ExecutionInteractionResponseError,
+  hostTakesStructuredInteractions,
+  type ExecutionInteractionResponseErrorCode,
+} from "./interactions.js";
+export {
   hostEnforcesStartRequirements,
   parseExecutionHostHealth,
   SUPPORTED_EXECUTION_HOST_API_VERSIONS,
