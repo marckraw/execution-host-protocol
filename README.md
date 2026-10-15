@@ -289,6 +289,11 @@ its own words. Claude Code's part is a `permissionMode`. Codex's is an
 - The part for another provider is ignored under any preset.
 - So Codex's plan collaboration mode and its reviewer are asked for under
   `custom`, as Claude Code's `plan` is.
+- A Codex sandbox is what a session asks for, not always what runs. Where a
+  container or the machine itself is the boundary, a host may run
+  `workspace-write` as `danger-full-access`, so `ask` runs with full access
+  there. The provider listing says so per host, in `effectiveSandboxModes`
+  (see [the client](#the-client)).
 
 ```json
 {
@@ -1434,7 +1439,12 @@ A provider's `permissions` are what its sessions can ask for in
 `permissionConfig` (`features.permissions`): the `presets`, and its own part —
 `codex` with its `approvalPolicies` and `sandboxModes`, and the
 `approvalsReviewers` and `collaborationModes` a host offers a choice of
-(absent when it offers none), or `claudeCode` with its `permissionModes`. Its
+(absent when it offers none), or `claudeCode` with its `permissionModes`.
+Codex's `effectiveSandboxModes` maps each sandbox a session may ask for to the
+one that really runs on this host (`{ "workspace-write": "danger-full-access",
+"read-only": null }`), where null is one the host does not offer. A sandbox
+left out, or a map absent, is one the host does not speak for: unknown, not
+"as asked". An entry this build cannot read is dropped on its own (MAR-4054). Its
 `interactions` say how it asks a person something (`features.interactions`):
 the request kinds it asks with (`inputRequests`, on a host advertising
 `interactions.structured`) and the ones it never does (`unavailable`), from
