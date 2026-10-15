@@ -447,6 +447,83 @@ describe("the provider listing's permissions and interactions", () => {
     ).toEqual(permissions);
   });
 
+  describe("what each sandbox really runs as (MAR-4054)", () => {
+    const codexPermissions = (codexPart: Record<string, unknown>) =>
+      read({
+        id: "codex",
+        features: {
+          permissions: {
+            presets: ["ask", "yolo", "custom"],
+            codex: { ...codex.features.permissions.codex, ...codexPart },
+          },
+        },
+      })[0]?.permissions?.codex;
+
+    it("reads agents-daemon's map on a container host, where ask is full access", () => {
+      // #208 at 5771c69: a container cannot run read-only, and raises
+      // workspace-write; what it does not offer it leaves out.
+      expect(
+        codexPermissions({
+          sandboxModes: ["workspace-write", "danger-full-access"],
+          effectiveSandboxModes: {
+            "workspace-write": "danger-full-access",
+            "danger-full-access": "danger-full-access",
+          },
+          asks: { approvals: { never: false } },
+        }),
+      ).toEqual({
+        approvalPolicies: ["untrusted", "on-request", "never"],
+        sandboxModes: ["workspace-write", "danger-full-access"],
+        effectiveSandboxModes: {
+          "workspace-write": "danger-full-access",
+          "danger-full-access": "danger-full-access",
+        },
+      });
+    });
+
+    it("reads null as a sandbox this host does not offer", () => {
+      const effectiveSandboxModes = {
+        "read-only": null,
+        "workspace-write": "danger-full-access",
+        "danger-full-access": "danger-full-access",
+      };
+      expect(
+        codexPermissions({ effectiveSandboxModes })?.effectiveSandboxModes,
+      ).toEqual(effectiveSandboxModes);
+    });
+
+    it("leaves it absent when the host does not say: unknown, not as asked", () => {
+      expect(codexPermissions({})).not.toHaveProperty("effectiveSandboxModes");
+    });
+
+    it("drops an entry it cannot read, and keeps the rest", () => {
+      expect(
+        codexPermissions({
+          // Parsed, as a host's body is: `__proto__` is then a key of its own.
+          effectiveSandboxModes: JSON.parse(
+            '{"read-only":"read-only","workspace-write":"full-access",' +
+              '"danger-full-access":3,"network-off":"read-only",' +
+              '"__proto__":"read-only"}',
+          ),
+        })?.effectiveSandboxModes,
+      ).toEqual({ "read-only": "read-only" });
+    });
+
+    it("never costs the listing a map it cannot read", () => {
+      for (const effectiveSandboxModes of [
+        "danger-full-access",
+        ["workspace-write"],
+        null,
+      ]) {
+        const read = codexPermissions({ effectiveSandboxModes });
+        expect(read).toMatchObject({
+          sandboxModes: codex.features.permissions.codex.sandboxModes,
+        });
+        expect(read).not.toHaveProperty("effectiveSandboxModes");
+      }
+    });
+  });
+
   it("leaves out what the host does not say: unknown, not none", () => {
     const [provider] = read({ id: "gemini", features: {} });
     expect(provider).not.toHaveProperty("permissions");

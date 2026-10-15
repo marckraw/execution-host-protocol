@@ -1977,6 +1977,10 @@ function decodeExecutionProviderPermissions(
         approvalPolicies,
         sandboxModes,
         ...optionalProperty(
+          "effectiveSandboxModes",
+          readEffectiveSandboxModes(raw.codex.effectiveSandboxModes),
+        ),
+        ...optionalProperty(
           "approvalsReviewers",
           knownValues(raw.codex.approvalsReviewers, CODEX_APPROVALS_REVIEWERS),
         ),
@@ -2006,6 +2010,33 @@ function decodeExecutionProviderPermissions(
     ...optionalProperty("codex", codex),
     ...optionalProperty("claudeCode", claudeCode),
   };
+}
+
+/**
+ * Codex's sandboxes as they really run on a host (MAR-4054), read as
+ * tolerantly as the rest of the listing: left out when it is not an object,
+ * and an entry this build cannot read — a sandbox it does not know, on either
+ * side, or a value that is neither one nor null — dropped on its own.
+ */
+function readEffectiveSandboxModes(
+  raw: unknown,
+):
+  | NonNullable<ExecutionProviderPermissions["codex"]>["effectiveSandboxModes"]
+  | undefined {
+  if (!isRecord(raw)) return undefined;
+  const effective: Record<string, string | null> = {};
+  for (const [requested, runs] of Object.entries(raw)) {
+    if (
+      CODEX_SANDBOX_MODES.has(requested) &&
+      (runs === null ||
+        (typeof runs === "string" && CODEX_SANDBOX_MODES.has(runs)))
+    ) {
+      effective[requested] = runs;
+    }
+  }
+  return effective as NonNullable<
+    ExecutionProviderPermissions["codex"]
+  >["effectiveSandboxModes"];
 }
 
 const INTERACTION_REQUEST_KINDS: ReadonlySet<string> = new Set(

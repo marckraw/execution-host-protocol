@@ -1237,6 +1237,18 @@ export interface ExecutionProviderPermissions {
     approvalPolicies: ExecutionCodexApprovalPolicy[];
     sandboxModes: ExecutionCodexSandboxMode[];
     /**
+     * What each sandbox a session asks for really runs as on this host
+     * (MAR-4054), whichever preset or part asked for it. A host may raise one:
+     * where a container or the machine itself is the boundary,
+     * `workspace-write` runs as `danger-full-access`, and so Codex's `ask`
+     * runs with full access there. Null is a sandbox this host does not offer.
+     * A sandbox left out, or the whole map absent, is one the host does not
+     * speak for: unknown, not "as asked".
+     */
+    effectiveSandboxModes?: Partial<
+      Record<ExecutionCodexSandboxMode, ExecutionCodexSandboxMode | null>
+    >;
+    /**
      * The reviewers a session may name. Absent when the host does not offer a
      * choice, and then a session names none.
      */
