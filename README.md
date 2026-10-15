@@ -304,6 +304,13 @@ Content-Type: application/json
 - **Answered, and heard.** The host answers with the policy the next turn runs
   under (`{ protocolVersion, sessionId, permissionConfig }`), and tells
   followers with a `session.patch` delta carrying the whole `permissionConfig`.
+- **On the snapshot.** The session's snapshot carries the `permissionConfig`
+  its next turn runs under, so a client that reconnects, or never saw the
+  start, reads the mode there. It is read as tolerantly as the rest of the
+  snapshot: a host that does not say leaves it absent, which is unknown, not
+  the host's default; a field inside it this build does not know is ignored;
+  and one it cannot read is left out, named in `warnings`, and never costs the
+  snapshot (`decodeExecutionPermissionConfig` reads it).
 - **Strict coming in.** A preset, mode, policy, sandbox, reviewer or
   collaboration mode this build does not know is `invalid-payload`, and so is a
   field it does not know anywhere inside the policy: a misspelt

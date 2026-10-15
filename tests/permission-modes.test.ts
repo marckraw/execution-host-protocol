@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { decodeExecutionSessionSnapshot } from "../src/client/index.js";
 import {
   EXECUTION_INTERACTION_REQUEST_KINDS,
   EXECUTION_PROTOCOL_VERSION,
   decodeExecutionEventEnvelope,
+  decodeExecutionPermissionConfig,
   decodeExecutionProviderListResponse,
   decodeExecutionSessionPatchRequest,
   decodeExecutionSessionPatchResponse,
@@ -426,6 +428,100 @@ describe("the provider listing's permissions and interactions", () => {
       presets: ["ask"],
       codex: codex.features.permissions.codex,
     });
+  });
+});
+
+describe("the snapshot says what mode the next turn runs under", () => {
+  const snapshot = {
+    protocolVersion: 1,
+    sessionId: "accent_8f2c",
+    providerId: "codex",
+    commandable: true,
+    status: "idle",
+    attention: "none",
+    activity: null,
+    metadata: null,
+    continuationToken: "thread-1",
+    contextWindow: null,
+    conversation: [],
+    turns: [],
+    lastSeq: 12,
+    workspace: null,
+    prUrl: null,
+    roomId: null,
+  };
+
+  it.each([ask, fullAccess, codexPlan])("reads %j", (permissionConfig) => {
+    const decoded = decodeExecutionSessionSnapshot({
+      ...snapshot,
+      permissionConfig,
+    });
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value.permissionConfig).toEqual(permissionConfig);
+    expect(decoded.warnings).toBeUndefined();
+  });
+
+  it("ignores a field inside it that it does not know", () => {
+    expect(
+      decodeExecutionSessionSnapshot({
+        ...snapshot,
+        permissionConfig: {
+          ...codexPlan,
+          codex: { ...codexPlan.codex, networkAccess: true },
+          resolvedAt: "2026-10-15T08:00:00.000Z",
+        },
+      }),
+    ).toEqual({
+      ok: true,
+      value: expect.objectContaining({ permissionConfig: codexPlan }),
+    });
+  });
+
+  it("leaves it absent when the host does not say: unknown, not the default", () => {
+    const decoded = decodeExecutionSessionSnapshot(snapshot);
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value).not.toHaveProperty("permissionConfig");
+    expect(decoded.warnings).toBeUndefined();
+  });
+
+  it("drops a policy it cannot read, says so, and keeps the snapshot", () => {
+    for (const permissionConfig of [
+      null,
+      "yolo",
+      { preset: "supervised" },
+      { preset: "custom", codex: { ...codexPlan.codex, sandbox: "none" } },
+      {
+        preset: "custom",
+        claudeCode: { permissionMode: "plan" },
+        codex: { ...codexPlan.codex, collaborationMode: "pair" },
+      },
+    ]) {
+      const decoded = decodeExecutionSessionSnapshot({
+        ...snapshot,
+        permissionConfig,
+      });
+      if (!decoded.ok) throw new Error(decoded.reason);
+      expect(decoded.value).not.toHaveProperty("permissionConfig");
+      expect(decoded.value).toMatchObject({ sessionId: "accent_8f2c" });
+      expect(decoded.warnings).toEqual([
+        { reason: "dropped-invalid-field", path: "permissionConfig" },
+      ]);
+    }
+  });
+});
+
+describe("decodeExecutionPermissionConfig", () => {
+  it("reads a policy, and refuses what is not one", () => {
+    expect(decodeExecutionPermissionConfig(codexPlan)).toEqual({
+      ok: true,
+      value: codexPlan,
+    });
+    for (const raw of [undefined, null, {}, { preset: "auto" }]) {
+      expect(decodeExecutionPermissionConfig(raw)).toEqual({
+        ok: false,
+        reason: "invalid-payload",
+      });
+    }
   });
 });
 

@@ -1650,6 +1650,21 @@ export function decodeExecutionTurnFileChange(
   return change ? success(change) : failure("invalid-payload");
 }
 
+/**
+ * Reads a session's permission policy, as a session snapshot carries it
+ * (MAR-4052): as a start's `config.permissionConfig` is read, ignoring a field
+ * this build does not know, but refusing a value it does not know.
+ */
+export function decodeExecutionPermissionConfig(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionPermissionConfig> {
+  if (raw === undefined) return failure("invalid-payload");
+  const permissionConfig = decodeOptionalPermissionConfig(raw);
+  return permissionConfig.ok && permissionConfig.value
+    ? success(permissionConfig.value)
+    : failure("invalid-payload");
+}
+
 /** Reads a context-window reading, as the `context-window` event carries it. */
 export function decodeExecutionContextWindow(
   raw: unknown,
