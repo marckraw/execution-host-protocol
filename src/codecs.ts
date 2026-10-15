@@ -24,6 +24,7 @@ import {
 import {
   EXECUTION_ACTOR_KINDS,
   EXECUTION_ATTENTION_STATES,
+  EXECUTION_INTERACTION_REQUEST_KINDS,
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_PROVIDER_ACCOUNT_SOURCES,
   EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH,
@@ -66,8 +67,10 @@ import {
   type ExecutionProvider,
   type ExecutionProviderAccount,
   type ExecutionProviderAccountSource,
+  type ExecutionProviderInteractions,
   type ExecutionProviderListResponse,
   type ExecutionProviderModel,
+  type ExecutionProviderPermissions,
   type ExecutionProtocolDescriptor,
   type ExecutionResearchEvidencePack,
   type ExecutionResearchEvidenceSource,
@@ -154,11 +157,12 @@ const ATTRIBUTION_MAX_LENGTH = 256;
 /** The bound on a model or effort id a session patch names (MAR-3662). */
 const MODEL_SELECTION_MAX_LENGTH = 256;
 
-/** Every field a session patch may name (MAR-3662). */
+/** Every field a session patch may name (MAR-3662, MAR-4052). */
 const SESSION_PATCH_FIELDS: ReadonlySet<string> = new Set([
   "title",
   "model",
   "effort",
+  "permissionConfig",
 ]);
 
 /**
@@ -390,7 +394,8 @@ export function encodeExecutionSessionPatchRequest(
  * `model` and `effort` are null (the default) or a non-empty id of at most 256
  * characters; whether the provider offers it is the host's question, answered
  * from its catalog. `title` is null or a string, and what the host keeps of it
- * is the host's rule.
+ * is the host's rule. `permissionConfig` is read as a start's is, but a field
+ * inside it this build does not know is refused too (MAR-4052).
  */
 export function decodeExecutionSessionPatchRequest(
   raw: string,
@@ -416,17 +421,24 @@ export function decodeExecutionSessionPatchRequest(
   ) {
     return failure("invalid-payload");
   }
+  const permissionConfig = decodeOptionalPermissionConfig(
+    value.permissionConfig,
+    { strict: true },
+  );
+  if (!permissionConfig.ok) return permissionConfig;
   return success({
     ...optionalProperty("title", value.title as string | null | undefined),
     ...optionalProperty("model", value.model as string | null | undefined),
     ...optionalProperty("effort", value.effort as string | null | undefined),
+    ...optionalProperty("permissionConfig", permissionConfig.value),
   });
 }
 
 /**
  * Reads a host's answer to a session patch (MAR-3662): the title-only answer
  * every host gives, `{ sessionId, title }`, or a selection answer, which adds
- * `protocolVersion`, `model` and `effort`. Fields it does not know are ignored.
+ * `protocolVersion`, `model` and `effort`, and `permissionConfig` when the
+ * patch named one (MAR-4052). Fields it does not know are ignored.
  */
 export function decodeExecutionSessionPatchResponse(
   raw: unknown,
@@ -447,6 +459,8 @@ export function decodeExecutionSessionPatchResponse(
   ) {
     return failure("invalid-payload");
   }
+  const permissionConfig = decodeOptionalPermissionConfig(raw.permissionConfig);
+  if (!permissionConfig.ok) return permissionConfig;
   return success({
     ...optionalProperty(
       "protocolVersion",
@@ -456,6 +470,7 @@ export function decodeExecutionSessionPatchResponse(
     ...optionalProperty("title", raw.title as string | null | undefined),
     ...optionalProperty("model", raw.model as string | null | undefined),
     ...optionalProperty("effort", raw.effort as string | null | undefined),
+    ...optionalProperty("permissionConfig", permissionConfig.value),
   });
 }
 
@@ -570,6 +585,16 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
           return failure("invalid-payload");
         }
         patch.effort = raw.patch.effort;
+      }
+      // A running session's mode, after a change (MAR-4052).
+      if (raw.patch.permissionConfig !== undefined) {
+        const permissionConfig = decodeOptionalPermissionConfig(
+          raw.patch.permissionConfig,
+        );
+        if (!permissionConfig.ok || !permissionConfig.value) {
+          return failure("invalid-payload");
+        }
+        patch.permissionConfig = permissionConfig.value;
       }
       if (raw.patch.runningTasks !== undefined) {
         if (!isNonNegativeInteger(raw.patch.runningTasks)) {
@@ -1625,6 +1650,21 @@ export function decodeExecutionTurnFileChange(
   return change ? success(change) : failure("invalid-payload");
 }
 
+/**
+ * Reads a session's permission policy, as a session snapshot carries it
+ * (MAR-4052): as a start's `config.permissionConfig` is read, ignoring a field
+ * this build does not know, but refusing a value it does not know.
+ */
+export function decodeExecutionPermissionConfig(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionPermissionConfig> {
+  if (raw === undefined) return failure("invalid-payload");
+  const permissionConfig = decodeOptionalPermissionConfig(raw);
+  return permissionConfig.ok && permissionConfig.value
+    ? success(permissionConfig.value)
+    : failure("invalid-payload");
+}
+
 /** Reads a context-window reading, as the `context-window` event carries it. */
 export function decodeExecutionContextWindow(
   raw: unknown,
@@ -1766,7 +1806,9 @@ export function decodeExecutionProjectListResponse(
  * provider's `features.effortLevels`; `available` and `authenticated` stay
  * absent when the host does not say, never guessed `false`. A provider's
  * `account` never costs the catalogue: one this build cannot read is left out,
- * and its text is cleaned and cut (MAR-3821).
+ * and its text is cleaned and cut (MAR-3821). Nor do its `permissions` and
+ * `interactions` (MAR-4052): a shape this build cannot read is left out, and a
+ * value it does not know is dropped from its list.
  */
 export function decodeExecutionProviderListResponse(
   raw: unknown,
@@ -1838,7 +1880,111 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
     models,
     ...optionalProperty("attachmentKinds", attachmentKinds),
     ...optionalProperty("account", decodeExecutionProviderAccount(raw.account)),
+    ...optionalProperty(
+      "permissions",
+      decodeExecutionProviderPermissions(
+        isRecord(raw.features) ? raw.features.permissions : undefined,
+      ),
+    ),
+    ...optionalProperty(
+      "interactions",
+      decodeExecutionProviderInteractions(
+        isRecord(raw.features) ? raw.features.interactions : undefined,
+      ),
+    ),
   };
+}
+
+/**
+ * Optional and read tolerantly (MAR-4052), as `account` is. Left out whole
+ * when it is not an object or its `presets` are not a list; a provider's part
+ * whose lists cannot be read is left out alone, and so is an optional list.
+ */
+function decodeExecutionProviderPermissions(
+  raw: unknown,
+): ExecutionProviderPermissions | undefined {
+  if (!isRecord(raw)) return undefined;
+  const presets = knownValues(raw.presets, PERMISSION_PRESETS);
+  if (!presets) return undefined;
+
+  let codex: ExecutionProviderPermissions["codex"] = undefined;
+  if (isRecord(raw.codex)) {
+    const approvalPolicies = knownValues(
+      raw.codex.approvalPolicies,
+      CODEX_APPROVAL_POLICIES,
+    );
+    const sandboxModes = knownValues(
+      raw.codex.sandboxModes,
+      CODEX_SANDBOX_MODES,
+    );
+    if (approvalPolicies && sandboxModes) {
+      codex = {
+        approvalPolicies,
+        sandboxModes,
+        ...optionalProperty(
+          "approvalsReviewers",
+          knownValues(raw.codex.approvalsReviewers, CODEX_APPROVALS_REVIEWERS),
+        ),
+        ...optionalProperty(
+          "collaborationModes",
+          knownValues(raw.codex.collaborationModes, CODEX_COLLABORATION_MODES),
+        ),
+      } as ExecutionProviderPermissions["codex"];
+    }
+  }
+
+  let claudeCode: ExecutionProviderPermissions["claudeCode"] = undefined;
+  if (isRecord(raw.claudeCode)) {
+    const permissionModes = knownValues(
+      raw.claudeCode.permissionModes,
+      CLAUDE_PERMISSION_MODES,
+    );
+    if (permissionModes) {
+      claudeCode = {
+        permissionModes,
+      } as ExecutionProviderPermissions["claudeCode"];
+    }
+  }
+
+  return {
+    presets: presets as ExecutionProviderPermissions["presets"],
+    ...optionalProperty("codex", codex),
+    ...optionalProperty("claudeCode", claudeCode),
+  };
+}
+
+const INTERACTION_REQUEST_KINDS: ReadonlySet<string> = new Set(
+  EXECUTION_INTERACTION_REQUEST_KINDS,
+);
+
+/**
+ * Optional and read tolerantly (MAR-4052): left out when it is not an object,
+ * or either list is not one. A kind this build does not know is dropped, and
+ * `passiveUpdates` is not read.
+ */
+function decodeExecutionProviderInteractions(
+  raw: unknown,
+): ExecutionProviderInteractions | undefined {
+  if (!isRecord(raw)) return undefined;
+  const inputRequests = knownValues(
+    raw.inputRequests,
+    INTERACTION_REQUEST_KINDS,
+  );
+  const unavailable = knownValues(raw.unavailable, INTERACTION_REQUEST_KINDS);
+  if (!inputRequests || !unavailable) return undefined;
+  return { inputRequests, unavailable } as ExecutionProviderInteractions;
+}
+
+/**
+ * The values in `raw` this build knows, in the host's order, each once;
+ * undefined when `raw` is not a list of strings.
+ */
+function knownValues(
+  raw: unknown,
+  known: ReadonlySet<string>,
+): string[] | undefined {
+  if (!isStringArray(raw)) return undefined;
+  return [...new Set(raw.filter((value) => known.has(value)))];
 }
 
 /**
@@ -2202,6 +2348,8 @@ const CODEX_SANDBOX_MODES = new Set([
   "workspace-write",
   "danger-full-access",
 ]);
+const CODEX_APPROVALS_REVIEWERS = new Set(["user", "auto_review"]);
+const CODEX_COLLABORATION_MODES = new Set(["default", "plan"]);
 const CLAUDE_PERMISSION_MODES = new Set([
   "default",
   "acceptEdits",
@@ -2211,24 +2359,56 @@ const CLAUDE_PERMISSION_MODES = new Set([
   "bypassPermissions",
 ]);
 
+const PERMISSION_CONFIG_FIELDS = new Set(["preset", "codex", "claudeCode"]);
+const CODEX_PERMISSION_FIELDS = new Set([
+  "approvalPolicy",
+  "sandbox",
+  "approvalsReviewer",
+  "collaborationMode",
+]);
+const CLAUDE_PERMISSION_FIELDS = new Set(["permissionMode"]);
+
+/**
+ * A session's permission policy. `strict` is for a session patch (MAR-4052),
+ * which refuses a field it does not know at any depth: a misspelt one that was
+ * dropped would read as a change made.
+ */
 function decodeOptionalPermissionConfig(
   raw: unknown,
-): ExecutionDecodeResult<ExecutionStartConfig["permissionConfig"]> {
+  { strict = false }: { strict?: boolean } = {},
+): ExecutionDecodeResult<ExecutionPermissionConfig | undefined> {
   if (raw === undefined) return success(undefined);
-  if (!isRecord(raw) || !PERMISSION_PRESETS.has(String(raw.preset)))
+  const known = (value: Record<string, unknown>, fields: Set<string>) =>
+    !strict || Object.keys(value).every((field) => fields.has(field));
+  if (
+    !isRecord(raw) ||
+    !known(raw, PERMISSION_CONFIG_FIELDS) ||
+    !PERMISSION_PRESETS.has(String(raw.preset))
+  )
     return failure("invalid-payload");
 
   let codex: ExecutionPermissionConfig["codex"] = undefined;
   if (raw.codex !== undefined) {
     if (
       !isRecord(raw.codex) ||
+      !known(raw.codex, CODEX_PERMISSION_FIELDS) ||
       !CODEX_APPROVAL_POLICIES.has(String(raw.codex.approvalPolicy)) ||
-      !CODEX_SANDBOX_MODES.has(String(raw.codex.sandbox))
+      !CODEX_SANDBOX_MODES.has(String(raw.codex.sandbox)) ||
+      !(
+        raw.codex.approvalsReviewer === undefined ||
+        CODEX_APPROVALS_REVIEWERS.has(String(raw.codex.approvalsReviewer))
+      ) ||
+      !(
+        raw.codex.collaborationMode === undefined ||
+        CODEX_COLLABORATION_MODES.has(String(raw.codex.collaborationMode))
+      )
     )
       return failure("invalid-payload");
     codex = {
       approvalPolicy: raw.codex.approvalPolicy,
       sandbox: raw.codex.sandbox,
+      ...optionalProperty("approvalsReviewer", raw.codex.approvalsReviewer),
+      ...optionalProperty("collaborationMode", raw.codex.collaborationMode),
     } as ExecutionPermissionConfig["codex"];
   }
 
@@ -2236,6 +2416,7 @@ function decodeOptionalPermissionConfig(
   if (raw.claudeCode !== undefined) {
     if (
       !isRecord(raw.claudeCode) ||
+      !known(raw.claudeCode, CLAUDE_PERMISSION_FIELDS) ||
       !CLAUDE_PERMISSION_MODES.has(String(raw.claudeCode.permissionMode))
     )
       return failure("invalid-payload");

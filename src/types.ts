@@ -451,6 +451,17 @@ export type ExecutionInteractionRequest =
     }
   | { kind: "url"; title: string; message: string; url: string };
 
+/** The kinds an `ExecutionInteractionRequest` comes in (MAR-4052). */
+export const EXECUTION_INTERACTION_REQUEST_KINDS = [
+  "text",
+  "choice",
+  "plan",
+  "form",
+  "url",
+] as const satisfies ReadonlyArray<ExecutionInteractionRequest["kind"]>;
+export type ExecutionInteractionRequestKind =
+  (typeof EXECUTION_INTERACTION_REQUEST_KINDS)[number];
+
 /**
  * A structured answer to an input request, sent as a `send-message`'s
  * `options.interactionResponse` to a host advertising
@@ -640,6 +651,12 @@ export type ExecutionSessionDelta =
         /** The reasoning effort those turns run with; null is the model's default. */
         effort?: string | null;
         /**
+         * The session's permission policy, whole, after a change to a running
+         * session (MAR-4052). It applies from the next turn: one already
+         * running keeps the mode it started with.
+         */
+        permissionConfig?: ExecutionPermissionConfig;
+        /**
          * How many tasks the session's agent started that still run: a
          * background command, a subagent (MAR-3679). With status `answered`
          * it is what the agent is still doing after its answer; a session is
@@ -740,15 +757,34 @@ export type ExecutionPermissionPreset = "ask" | "yolo" | "custom";
 export type ExecutionCodexApprovalPolicy = "untrusted" | "on-request" | "never";
 export type ExecutionCodexSandboxMode =
   "read-only" | "workspace-write" | "danger-full-access";
+/**
+ * Who answers Codex's approval requests: the person (`user`), or Codex's own
+ * reviewer, which approves for them (`auto_review`). Codex's own words.
+ */
+export type ExecutionCodexApprovalsReviewer = "user" | "auto_review";
+/**
+ * Codex's collaboration mode, in its own words: `plan` investigates and
+ * proposes a plan before changing anything, asking its questions as `choice`
+ * requests; `default` works as Codex always has.
+ */
+export type ExecutionCodexCollaborationMode = "default" | "plan";
 export type ExecutionClaudePermissionMode =
   "default" | "acceptEdits" | "auto" | "dontAsk" | "plan" | "bypassPermissions";
 
-/** Provider permission policy selected for a Session. */
+/**
+ * Provider permission policy selected for a Session: at its start
+ * (`config.permissionConfig`), or for a running one by a session patch
+ * (MAR-4052).
+ */
 export interface ExecutionPermissionConfig {
   preset: ExecutionPermissionPreset;
   codex?: {
     approvalPolicy: ExecutionCodexApprovalPolicy;
     sandbox: ExecutionCodexSandboxMode;
+    /** Absent leaves it to the host, which asks the person (`user`). */
+    approvalsReviewer?: ExecutionCodexApprovalsReviewer;
+    /** Absent is `default`. */
+    collaborationMode?: ExecutionCodexCollaborationMode;
   };
   claudeCode?: {
     permissionMode: ExecutionClaudePermissionMode;
@@ -934,6 +970,13 @@ export interface ExecutionStartRequest {
  * selection, resuming the same conversation. It checks the selection against
  * its provider's catalog of models and the efforts each takes, and refuses one
  * the catalog does not offer.
+ *
+ * `permissionConfig` changes a running session's mode (MAR-4052): it replaces
+ * the session's whole permission policy, as a start's `config.permissionConfig`
+ * sets it, and applies from the next turn. A turn already running keeps the
+ * mode it started with: the host applies the change when that turn ends, or
+ * refuses it while a turn runs, with its reason. A host that predates the
+ * field refuses it as any unknown field, rather than drop it.
  */
 export interface ExecutionSessionPatchRequest {
   /** The session's display title; null clears it. The host may shorten it, and refuses a blank one. */
@@ -942,14 +985,18 @@ export interface ExecutionSessionPatchRequest {
   model?: string | null;
   /** The reasoning effort they run with; null is the model's default. */
   effort?: string | null;
+  /** The session's permission policy from the next turn, whole (MAR-4052). */
+  permissionConfig?: ExecutionPermissionConfig;
 }
 
 /**
  * A host's answer to a session patch (MAR-3662). A patch naming a model or an
  * effort is answered with the selection the session's next turn will run on —
  * `model` and `effort` both, whichever one it named — and with the title as
- * the host stored it, when it named one too. A patch naming only a title is
- * answered as hosts have always answered one: `{ sessionId, title }`.
+ * the host stored it, when it named one too. A patch naming a
+ * `permissionConfig` is answered with the policy the next turn runs under
+ * (MAR-4052). A patch naming only a title is answered as hosts have always
+ * answered one: `{ sessionId, title }`.
  */
 export interface ExecutionSessionPatchResponse {
   /** Absent from a title-only answer, which predates the contract. */
@@ -958,6 +1005,7 @@ export interface ExecutionSessionPatchResponse {
   title?: string | null;
   model?: string | null;
   effort?: string | null;
+  permissionConfig?: ExecutionPermissionConfig;
 }
 
 /**
@@ -1073,6 +1121,60 @@ export interface ExecutionProvider {
    * cannot read: unknown, not "signed out".
    */
   account?: ExecutionProviderAccount;
+  /**
+   * The permission modes a session of this provider can ask for
+   * (`features.permissions`, MAR-4052). Absent when the host does not say, or
+   * says it in a shape this build cannot read: unknown, not none.
+   */
+  permissions?: ExecutionProviderPermissions;
+  /**
+   * The structured requests the provider asks with (`features.interactions`,
+   * MAR-4052). Absent when the host does not say, or says it in a shape this
+   * build cannot read: unknown, not none.
+   */
+  interactions?: ExecutionProviderInteractions;
+}
+
+/**
+ * What a provider's sessions can ask for in `permissionConfig`: the presets,
+ * and each provider's own settings. A value this build does not know is left
+ * out, since nothing could ask for it. A provider's part is absent when the
+ * provider has none.
+ */
+export interface ExecutionProviderPermissions {
+  presets: ExecutionPermissionPreset[];
+  codex?: {
+    approvalPolicies: ExecutionCodexApprovalPolicy[];
+    sandboxModes: ExecutionCodexSandboxMode[];
+    /**
+     * The reviewers a session may name. Absent when the host does not offer a
+     * choice, and then a session names none.
+     */
+    approvalsReviewers?: ExecutionCodexApprovalsReviewer[];
+    /**
+     * The collaboration modes a session may name. Absent when the host does
+     * not offer a choice, and then a session names none.
+     */
+    collaborationModes?: ExecutionCodexCollaborationMode[];
+  };
+  claudeCode?: {
+    permissionModes: ExecutionClaudePermissionMode[];
+  };
+}
+
+/**
+ * How a provider asks a person something. A kind this build does not know is
+ * left out of both lists.
+ */
+export interface ExecutionProviderInteractions {
+  /**
+   * The kinds it asks with, as structured `input-request` items (on a host
+   * advertising `interactions.structured`). Which ones a session meets
+   * depends on its mode: a full-access session may never ask.
+   */
+  inputRequests: ExecutionInteractionRequestKind[];
+  /** The kinds it never asks with. */
+  unavailable: ExecutionInteractionRequestKind[];
 }
 
 /**

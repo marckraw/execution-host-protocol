@@ -2,6 +2,7 @@ import {
   decodeExecutionActivitySignal,
   decodeExecutionContextWindow,
   decodeExecutionConversationItem,
+  decodeExecutionPermissionConfig,
   decodeExecutionSessionMetadata,
   decodeExecutionSessionWorkspace,
   decodeExecutionTurn,
@@ -17,6 +18,7 @@ import {
   type ExecutionConversationItem,
   type ExecutionDecodeResult,
   type ExecutionDecodeWarning,
+  type ExecutionPermissionConfig,
   type ExecutionSessionMetadata,
   type ExecutionSessionStatus,
   type ExecutionSessionWorkspace,
@@ -50,6 +52,13 @@ export interface ExecutionSessionSnapshot {
   model?: string | null;
   /** The reasoning effort it runs with; null is the model's default. Absent as `model` is. */
   effort?: string | null;
+  /**
+   * The permission policy the session's next turn runs under: what it started
+   * with, or the last change a session patch made (MAR-4052). Absent when the
+   * host did not say, or said it in a shape this build cannot read: unknown,
+   * not the host's default.
+   */
+  permissionConfig?: ExecutionPermissionConfig;
   /** Whether the host will take commands for it now. */
   commandable: boolean;
   status: ExecutionSessionStatus;
@@ -151,6 +160,13 @@ export function decodeExecutionSessionSnapshot(
     undefined,
     selectionId,
   );
+  // As tolerant as the rest of the snapshot (MAR-4052): a policy this build
+  // cannot read is left out and named, and never costs the snapshot.
+  const permissionConfig = field<ExecutionPermissionConfig | undefined>(
+    "permissionConfig",
+    undefined,
+    decodeExecutionPermissionConfig,
+  );
 
   return {
     ok: true,
@@ -160,6 +176,7 @@ export function decodeExecutionSessionSnapshot(
       providerId: raw.providerId,
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
+      ...(permissionConfig === undefined ? {} : { permissionConfig }),
       commandable: field<boolean>("commandable", false, (value) =>
         typeof value === "boolean" ? { ok: true, value } : { ok: false },
       ),

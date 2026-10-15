@@ -60,6 +60,30 @@ describe("patching a session", () => {
     });
   });
 
+  it("changes a running session's mode and reads the one it runs under (MAR-4052)", async () => {
+    const permissionConfig = {
+      preset: "custom",
+      codex: {
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        approvalsReviewer: "auto_review",
+        collaborationMode: "plan",
+      },
+    } as const;
+    host.patchBody = (sessionId, patch) => ({
+      protocolVersion: 1,
+      sessionId,
+      permissionConfig: patch.permissionConfig,
+    });
+
+    expect(
+      await client().patchSession("session-1", { permissionConfig }),
+    ).toEqual({ status: "patched", sessionId: "session-1", permissionConfig });
+    expect(host.patchRequests).toEqual([
+      { sessionId: "session-1", body: { permissionConfig } },
+    ]);
+  });
+
   it("says when the host has no such session", async () => {
     expect(
       await client().patchSession("session-gone", { model: "opus" }),
@@ -87,6 +111,8 @@ describe("patching a session", () => {
       { model: "" },
       { effort: "e".repeat(257) },
       { model: "opus", providerId: "claude" },
+      { permissionConfig: { preset: "full" } },
+      { permissionConfig: { preset: "yolo", claudeCodee: {} } },
     ]) {
       await expect(
         client().patchSession(
