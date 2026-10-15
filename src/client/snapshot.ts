@@ -53,10 +53,11 @@ export interface ExecutionSessionSnapshot {
   /** The reasoning effort it runs with; null is the model's default. Absent as `model` is. */
   effort?: string | null;
   /**
-   * The permission policy the session's next turn runs under: what it started
-   * with, or the last change a session patch made (MAR-4052). Absent when the
-   * host did not say, or said it in a shape this build cannot read: unknown,
-   * not the host's default.
+   * The permission policy the session's next turn runs under, whoever set it:
+   * the start, a session patch, or the host itself, as when an approved plan
+   * leaves plan mode (MAR-4052). Absent when the host did not say — by leaving
+   * it out, or with null — or said it in a shape this build cannot read:
+   * unknown, not the host's default.
    */
   permissionConfig?: ExecutionPermissionConfig;
   /** Whether the host will take commands for it now. */
@@ -161,12 +162,16 @@ export function decodeExecutionSessionSnapshot(
     selectionId,
   );
   // As tolerant as the rest of the snapshot (MAR-4052): a policy this build
-  // cannot read is left out and named, and never costs the snapshot.
-  const permissionConfig = field<ExecutionPermissionConfig | undefined>(
-    "permissionConfig",
-    undefined,
-    decodeExecutionPermissionConfig,
-  );
+  // cannot read is left out and named, and never costs the snapshot. Null is
+  // how a host says it does not know, which is no defect to name.
+  const permissionConfig =
+    raw.permissionConfig === null
+      ? undefined
+      : field<ExecutionPermissionConfig | undefined>(
+          "permissionConfig",
+          undefined,
+          decodeExecutionPermissionConfig,
+        );
 
   return {
     ok: true,

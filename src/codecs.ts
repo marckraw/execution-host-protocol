@@ -28,6 +28,8 @@ import {
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_PROVIDER_ACCOUNT_SOURCES,
   EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH,
+  EXECUTION_SESSION_PATCH_APPLIES_FROM,
+  EXECUTION_SESSION_PATCH_REFUSAL_CODES,
   EXECUTION_SESSION_STATUSES,
   EXECUTION_TURN_ORIGINS,
   type ExecutionActivitySignal,
@@ -82,6 +84,9 @@ import {
   type ExecutionSendMessageOptions,
   type ExecutionSessionDelta,
   type ExecutionSessionMetadata,
+  type ExecutionSessionPatchAppliesFrom,
+  type ExecutionSessionPatchRefusal,
+  type ExecutionSessionPatchRefusalCode,
   type ExecutionSessionPatchRequest,
   type ExecutionSessionPatchResponse,
   type ExecutionSessionStatus,
@@ -437,8 +442,11 @@ export function decodeExecutionSessionPatchRequest(
 /**
  * Reads a host's answer to a session patch (MAR-3662): the title-only answer
  * every host gives, `{ sessionId, title }`, or a selection answer, which adds
- * `protocolVersion`, `model` and `effort`, and `permissionConfig` when the
- * patch named one (MAR-4052). Fields it does not know are ignored.
+ * `protocolVersion`, `model` and `effort`, and `permissionConfig` and
+ * `appliesFrom` when the patch named a policy (MAR-4052). Fields it does not
+ * know are ignored, and so is an `appliesFrom` in words it does not know: by
+ * then the host has taken the patch, and a reader that refused its answer
+ * would report a change made as one that failed.
  */
 export function decodeExecutionSessionPatchResponse(
   raw: unknown,
@@ -471,8 +479,55 @@ export function decodeExecutionSessionPatchResponse(
     ...optionalProperty("model", raw.model as string | null | undefined),
     ...optionalProperty("effort", raw.effort as string | null | undefined),
     ...optionalProperty("permissionConfig", permissionConfig.value),
+    ...optionalProperty(
+      "appliesFrom",
+      (EXECUTION_SESSION_PATCH_APPLIES_FROM as readonly unknown[]).includes(
+        raw.appliesFrom,
+      )
+        ? (raw.appliesFrom as ExecutionSessionPatchAppliesFrom)
+        : undefined,
+    ),
   });
 }
+
+/**
+ * Reads a host's coded refusal of a session patch (MAR-4052), as
+ * `decodeExecutionStartRequirementsRefusal` reads a start's. Any other body —
+ * a code this build does not know, none, or a host predating them — is
+ * `invalid-payload`, and the refusal stays the host's words alone. The body
+ * alone is read here: a client honours a code only with its status
+ * (`EXECUTION_SESSION_PATCH_REFUSAL_STATUS`).
+ */
+export function decodeExecutionSessionPatchRefusal(
+  raw: unknown,
+): ExecutionDecodeResult<ExecutionSessionPatchRefusal> {
+  if (
+    !isRecord(raw) ||
+    !(EXECUTION_SESSION_PATCH_REFUSAL_CODES as readonly unknown[]).includes(
+      raw.code,
+    )
+  ) {
+    return failure("invalid-payload");
+  }
+  const code = raw.code as ExecutionSessionPatchRefusalCode;
+  return success({
+    error:
+      typeof raw.error === "string" && raw.error.trim() !== ""
+        ? raw.error
+        : SESSION_PATCH_REFUSAL_WORDS[code],
+    code,
+  });
+}
+
+/** What a coded refusal says when the host gave no words of its own. */
+const SESSION_PATCH_REFUSAL_WORDS: Record<
+  ExecutionSessionPatchRefusalCode,
+  string
+> = {
+  "turn-running": "A turn is running; the mode can change once it ends",
+  "unsupported-on-host": "This host cannot change this session's mode",
+  "unsupported-for-provider": "The session's provider does not offer this mode",
+};
 
 function decodeEvent(raw: unknown): KindAwareResult<ExecutionHostEvent> {
   if (!isRecord(raw) || typeof raw.kind !== "string") {

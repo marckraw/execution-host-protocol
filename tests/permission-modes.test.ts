@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import { decodeExecutionSessionSnapshot } from "../src/client/index.js";
 import {
   EXECUTION_INTERACTION_REQUEST_KINDS,
+  EXECUTION_PROTOCOL_CAPABILITY_IDS,
   EXECUTION_PROTOCOL_VERSION,
+  EXECUTION_SESSION_PATCH_REFUSAL_CODES,
+  EXECUTION_SESSION_PATCH_REFUSAL_STATUS,
   decodeExecutionEventEnvelope,
   decodeExecutionPermissionConfig,
   decodeExecutionProviderListResponse,
+  decodeExecutionSessionPatchRefusal,
   decodeExecutionSessionPatchRequest,
   decodeExecutionSessionPatchResponse,
   decodeExecutionStartRequest,
@@ -22,7 +26,8 @@ import {
 /**
  * MAR-4052: a running session's mode changes by a session patch; Codex's
  * reviewer and plan collaboration mode; and the provider listing says which
- * modes each provider has and which ones ask.
+ * modes each provider has and which ones ask. 0.28: the capability, the
+ * coded refusal, `appliesFrom`, and what a provider part means.
  */
 
 const ask: ExecutionPermissionConfig = {
@@ -30,6 +35,15 @@ const ask: ExecutionPermissionConfig = {
   claudeCode: { permissionMode: "default" },
 };
 const fullAccess: ExecutionPermissionConfig = { preset: "yolo" };
+// accent.'s FULL_ACCESS: full access, with every provider's part spelt out.
+// Under `yolo` the parts change nothing, but they are read, and valid.
+const accentFullAccess: ExecutionPermissionConfig = {
+  preset: "yolo",
+  claudeCode: { permissionMode: "bypassPermissions" },
+  codex: { approvalPolicy: "never", sandbox: "danger-full-access" },
+};
+// `custom` with no part for the session's provider runs as `ask`.
+const customWithoutParts: ExecutionPermissionConfig = { preset: "custom" };
 const codexPlan: ExecutionPermissionConfig = {
   preset: "custom",
   codex: {
@@ -133,6 +147,8 @@ describe("a session patch changes a running session's mode", () => {
     ["Claude's ask mode", { permissionConfig: ask }],
     ["full access", { permissionConfig: fullAccess }],
     ["Codex's plan with its reviewer", { permissionConfig: codexPlan }],
+    ["accent.'s FULL_ACCESS", { permissionConfig: accentFullAccess }],
+    ["custom with no part", { permissionConfig: customWithoutParts }],
     [
       "a mode beside a selection",
       { model: "claude-opus-5-5", effort: "high", permissionConfig: ask },
@@ -192,23 +208,50 @@ describe("a session patch changes a running session's mode", () => {
   });
 });
 
+describe("the capability", () => {
+  it("is a known id", () => {
+    expect(EXECUTION_PROTOCOL_CAPABILITY_IDS).toContain(
+      "sessions.permissionModes.v1",
+    );
+  });
+});
+
 describe("the host's answer to a mode change", () => {
-  it("reads the policy the next turn runs under", () => {
-    expect(
-      decodeExecutionSessionPatchResponse({
+  it.each(["now", "next-turn"] as const)(
+    "reads the policy the next turn runs under, applying from %s",
+    (appliesFrom) => {
+      expect(
+        decodeExecutionSessionPatchResponse({
+          protocolVersion: 1,
+          sessionId: "accent_8f2c",
+          permissionConfig: codexPlan,
+          appliesFrom,
+          resolvedBy: "daemon",
+        }),
+      ).toEqual({
+        ok: true,
+        value: {
+          protocolVersion: 1,
+          sessionId: "accent_8f2c",
+          permissionConfig: codexPlan,
+          appliesFrom,
+        },
+      });
+    },
+  );
+
+  it("takes a change made over an appliesFrom it cannot read: unknown, not refused", () => {
+    for (const appliesFrom of ["turn-end", null, 3]) {
+      const decoded = decodeExecutionSessionPatchResponse({
         protocolVersion: 1,
         sessionId: "accent_8f2c",
         permissionConfig: codexPlan,
-        appliesFrom: "next-turn",
-      }),
-    ).toEqual({
-      ok: true,
-      value: {
-        protocolVersion: 1,
-        sessionId: "accent_8f2c",
-        permissionConfig: codexPlan,
-      },
-    });
+        appliesFrom,
+      });
+      if (!decoded.ok) throw new Error(decoded.reason);
+      expect(decoded.value).not.toHaveProperty("appliesFrom");
+      expect(decoded.value.permissionConfig).toEqual(codexPlan);
+    }
   });
 
   it("refuses a policy it cannot read", () => {
@@ -223,6 +266,57 @@ describe("the host's answer to a mode change", () => {
           permissionConfig,
         }),
       ).toEqual({ ok: false, reason: "invalid-payload" });
+    }
+  });
+});
+
+describe("a host's coded refusal of a session patch", () => {
+  it.each([
+    ["turn-running", 409],
+    ["unsupported-on-host", 400],
+    ["unsupported-for-provider", 400],
+  ] as const)("reads %s, which comes with a %i", (code, status) => {
+    expect(
+      decodeExecutionSessionPatchRefusal({
+        error: "Not now",
+        code,
+        sessionId: "accent_8f2c",
+      }),
+    ).toEqual({ ok: true, value: { error: "Not now", code } });
+    expect(EXECUTION_SESSION_PATCH_REFUSAL_STATUS[code]).toBe(status);
+  });
+
+  it("gives every code a status", () => {
+    expect(Object.keys(EXECUTION_SESSION_PATCH_REFUSAL_STATUS).sort()).toEqual(
+      [...EXECUTION_SESSION_PATCH_REFUSAL_CODES].sort(),
+    );
+  });
+
+  it("speaks for a host that gave no words", () => {
+    for (const error of [undefined, "", "  ", 5]) {
+      const decoded = decodeExecutionSessionPatchRefusal({
+        error,
+        code: "unsupported-for-provider",
+      });
+      if (!decoded.ok) throw new Error(decoded.reason);
+      expect(decoded.value.error).toBe(
+        "The session's provider does not offer this mode",
+      );
+    }
+  });
+
+  it("leaves any other refusal to the host's words", () => {
+    for (const raw of [
+      { error: "Invalid session patch: claude has no model gpt-6" },
+      { error: "Busy", code: "turn-busy" },
+      { error: "Busy", code: null },
+      "turn-running",
+      null,
+    ]) {
+      expect(decodeExecutionSessionPatchRefusal(raw)).toEqual({
+        ok: false,
+        reason: "invalid-payload",
+      });
     }
   });
 });
@@ -484,9 +578,18 @@ describe("the snapshot says what mode the next turn runs under", () => {
     expect(decoded.warnings).toBeUndefined();
   });
 
+  it("takes null as a host saying it does not know: absent, and no defect", () => {
+    const decoded = decodeExecutionSessionSnapshot({
+      ...snapshot,
+      permissionConfig: null,
+    });
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value).not.toHaveProperty("permissionConfig");
+    expect(decoded.warnings).toBeUndefined();
+  });
+
   it("drops a policy it cannot read, says so, and keeps the snapshot", () => {
     for (const permissionConfig of [
-      null,
       "yolo",
       { preset: "supervised" },
       { preset: "custom", codex: { ...codexPlan.codex, sandbox: "none" } },

@@ -43,6 +43,11 @@ export {
   type ExecutionSessionFollow,
 } from "./follow.js";
 export {
+  ExecutionSessionPatchError,
+  hostTakesPermissionModes,
+  type ExecutionSessionPatchErrorCode,
+} from "./session-patch.js";
+export {
   ExecutionInteractionResponseError,
   hostTakesStructuredInteractions,
   type ExecutionInteractionResponseErrorCode,

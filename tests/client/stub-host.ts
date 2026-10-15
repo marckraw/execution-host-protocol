@@ -104,6 +104,8 @@ export interface StubHost {
   patchRequests: Array<{ sessionId: string; body: Record<string, unknown> }>;
   /** Status the next session patches answer with; 400 refuses the selection. */
   patchStatus: number;
+  /** The body of a refused patch; by default a catalog refusal, uncoded. */
+  patchRefusal: unknown;
   /** The answer to a session patch; by default the patch, echoed. */
   patchBody:
     ((sessionId: string, patch: Record<string, unknown>) => unknown) | null;
@@ -260,6 +262,7 @@ export function createStubHost(): StubHost {
     files: new Map(),
     patchRequests: [],
     patchStatus: 200,
+    patchRefusal: null,
     patchBody: null,
     sessions: new Set(["session-1"]),
     snapshots: new Map(),
@@ -609,7 +612,9 @@ export function createStubHost(): StubHost {
         }
         if (host.patchStatus !== 200) {
           return json(
-            { error: "Invalid session patch: claude has no model gpt-6" },
+            host.patchRefusal ?? {
+              error: "Invalid session patch: claude has no model gpt-6",
+            },
             host.patchStatus,
           );
         }

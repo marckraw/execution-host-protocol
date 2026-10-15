@@ -55,6 +55,16 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    */
   "sessions.modelSelection.v1",
   /**
+   * A running session's mode changes by a session patch naming
+   * `permissionConfig` (MAR-4052): the host applies it, says when in the
+   * answer's `appliesFrom`, refuses one it cannot apply with an
+   * `ExecutionSessionPatchRefusal`, reports the current policy on the
+   * session's snapshot, and tells followers with a `session.patch` carrying
+   * it. A host without it refuses the field as any unknown one, so the shared
+   * client refuses such a patch itself, before sending it.
+   */
+  "sessions.permissionModes.v1",
+  /**
    * The host answers `POST /v0/oneshot`: one answer to one prompt from one of
    * its providers, with no tools, no workspace, no session, and nothing kept
    * afterwards. The shared client always sends `contract: "oneshot.v1"`, and
@@ -775,6 +785,22 @@ export type ExecutionClaudePermissionMode =
  * Provider permission policy selected for a Session: at its start
  * (`config.permissionConfig`), or for a running one by a session patch
  * (MAR-4052).
+ *
+ * The `preset` decides, and a provider part (`codex`, `claudeCode`) applies
+ * only under `custom`:
+ *
+ * - `ask`: the provider asks before what it would ask about by default
+ *   (Claude Code's `default` mode; Codex `on-request` in `workspace-write`).
+ * - `yolo`: full access (Claude Code's `bypassPermissions`; Codex `never` in
+ *   `danger-full-access`).
+ * - `custom`: the part for the session's provider, whole. Without one, the
+ *   session runs as `ask`.
+ *
+ * Under `ask` and `yolo` the parts are still read, and must be valid, but
+ * change nothing: a client may send both parts with every preset. The part for
+ * another provider is ignored under any preset. So Codex's plan collaboration
+ * mode and its reviewer, like Claude Code's `plan`, are asked for under
+ * `custom`.
  */
 export interface ExecutionPermissionConfig {
   preset: ExecutionPermissionPreset;
@@ -971,12 +997,17 @@ export interface ExecutionStartRequest {
  * its provider's catalog of models and the efforts each takes, and refuses one
  * the catalog does not offer.
  *
- * `permissionConfig` changes a running session's mode (MAR-4052): it replaces
- * the session's whole permission policy, as a start's `config.permissionConfig`
- * sets it, and applies from the next turn. A turn already running keeps the
- * mode it started with: the host applies the change when that turn ends, or
- * refuses it while a turn runs, with its reason. A host that predates the
- * field refuses it as any unknown field, rather than drop it.
+ * `permissionConfig` changes a running session's mode, on a host advertising
+ * `sessions.permissionModes.v1` (MAR-4052). It replaces the session's whole
+ * permission policy, as a start's `config.permissionConfig` sets it. A turn
+ * already running keeps the mode it started with: the host either takes the
+ * change for when that turn ends, and answers `appliesFrom: "next-turn"`, or
+ * refuses it while the turn runs, with a 409 coded `turn-running`. Between
+ * turns it applies at once (`appliesFrom: "now"`). A mode the host or the
+ * session's provider cannot run is a 400 coded `unsupported-on-host` or
+ * `unsupported-for-provider` (`ExecutionSessionPatchRefusal`). A refused patch
+ * changes nothing it names. A host that predates the field refuses it as any
+ * unknown field, rather than drop it.
  */
 export interface ExecutionSessionPatchRequest {
   /** The session's display title; null clears it. The host may shorten it, and refuses a blank one. */
@@ -994,9 +1025,9 @@ export interface ExecutionSessionPatchRequest {
  * effort is answered with the selection the session's next turn will run on —
  * `model` and `effort` both, whichever one it named — and with the title as
  * the host stored it, when it named one too. A patch naming a
- * `permissionConfig` is answered with the policy the next turn runs under
- * (MAR-4052). A patch naming only a title is answered as hosts have always
- * answered one: `{ sessionId, title }`.
+ * `permissionConfig` is answered with the policy the next turn runs under,
+ * and with `appliesFrom` (MAR-4052). A patch naming only a title is answered
+ * as hosts have always answered one: `{ sessionId, title }`.
  */
 export interface ExecutionSessionPatchResponse {
   /** Absent from a title-only answer, which predates the contract. */
@@ -1006,6 +1037,65 @@ export interface ExecutionSessionPatchResponse {
   model?: string | null;
   effort?: string | null;
   permissionConfig?: ExecutionPermissionConfig;
+  /**
+   * When the patch's changes take effect (MAR-4052). Absent when the host does
+   * not say, or says it in words this build does not know: unknown.
+   */
+  appliesFrom?: ExecutionSessionPatchAppliesFrom;
+}
+
+/**
+ * `now` — no turn was running: the session is under the change already, and
+ * its next turn runs with it. `next-turn` — a turn is running, and keeps what
+ * it started with; the change applies when it ends, to every turn after it.
+ * Either way the host has taken the change: its snapshot and the
+ * `session.patch` it sends carry it from the answer on.
+ */
+export const EXECUTION_SESSION_PATCH_APPLIES_FROM = [
+  "now",
+  "next-turn",
+] as const;
+export type ExecutionSessionPatchAppliesFrom =
+  (typeof EXECUTION_SESSION_PATCH_APPLIES_FROM)[number];
+
+/**
+ * Why a host refused a session patch, as `ExecutionSessionPatchRefusal.code`
+ * says it (MAR-4052). Each comes with one status:
+ *
+ * - `turn-running` (409): a turn is running and this host does not change a
+ *   session's mode during one. Nothing changed; the same patch may be sent
+ *   again once the turn ends.
+ * - `unsupported-on-host` (400): this host cannot change this session's mode
+ *   while it runs. Sending it again will not help.
+ * - `unsupported-for-provider` (400): the session's provider does not offer
+ *   what the policy asks of it: a preset, mode, policy, sandbox, reviewer or
+ *   collaboration mode its listing's `permissions` leave out. Only the part
+ *   for the session's own provider is checked.
+ */
+export const EXECUTION_SESSION_PATCH_REFUSAL_CODES = [
+  "turn-running",
+  "unsupported-on-host",
+  "unsupported-for-provider",
+] as const;
+export type ExecutionSessionPatchRefusalCode =
+  (typeof EXECUTION_SESSION_PATCH_REFUSAL_CODES)[number];
+
+/** The status each `ExecutionSessionPatchRefusalCode` comes with. */
+export const EXECUTION_SESSION_PATCH_REFUSAL_STATUS = {
+  "turn-running": 409,
+  "unsupported-on-host": 400,
+  "unsupported-for-provider": 400,
+} as const satisfies Record<ExecutionSessionPatchRefusalCode, number>;
+
+/**
+ * The body of a host's coded refusal of a session patch (MAR-4052), as the
+ * start-requirements refusal is one of a start. `code` is what a client
+ * branches on; `error` is for a person. A refusal with no code, such as a
+ * model the catalog does not offer, stays the host's words alone.
+ */
+export interface ExecutionSessionPatchRefusal {
+  error: string;
+  code: ExecutionSessionPatchRefusalCode;
 }
 
 /**
