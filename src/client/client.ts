@@ -1,6 +1,7 @@
 import {
   decodeExecutionProjectListResponse,
   decodeExecutionProviderListResponse,
+  decodeExecutionSessionPatchRefusal,
   decodeExecutionSessionPatchRequest,
   decodeExecutionSessionPatchResponse,
   decodeExecutionSessionWorkspace,
@@ -17,6 +18,7 @@ import {
 } from "../host-profile.js";
 import {
   EXECUTION_PROTOCOL_VERSION,
+  EXECUTION_SESSION_PATCH_REFUSAL_STATUS,
   type ExecutionActor,
   type ExecutionDecodeWarning,
   type ExecutionHostCommand,
@@ -25,6 +27,7 @@ import {
   type ExecutionPermissionConfig,
   type ExecutionProject,
   type ExecutionProvider,
+  type ExecutionSessionPatchAppliesFrom,
   type ExecutionSessionPatchRequest,
   type ExecutionSessionWorkspace,
   type ExecutionStartRequest,
@@ -39,6 +42,11 @@ import {
   hostTakesStructuredInteractions,
   interactionResponseRefusal,
 } from "./interactions.js";
+import {
+  ExecutionSessionPatchError,
+  hostTakesPermissionModes,
+  permissionModesRefusal,
+} from "./session-patch.js";
 import {
   followExecutionSession,
   type ExecutionFollowOptions,
@@ -208,8 +216,9 @@ export interface ExecutionCommandResult {
  * `patched` — the host took the patch, and says what it holds now: the title
  * as stored when the patch named one, the model and effort the session's
  * next turn runs on when it named either (MAR-3662), and the permission policy
- * it runs under when it named one (MAR-4052). `no-session` — the host has no
- * session by that id (404).
+ * it runs under when it named one, with when that applies (MAR-4052).
+ * `no-session` — the host has no session by that id (404). A coded refusal is
+ * an `ExecutionSessionPatchError`.
  */
 export type ExecutionSessionPatchResult =
   | {
@@ -219,6 +228,7 @@ export type ExecutionSessionPatchResult =
       model?: string | null;
       effort?: string | null;
       permissionConfig?: ExecutionPermissionConfig;
+      appliesFrom?: ExecutionSessionPatchAppliesFrom;
     }
   | { status: "no-session"; sessionId: string };
 
@@ -299,10 +309,15 @@ export interface ExecutionHostClient {
    * Changes a session's settings (`PATCH /v0/execution/sessions/:id`): its
    * title, on a host advertising `sessions.modelSelection.v1` the model
    * and effort its turns run on from the next one (MAR-3662), and its
-   * permission policy (MAR-4052). A patch the protocol would refuse throws
-   * before anything is sent; a selection the host's catalog does not offer,
-   * or a mode it will not change now, is its 400, an `ExecutionHostError`
-   * carrying the host's reason.
+   * permission policy on a host advertising `sessions.permissionModes.v1`
+   * (MAR-4052). A patch the protocol would refuse throws a `TypeError` before
+   * anything is sent. A `permissionConfig` for a host without the capability
+   * costs one `/health` and throws an `ExecutionSessionPatchError` coded
+   * `unsupported-on-host`, unsent. The host's coded refusals are one too —
+   * `turn-running` (409), `unsupported-on-host` and
+   * `unsupported-for-provider` (400) — and any other refusal, such as a
+   * selection its catalog does not offer, is an `ExecutionHostError` carrying
+   * the host's reason.
    */
   patchSession(
     sessionId: string,
@@ -971,6 +986,20 @@ export function createExecutionHostClient(
           "A session patch names at least one of title, model, effort and permissionConfig, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string, permissionConfig a permission policy with no field it does not know",
         );
       }
+      // A host that predates live modes refuses the field as an unknown one,
+      // in words about something else; the capability says it before then.
+      if (patch.permissionConfig !== undefined) {
+        const probed = await health({
+          signal: requestOptions.signal,
+          timeoutMs: Math.min(
+            healthTimeoutMs,
+            requestOptions.timeoutMs ?? healthTimeoutMs,
+          ),
+        });
+        if (!hostTakesPermissionModes(probed)) {
+          throw permissionModesRefusal(sessionId, probed);
+        }
+      }
       return request(
         "patch session",
         sessionPath(sessionId),
@@ -986,7 +1015,27 @@ export function createExecutionHostClient(
             await response.body?.cancel().catch(() => {});
             return { status: "no-session", sessionId };
           }
-          if (!response.ok) throw await refusal("patch session", response);
+          if (!response.ok) {
+            const text = await refusalText(response);
+            // A code is honoured only with the status it comes with.
+            const coded = decodeExecutionSessionPatchRefusal(parseOrNull(text));
+            if (
+              coded.ok &&
+              EXECUTION_SESSION_PATCH_REFUSAL_STATUS[coded.value.code] ===
+                response.status
+            ) {
+              throw new ExecutionSessionPatchError(
+                coded.value.code,
+                boundedReason(coded.value.error, connection.scrub),
+                { sessionId, status: response.status },
+              );
+            }
+            throw new ExecutionHostError(
+              kindOfStatus(response.status),
+              reasonOfText(text, response.status, connection.scrub),
+              { operation: "patch session", status: response.status },
+            );
+          }
           const decoded = decodeExecutionSessionPatchResponse(
             await answer.json(),
           );

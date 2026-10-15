@@ -110,7 +110,7 @@ describe("the host's answer to a session patch (MAR-3662)", () => {
         sessionId: "accent_8f2c",
         model: "claude-opus-5-5",
         effort: null,
-        appliesFrom: "next-turn",
+        catalogCheckedAt: "2026-10-15T08:00:00.000Z",
       }),
     ).toEqual({
       ok: true,

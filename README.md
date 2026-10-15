@@ -262,10 +262,9 @@ The host answers with the selection the next turn will run on:
 ## Permission modes, and changing a running session's
 
 A session's permission policy is its `permissionConfig`
-(`ExecutionPermissionConfig`): a `preset` (`ask`, `yolo` for full access, or
-`custom`), and for `custom` each provider's own settings in its own words.
-Claude Code's is a `permissionMode`. Codex's is an `approvalPolicy` and a
-`sandbox`, and two more it may name:
+(`ExecutionPermissionConfig`): a `preset`, and each provider's own settings in
+its own words. Claude Code's part is a `permissionMode`. Codex's is an
+`approvalPolicy` and a `sandbox`, and two more it may name:
 
 - **`approvalsReviewer`**: who answers Codex's approval requests, `user` (the
   person) or `auto_review` (Codex's own reviewer, which approves for them).
@@ -273,6 +272,23 @@ Claude Code's is a `permissionMode`. Codex's is an `approvalPolicy` and a
 - **`collaborationMode`**: `plan` has Codex investigate and propose a plan
   before changing anything, asking its questions as `choice` requests;
   `default`, as when it is absent, works as Codex always has.
+
+**The preset decides; a provider part applies only under `custom`.**
+
+| `preset` | Claude Code                        | Codex                                |
+| -------- | ---------------------------------- | ------------------------------------ |
+| `ask`    | `default`                          | `on-request` in `workspace-write`    |
+| `yolo`   | `bypassPermissions` (full access)  | `never` in `danger-full-access`      |
+| `custom` | its `claudeCode` part, or as `ask` | its `codex` part, whole, or as `ask` |
+
+- Under `custom`, the part for the session's own provider is the policy, whole.
+  `custom` without that part runs as `ask`.
+- Under `ask` and `yolo`, the parts are still read, and must be valid, but they
+  change nothing. A client may send every provider's part with every preset,
+  as accent.'s full access does (`yolo` with both parts spelt out).
+- The part for another provider is ignored under any preset.
+- So Codex's plan collaboration mode and its reviewer are asked for under
+  `custom`, as Claude Code's `plan` is.
 
 ```json
 {
@@ -286,8 +302,9 @@ Claude Code's is a `permissionMode`. Codex's is an `approvalPolicy` and a
 }
 ```
 
-A session starts with one (`config.permissionConfig`), and a running session's
-changes by patching it, as its model does:
+A session starts with one (`config.permissionConfig`). On a host advertising
+`sessions.permissionModes.v1`, a running session's changes by patching it, as
+its model does:
 
 ```http
 PATCH /v0/execution/sessions/accent_8f2c
@@ -296,27 +313,62 @@ Content-Type: application/json
 { "permissionConfig": { "preset": "yolo" } }
 ```
 
-- **Whole, from the next turn.** The patch's `permissionConfig` replaces the
-  session's whole policy; nothing is merged. A turn already running keeps the
-  mode it started with: the host applies the change when that turn ends, or
-  refuses it while a turn runs, with its reason. Between turns it applies at
-  once.
-- **Answered, and heard.** The host answers with the policy the next turn runs
-  under (`{ protocolVersion, sessionId, permissionConfig }`), and tells
-  followers with a `session.patch` delta carrying the whole `permissionConfig`.
+```json
+{
+  "protocolVersion": 1,
+  "sessionId": "accent_8f2c",
+  "permissionConfig": { "preset": "yolo" },
+  "appliesFrom": "now"
+}
+```
+
+- **Whole.** The patch's `permissionConfig` replaces the session's whole
+  policy; nothing is merged.
+- **Never under a running turn.** A turn already running keeps the mode it
+  started with. Between turns the change applies at once, and the answer says
+  `appliesFrom: "now"`. During a turn the host does one of two things:
+  - it takes the change for when the turn ends, and answers
+    `appliesFrom: "next-turn"`;
+  - or it refuses, with a 409 coded `turn-running`.
+
+  An `appliesFrom` in words a reader does not know is left out (unknown), and
+  never costs the answer: by then the change was made.
+
+- **Refused with a code.** A refusal a client should branch on is an
+  `ExecutionSessionPatchRefusal`, `{ error, code }`
+  (`decodeExecutionSessionPatchRefusal`). Each code has one status
+  (`EXECUTION_SESSION_PATCH_REFUSAL_STATUS`):
+  - `turn-running` (409): a turn is running. Send it again once it ends.
+  - `unsupported-on-host` (400): this host cannot change this session's mode
+    while it runs. Sending it again will not help.
+  - `unsupported-for-provider` (400): the session's provider does not offer
+    what the policy asks of it: something its listing's `permissions` leave
+    out. Only the part for the session's own provider is checked.
+
+  A refused patch changes nothing it names. Any other refusal, such as a model
+  the catalog does not offer, stays the host's words alone.
+
+- **Heard.** Once the host takes a change, it tells followers with a
+  `session.patch` delta carrying the whole `permissionConfig`, and so it does
+  for a change of its own, as when an approved plan leaves plan mode.
 - **On the snapshot.** The session's snapshot carries the `permissionConfig`
-  its next turn runs under, so a client that reconnects, or never saw the
-  start, reads the mode there. It is read as tolerantly as the rest of the
-  snapshot: a host that does not say leaves it absent, which is unknown, not
-  the host's default; a field inside it this build does not know is ignored;
-  and one it cannot read is left out, named in `warnings`, and never costs the
-  snapshot (`decodeExecutionPermissionConfig` reads it).
+  its next turn runs under, whoever set it, so a client that reconnects, or
+  never saw the start, reads the mode there. It is read as tolerantly as the
+  rest of the snapshot:
+  - a host that does not say leaves it absent, by leaving it out or with null,
+    which is unknown, not the host's default;
+  - a field inside it this build does not know is ignored;
+  - one it cannot read is left out, named in `warnings`, and never costs the
+    snapshot (`decodeExecutionPermissionConfig` reads it).
 - **Strict coming in.** A preset, mode, policy, sandbox, reviewer or
-  collaboration mode this build does not know is `invalid-payload`, and so is a
+  collaboration mode this build does not know is `invalid-payload`. So is a
   field it does not know anywhere inside the policy: a misspelt
-  `approvalReviewer` that was dropped would read as a change made. A host that
-  predates the field refuses it as any unknown patch field, rather than ignore
-  it.
+  `approvalReviewer` that was dropped would read as a change made.
+- **Not sent where it would be misread.** A host without the capability
+  refuses the field as any unknown patch field, in words about something else.
+  So the client asks `/health` first and throws `unsupported-on-host` itself,
+  without sending anything, and a client can hide its switcher there
+  (`hostTakesPermissionModes`).
 
 Which modes a provider has, and which of them ask, is on its catalogue entry:
 `permissions` and `interactions` (see [the client](#the-client)).
@@ -1225,7 +1277,8 @@ token; `handshake()` adds the token probe and never throws. `projects()`,
 `providers()` (the catalogue: each provider, its models and the efforts each
 takes), `snapshot()` (null for a session the host does not have),
 `patchSession()` (a session's title, the model and effort its next turn runs
-on, or its permission mode), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above),
+on, or its permission mode, whose refusals are an `ExecutionSessionPatchError`
+with a `code`), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above),
 `taskOutput()` (the end of a task's output, above) and
 `events()` — one connection, decoded but
 not sequenced — cover the rest. A refusal is an
@@ -1242,6 +1295,9 @@ exceptions each have their own error, and none is an `ExecutionHostError`:
 - an answer naming choices to a host without `interactions.structured`:
   `ExecutionInteractionResponseError` (see
   [questions with choices](#questions-with-choices));
+- a session patch refused with a code, or a mode for a host without
+  `sessions.permissionModes.v1`: `ExecutionSessionPatchError` (see
+  [permission modes](#permission-modes-and-changing-a-running-sessions));
 - a one-shot or a task's output: `ExecutionOneShotError` and
   `ExecutionTaskOutputError`, above.
 

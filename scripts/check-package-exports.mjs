@@ -13,6 +13,16 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.decodeExecutionCommandEnvelope, "function");
   assert.equal(typeof loaded.decodeExecutionSessionPatchRequest, "function");
   assert.equal(typeof loaded.decodeExecutionProviderListResponse, "function");
+  // Permission modes (MAR-4052): 0.27's readers, and 0.28's coded refusal.
+  assert.equal(typeof loaded.decodeExecutionPermissionConfig, "function");
+  assert.equal(typeof loaded.EXECUTION_INTERACTION_REQUEST_KINDS, "object");
+  assert.equal(typeof loaded.decodeExecutionSessionPatchRefusal, "function");
+  assert.deepEqual(loaded.EXECUTION_SESSION_PATCH_REFUSAL_STATUS, {
+    "turn-running": 409,
+    "unsupported-on-host": 400,
+    "unsupported-for-provider": 400,
+  });
+  assert.equal(loaded.ExecutionSessionPatchError, undefined);
   assert.equal(typeof loaded.decodeExecutionHostProfile, "function");
   assert.equal(
     typeof loaded.decodeExecutionStartRequirementsRefusal,
@@ -56,6 +66,8 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof loaded.hostTakesInlineFiles, "function");
   assert.equal(typeof loaded.ExecutionInteractionResponseError, "function");
   assert.equal(typeof loaded.hostTakesStructuredInteractions, "function");
+  assert.equal(typeof loaded.ExecutionSessionPatchError, "function");
+  assert.equal(typeof loaded.hostTakesPermissionModes, "function");
   assert.equal(typeof loaded.decodeExecutionSessionSnapshot, "function");
   const client = loaded.createExecutionHostClient({
     baseUrl: "http://127.0.0.1:1",
