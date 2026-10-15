@@ -1,5 +1,11 @@
 # @mrck-labs/execution-host-protocol
 
+## 0.27.0
+
+### Minor Changes
+
+- 4375869: Permission modes (MAR-4052). A running session's mode changes by a session patch: `ExecutionSessionPatchRequest` takes `permissionConfig` (the whole policy, from the next turn, strict about any field it does not know), the host's answer and `session.patch` deltas carry it, and `patchSession()` sends it and returns it. The session snapshot carries the session's current `permissionConfig`, read tolerantly (absent when the host does not say; an unreadable one is left out with a warning), and `decodeExecutionPermissionConfig` reads one on its own. Codex's part of `ExecutionPermissionConfig` gains `approvalsReviewer` (`user` | `auto_review`) and `collaborationMode` (`default` | `plan`). `ExecutionProvider` from `GET /v0/providers` now reads `permissions` (presets, and each provider's modes, policies, sandboxes, reviewers and collaboration modes) and `interactions` (`inputRequests`, `unavailable`) from the provider's `features`, tolerantly: an unreadable shape is left out and an unknown value dropped. New `EXECUTION_INTERACTION_REQUEST_KINDS`.
+
 ## 0.26.0
 
 ### Minor Changes
