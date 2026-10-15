@@ -259,6 +259,61 @@ The host answers with the selection the next turn will run on:
   `model` and `effort`; a host that does not report them leaves both absent,
   which is not the same as reporting the defaults.
 
+## Permission modes, and changing a running session's
+
+A session's permission policy is its `permissionConfig`
+(`ExecutionPermissionConfig`): a `preset` (`ask`, `yolo` for full access, or
+`custom`), and for `custom` each provider's own settings in its own words.
+Claude Code's is a `permissionMode`. Codex's is an `approvalPolicy` and a
+`sandbox`, and two more it may name:
+
+- **`approvalsReviewer`**: who answers Codex's approval requests, `user` (the
+  person) or `auto_review` (Codex's own reviewer, which approves for them).
+  Absent leaves it to the host, which asks the person.
+- **`collaborationMode`**: `plan` has Codex investigate and propose a plan
+  before changing anything, asking its questions as `choice` requests;
+  `default`, as when it is absent, works as Codex always has.
+
+```json
+{
+  "preset": "custom",
+  "codex": {
+    "approvalPolicy": "on-request",
+    "sandbox": "workspace-write",
+    "approvalsReviewer": "auto_review",
+    "collaborationMode": "plan"
+  }
+}
+```
+
+A session starts with one (`config.permissionConfig`), and a running session's
+changes by patching it, as its model does:
+
+```http
+PATCH /v0/execution/sessions/accent_8f2c
+Content-Type: application/json
+
+{ "permissionConfig": { "preset": "yolo" } }
+```
+
+- **Whole, from the next turn.** The patch's `permissionConfig` replaces the
+  session's whole policy; nothing is merged. A turn already running keeps the
+  mode it started with: the host applies the change when that turn ends, or
+  refuses it while a turn runs, with its reason. Between turns it applies at
+  once.
+- **Answered, and heard.** The host answers with the policy the next turn runs
+  under (`{ protocolVersion, sessionId, permissionConfig }`), and tells
+  followers with a `session.patch` delta carrying the whole `permissionConfig`.
+- **Strict coming in.** A preset, mode, policy, sandbox, reviewer or
+  collaboration mode this build does not know is `invalid-payload`, and so is a
+  field it does not know anywhere inside the policy: a misspelt
+  `approvalReviewer` that was dropped would read as a change made. A host that
+  predates the field refuses it as any unknown patch field, rather than ignore
+  it.
+
+Which modes a provider has, and which of them ask, is on its catalogue entry:
+`permissions` and `interactions` (see [the client](#the-client)).
+
 ## Files beside images
 
 A `send-message` and a start's `config` carry `inlineAttachments`: an array of
@@ -1162,8 +1217,8 @@ await follow.stop();
 token; `handshake()` adds the token probe and never throws. `projects()`,
 `providers()` (the catalogue: each provider, its models and the efforts each
 takes), `snapshot()` (null for a session the host does not have),
-`patchSession()` (a session's title, or the model and effort its next turn runs
-on), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above),
+`patchSession()` (a session's title, the model and effort its next turn runs
+on, or its permission mode), `deleteSession()` (teardown), `oneShot()` (one tool-less answer, above),
 `taskOutput()` (the end of a task's output, above) and
 `events()` — one connection, decoded but
 not sequenced — cover the rest. A refusal is an
@@ -1312,6 +1367,21 @@ left once cleaned is left out, which is unknown, not signed out. A `label` or
 and cut at 256 UTF-16 units (a real email is at most 254, so it is never cut);
 a `plan` or `expiresOn` that cannot be read (`2027-02-30` is not a day) is
 left out on its own (MAR-3821).
+A provider's `permissions` are what its sessions can ask for in
+`permissionConfig` (`features.permissions`): the `presets`, and its own part —
+`codex` with its `approvalPolicies` and `sandboxModes`, and the
+`approvalsReviewers` and `collaborationModes` a host offers a choice of
+(absent when it offers none), or `claudeCode` with its `permissionModes`. Its
+`interactions` say how it asks a person something (`features.interactions`):
+the request kinds it asks with (`inputRequests`, on a host advertising
+`interactions.structured`) and the ones it never does (`unavailable`), from
+`EXECUTION_INTERACTION_REQUEST_KINDS`. Which of its modes ask depends on the
+session: a full-access one may never stop to. Neither ever costs the
+catalogue: each is absent when the host does not say, or says it in a shape
+this build cannot read (unknown, not none); a provider's part or an optional
+list that cannot be read is left out on its own; and a value this build does
+not know is dropped from its list, since no session could ask for it
+(MAR-4052).
 
 **Teardown** is `deleteSession(sessionId)`, `DELETE /v0/execution/sessions/:id`:
 the host stops the provider, drops the workspace and the log, and ends the

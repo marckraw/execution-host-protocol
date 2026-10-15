@@ -22,6 +22,7 @@ import {
   type ExecutionHostCommand,
   type ExecutionHostCommandEnvelope,
   type ExecutionHostProfile,
+  type ExecutionPermissionConfig,
   type ExecutionProject,
   type ExecutionProvider,
   type ExecutionSessionPatchRequest,
@@ -205,9 +206,10 @@ export interface ExecutionCommandResult {
 
 /**
  * `patched` — the host took the patch, and says what it holds now: the title
- * as stored when the patch named one, and the model and effort the session's
- * next turn runs on when it named either (MAR-3662). `no-session` — the host
- * has no session by that id (404).
+ * as stored when the patch named one, the model and effort the session's
+ * next turn runs on when it named either (MAR-3662), and the permission policy
+ * it runs under when it named one (MAR-4052). `no-session` — the host has no
+ * session by that id (404).
  */
 export type ExecutionSessionPatchResult =
   | {
@@ -216,6 +218,7 @@ export type ExecutionSessionPatchResult =
       title?: string | null;
       model?: string | null;
       effort?: string | null;
+      permissionConfig?: ExecutionPermissionConfig;
     }
   | { status: "no-session"; sessionId: string };
 
@@ -294,10 +297,11 @@ export interface ExecutionHostClient {
   ): Promise<ExecutionCommandResult>;
   /**
    * Changes a session's settings (`PATCH /v0/execution/sessions/:id`): its
-   * title, and on a host advertising `sessions.modelSelection.v1` the model
-   * and effort its turns run on from the next one (MAR-3662). A patch the
-   * protocol would refuse throws before anything is sent; a selection the
-   * host's catalog does not offer is its 400, an `ExecutionHostError`
+   * title, on a host advertising `sessions.modelSelection.v1` the model
+   * and effort its turns run on from the next one (MAR-3662), and its
+   * permission policy (MAR-4052). A patch the protocol would refuse throws
+   * before anything is sent; a selection the host's catalog does not offer,
+   * or a mode it will not change now, is its 400, an `ExecutionHostError`
    * carrying the host's reason.
    */
   patchSession(
@@ -964,7 +968,7 @@ export function createExecutionHostClient(
       // Checked here, where the mistake is, rather than refused by the host.
       if (!decodeExecutionSessionPatchRequest(body).ok) {
         throw new TypeError(
-          "A session patch names at least one of title, model and effort, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string",
+          "A session patch names at least one of title, model, effort and permissionConfig, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string, permissionConfig a permission policy with no field it does not know",
         );
       }
       return request(
