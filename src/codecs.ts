@@ -10,6 +10,7 @@ import {
   isPositiveInteger,
   isRecord,
   isStringArray,
+  isTimestamp,
 } from "./guards.js";
 import {
   EXECUTION_INTERACTION_DESCRIPTION_MAX_LENGTH,
@@ -28,6 +29,10 @@ import {
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_PROVIDER_ACCOUNT_SOURCES,
   EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH,
+  EXECUTION_PROVIDER_USAGE_SOURCES,
+  EXECUTION_PROVIDER_USAGE_STATUSES,
+  EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH,
+  EXECUTION_PROVIDER_USAGE_WINDOW_SPANS,
   EXECUTION_SESSION_PATCH_APPLIES_FROM,
   EXECUTION_SESSION_PATCH_REFUSAL_CODES,
   EXECUTION_SESSION_STATUSES,
@@ -73,6 +78,11 @@ import {
   type ExecutionProviderListResponse,
   type ExecutionProviderModel,
   type ExecutionProviderPermissions,
+  type ExecutionProviderUsage,
+  type ExecutionProviderUsageSource,
+  type ExecutionProviderUsageStatus,
+  type ExecutionProviderUsageWindow,
+  type ExecutionProviderUsageWindowSpan,
   type ExecutionProtocolDescriptor,
   type ExecutionResearchEvidencePack,
   type ExecutionResearchEvidenceSource,
@@ -1861,7 +1871,8 @@ export function decodeExecutionProjectListResponse(
  * provider's `features.effortLevels`; `available` and `authenticated` stay
  * absent when the host does not say, never guessed `false`. A provider's
  * `account` never costs the catalogue: one this build cannot read is left out,
- * and its text is cleaned and cut (MAR-3821). Nor do its `permissions` and
+ * and its text is cleaned and cut (MAR-3821), nor does its `usage`
+ * (MAR-4198). Nor do its `permissions` and
  * `interactions` (MAR-4052): a shape this build cannot read is left out, and a
  * value it does not know is dropped from its list.
  */
@@ -1935,6 +1946,7 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
     models,
     ...optionalProperty("attachmentKinds", attachmentKinds),
     ...optionalProperty("account", decodeExecutionProviderAccount(raw.account)),
+    ...optionalProperty("usage", decodeExecutionProviderUsage(raw.usage)),
     ...optionalProperty(
       "permissions",
       decodeExecutionProviderPermissions(
@@ -2091,13 +2103,108 @@ function decodeExecutionProviderAccount(
   ) {
     return undefined;
   }
-  const label = readAccountText(raw.label);
+  const label = readShowableText(
+    raw.label,
+    EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH,
+  );
   if (label === undefined) return undefined;
   return {
     label,
-    ...optionalProperty("plan", readAccountText(raw.plan)),
+    ...optionalProperty(
+      "plan",
+      readShowableText(raw.plan, EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH),
+    ),
     source: raw.source as ExecutionProviderAccountSource,
     ...optionalProperty("expiresOn", readCalendarDay(raw.expiresOn)),
+  };
+}
+
+/**
+ * Optional and read as tolerantly as `account` (MAR-4198): a host that never
+ * heard, or says it in a shape this build cannot read, leaves it out, which is
+ * unknown, never "0%" and never "limited". Left out whole when it is not an
+ * object, its `observedAt` is not a timestamp (nothing could say how old it
+ * is), its `source` is not one this build knows, or its `windows` are not a
+ * list. A `status` this build does not know is left out alone, and so is a
+ * window it cannot read.
+ */
+function decodeExecutionProviderUsage(
+  raw: unknown,
+): ExecutionProviderUsage | undefined {
+  if (
+    !isRecord(raw) ||
+    !isTimestamp(raw.observedAt) ||
+    !(EXECUTION_PROVIDER_USAGE_SOURCES as readonly unknown[]).includes(
+      raw.source,
+    ) ||
+    !Array.isArray(raw.windows)
+  ) {
+    return undefined;
+  }
+  const windows: ExecutionProviderUsageWindow[] = [];
+  for (const entry of raw.windows) {
+    const window = decodeExecutionProviderUsageWindow(entry);
+    if (window && !windows.some((kept) => kept.id === window.id)) {
+      windows.push(window);
+    }
+  }
+  const status = (
+    EXECUTION_PROVIDER_USAGE_STATUSES as readonly unknown[]
+  ).includes(raw.status)
+    ? (raw.status as ExecutionProviderUsageStatus)
+    : undefined;
+  return {
+    observedAt: raw.observedAt,
+    source: raw.source as ExecutionProviderUsageSource,
+    ...optionalProperty("status", status),
+    windows,
+  };
+}
+
+/**
+ * Null when it is not an object, has no `id` once cleaned, no `span` string,
+ * or no number for `usedPercent`. Its text is cleaned and cut as an account's
+ * is, and `usedPercent` clamped to 0–100. A `span` this build does not know
+ * reads as `other`, so a newer host's window still counts; a `label` that
+ * cannot be read falls back to the `id`; a `resetsAt` or `modelFamily` that
+ * cannot be read is left out alone.
+ */
+function decodeExecutionProviderUsageWindow(
+  raw: unknown,
+): ExecutionProviderUsageWindow | null {
+  if (!isRecord(raw) || typeof raw.span !== "string") return null;
+  const id = readShowableText(raw.id, EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH);
+  const usedPercent = raw.usedPercent;
+  if (
+    id === undefined ||
+    typeof usedPercent !== "number" ||
+    !Number.isFinite(usedPercent)
+  ) {
+    return null;
+  }
+  const span = (
+    EXECUTION_PROVIDER_USAGE_WINDOW_SPANS as readonly string[]
+  ).includes(raw.span)
+    ? (raw.span as ExecutionProviderUsageWindowSpan)
+    : "other";
+  return {
+    id,
+    span,
+    label:
+      readShowableText(raw.label, EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH) ??
+      id,
+    usedPercent: Math.min(100, Math.max(0, usedPercent)),
+    ...optionalProperty(
+      "resetsAt",
+      isTimestamp(raw.resetsAt) ? raw.resetsAt : undefined,
+    ),
+    ...optionalProperty(
+      "modelFamily",
+      readShowableText(
+        raw.modelFamily,
+        EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH,
+      ),
+    ),
   };
 }
 
@@ -2106,19 +2213,23 @@ function decodeExecutionProviderAccount(
  * marks, embeddings, overrides and isolates, line and paragraph separators.
  * They let one label pass for another, or for more than one line.
  */
-const UNSHOWABLE_ACCOUNT_CHARACTERS =
+const UNSHOWABLE_CHARACTERS =
   /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 
 /**
  * Cleaned, trimmed, then cut, rather than refused: the host cuts and cleans a
  * label too (MAR-3820), so a reader agrees with it whatever length it chose,
- * and a cut never lands inside a real email (at most 254 units).
+ * and a cut never lands inside a real email (at most 254 units). A usage
+ * window's text is read the same way (MAR-4198).
  */
-function readAccountText(value: unknown): string | undefined {
+function readShowableText(
+  value: unknown,
+  maxLength: number,
+): string | undefined {
   if (typeof value !== "string") return undefined;
-  let text = value.replace(UNSHOWABLE_ACCOUNT_CHARACTERS, "").trim();
-  if (text.length > EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH) {
-    text = text.slice(0, EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH);
+  let text = value.replace(UNSHOWABLE_CHARACTERS, "").trim();
+  if (text.length > maxLength) {
+    text = text.slice(0, maxLength);
     // Never end on half a surrogate pair.
     if (/[\ud800-\udbff]$/.test(text)) text = text.slice(0, -1);
     text = text.trimEnd();

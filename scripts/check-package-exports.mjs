@@ -137,4 +137,14 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   );
 }
 
+// Provider usage (MAR-4198): its capability and the shared window check at
+// the root.
+for (const loaded of [commonJs, esModule]) {
+  assert.equal(typeof loaded.executionProviderUsageWindowLimits, "function");
+  assert.ok(
+    loaded.EXECUTION_PROTOCOL_CAPABILITY_IDS.includes("providers.usage.v1"),
+  );
+  assert.equal(loaded.EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH, 128);
+}
+
 console.log("Package exports resolve from CommonJS and ESM, root and client.");

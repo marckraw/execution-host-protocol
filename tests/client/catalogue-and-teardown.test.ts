@@ -75,6 +75,44 @@ describe("the providers' catalogue", () => {
     expect("account" in providers[1]!).toBe(false);
   });
 
+  it("hands on a provider's usage as read, and a bad one costs nothing (MAR-4198)", async () => {
+    host.providersBody = {
+      providers: [
+        {
+          id: "claude",
+          usage: {
+            observedAt: "2026-10-17T14:02:11.000Z",
+            source: "turn",
+            windows: [
+              { id: "five_hour", span: "session", usedPercent: 120 },
+              { id: "seven_day", span: "week", usedPercent: "5" },
+            ],
+          },
+        },
+        {
+          id: "codex",
+          usage: { observedAt: "now", source: "read", windows: [] },
+        },
+      ],
+    };
+
+    const providers = await client().providers();
+
+    expect(providers[0]!.usage).toStrictEqual({
+      observedAt: "2026-10-17T14:02:11.000Z",
+      source: "turn",
+      windows: [
+        {
+          id: "five_hour",
+          span: "session",
+          label: "five_hour",
+          usedPercent: 100,
+        },
+      ],
+    });
+    expect("usage" in providers[1]!).toBe(false);
+  });
+
   it("asks with the token, which the catalogue sits behind", async () => {
     await expect(client("wrong-token").providers()).rejects.toMatchObject({
       kind: "auth",
