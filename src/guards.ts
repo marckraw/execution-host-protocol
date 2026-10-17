@@ -1,6 +1,7 @@
 /**
- * Shape checks shared by `codecs.ts` and `host-profile.ts` (MAR-3725). Other
- * decoders keep their own. Internal: the package root does not export them.
+ * Shape checks shared by `codecs.ts`, `host-profile.ts` and `task-output.ts`
+ * (MAR-3725). Other decoders keep their own. Internal: the package root does
+ * not export them.
  */
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,5 +32,30 @@ export function isBoundedString(
 ): value is string {
   return (
     typeof value === "string" && value.length > 0 && value.length <= maxLength
+  );
+}
+
+/** RFC 3339 in UTC or with an offset, as `Date.prototype.toISOString` writes it. */
+const TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/** A timestamp whose every field is in range: no `2026-02-30`, no `T24:00`. */
+export function isTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parts = TIMESTAMP.exec(value);
+  if (!parts) return false;
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] =
+    parts.slice(1).map((part) => (part === undefined ? 0 : Number(part)));
+  const daysInMonth = new Date(Date.UTC(year!, month!, 0)).getUTCDate();
+  return (
+    month! >= 1 &&
+    month! <= 12 &&
+    day! >= 1 &&
+    day! <= daysInMonth &&
+    hour! <= 23 &&
+    minute! <= 59 &&
+    second! <= 59 &&
+    offsetHour! <= 23 &&
+    offsetMinute! <= 59
   );
 }

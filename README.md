@@ -1435,6 +1435,32 @@ left once cleaned is left out, which is unknown, not signed out. A `label` or
 and cut at 256 UTF-16 units (a real email is at most 254, so it is never cut);
 a `plan` or `expiresOn` that cannot be read (`2027-02-30` is not a day) is
 left out on its own (MAR-3821).
+A provider's `usage` is how much of its account's limits are used, **as the
+host last heard it**, on a host advertising `providers.usage.v1` (MAR-4198).
+It holds `observedAt` (when the host heard it), its `source` (`turn` when a
+session reported it during a turn, as Claude's limits are; `read` when the host
+asked the provider, as it can Codex), the provider's own `status` when it gives
+one (`ok`, `warning`, or `limited`, which refuses turns now), and its
+`windows`: each an `id` (the provider's name for it: `five_hour`,
+`seven_day_opus`, `codex`), a `span` (`session`, `week` or `other`), a `label`
+for people, `usedPercent` (0–100), `resetsAt` when the provider says when it
+starts again, and the `modelFamily` it limits (`opus`, or a Codex model slug),
+absent when it limits every model. It never costs the catalogue, and what
+cannot be read is unknown, never "0%" and never "limited": a `usage` that is
+not an object, has an `observedAt` that is not an ISO 8601 timestamp, a
+`source` this build does not know, or `windows` that are not a list is left
+out; a window with no `id`, no `span` string or no number for `usedPercent` is
+left out on its own, and so is a later window repeating an id. A `span` this
+build does not know reads as `other`, so the window still counts. Text is
+cleaned as an account's is and cut at 128 UTF-16 units, a missing `label` is
+the `id`, `usedPercent` is clamped to 0–100, and a `status`, `resetsAt` or
+`modelFamily` that cannot be read is left out alone.
+`executionProviderUsageWindowLimits(window, model, at)` says whether a window
+still limits a model: only while its `resetsAt` is ahead of `at` (one without
+a `resetsAt` still limits), and only when it has no `modelFamily` or the model
+is of it — its `slug` or `label` is the family, ignoring case, or names a
+one-word family (`opus`) as a whole word (`claude-opus-5-5`, `Opus 5.5`). How
+much of a window that limits is used is the caller's to judge.
 A provider's `permissions` are what its sessions can ask for in
 `permissionConfig` (`features.permissions`): the `presets`, and its own part —
 `codex` with its `approvalPolicies` and `sandboxModes`, and the

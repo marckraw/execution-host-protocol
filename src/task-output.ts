@@ -1,4 +1,4 @@
-import { isRecord, isSafeNonNegativeInteger } from "./guards.js";
+import { isRecord, isSafeNonNegativeInteger, isTimestamp } from "./guards.js";
 import type { AgentRunStatus } from "./harness-evidence.js";
 import type { ExecutionDecodeResult } from "./types.js";
 
@@ -55,10 +55,6 @@ const ROUTE =
 
 /** `tail`: a whole number of bytes, written without sign or leading zeros. */
 const TAIL = /^[1-9][0-9]{0,5}$/;
-
-/** RFC 3339 in UTC or with an offset, as `Date.prototype.toISOString` writes it. */
-const TIMESTAMP =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
 /** A control character, C0, DEL or C1. */
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
@@ -201,7 +197,9 @@ export function encodeExecutionTaskOutputRequest(
       `tail must be a whole number of bytes from 1 to ${EXECUTION_TASK_OUTPUT_MAX_BYTES}`,
     );
   }
-  const path = `/v0/execution/sessions/${encodeURIComponent(request.sessionId)}/tasks/${encodeURIComponent(request.taskId)}/output`;
+  const path = `/v0/execution/sessions/${encodeURIComponent(
+    request.sessionId,
+  )}/tasks/${encodeURIComponent(request.taskId)}/output`;
   return request.tail === undefined ? path : `${path}?tail=${request.tail}`;
 }
 
@@ -529,27 +527,6 @@ function isTail(value: unknown): value is number {
     Number.isInteger(value) &&
     (value as number) >= 1 &&
     (value as number) <= EXECUTION_TASK_OUTPUT_MAX_BYTES
-  );
-}
-
-/** A timestamp whose every field is in range: no `2026-02-30`, no `T24:00`. */
-function isTimestamp(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const parts = TIMESTAMP.exec(value);
-  if (!parts) return false;
-  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] =
-    parts.slice(1).map((part) => (part === undefined ? 0 : Number(part)));
-  const daysInMonth = new Date(Date.UTC(year!, month!, 0)).getUTCDate();
-  return (
-    month! >= 1 &&
-    month! <= 12 &&
-    day! >= 1 &&
-    day! <= daysInMonth &&
-    hour! <= 23 &&
-    minute! <= 59 &&
-    second! <= 59 &&
-    offsetHour! <= 23 &&
-    offsetMinute! <= 59
   );
 }
 

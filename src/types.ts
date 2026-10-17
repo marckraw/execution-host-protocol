@@ -125,6 +125,12 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * from tool-result text.
    */
   "tasks.output.v1",
+  /**
+   * The host fills a provider's `usage` in `GET /v0/providers` with what it
+   * last heard of its account's limits (MAR-4198). A provider without one on
+   * such a host has nothing heard yet: unknown, as on a host without it.
+   */
+  "providers.usage.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -1212,6 +1218,13 @@ export interface ExecutionProvider {
    */
   account?: ExecutionProviderAccount;
   /**
+   * How much of its account's limits the provider has used, as the host last
+   * heard it (MAR-4198), on a host advertising `providers.usage.v1`. Absent
+   * when the host does not say, or says it in a shape this build cannot read:
+   * unknown, never "0%" and never "limited".
+   */
+  usage?: ExecutionProviderUsage;
+  /**
    * The permission modes a session of this provider can ask for
    * (`features.permissions`, MAR-4052). Absent when the host does not say, or
    * says it in a shape this build cannot read: unknown, not none.
@@ -1316,6 +1329,77 @@ export type ExecutionProviderAccountSource =
  * it the text is cut. An email is at most 254, so a real one is never cut.
  */
 export const EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH = 256;
+
+/**
+ * How much of a provider's account's limits are used, as its host last heard
+ * it (MAR-4198). It ages: `observedAt` says when, and a window past its
+ * `resetsAt` no longer says anything (`executionProviderUsageWindowLimits`).
+ */
+export interface ExecutionProviderUsage {
+  /** When the host heard it (ISO 8601). */
+  observedAt: string;
+  /**
+   * `turn`: a session's own report during a turn (Claude's numbers move only
+   * when a turn runs). `read`: the host asked the provider.
+   */
+  source: ExecutionProviderUsageSource;
+  /**
+   * The provider's own verdict, when it gives one: `limited` refuses turns
+   * now, `warning` is close. Absent when it gives none, or one this build
+   * does not know.
+   */
+  status?: ExecutionProviderUsageStatus;
+  /** Each limit window, in the host's order. A window this build cannot read is left out. */
+  windows: ExecutionProviderUsageWindow[];
+}
+
+/** One limit window of a provider's account: how much of it is used. */
+export interface ExecutionProviderUsageWindow {
+  /**
+   * The provider's name for it: `five_hour`, `seven_day`, `seven_day_opus`,
+   * `codex`. One per usage: a later window with the same id is left out.
+   */
+  id: string;
+  /** `session` (a few hours), `week`, or `other`: what else it is, or a span this build does not know. */
+  span: ExecutionProviderUsageWindowSpan;
+  /** Short words for people: "Session", "Week", "Opus week". The id when the host sends none. */
+  label: string;
+  /** 0–100, as used. Clamped on read. */
+  usedPercent: number;
+  /** When it starts again (ISO 8601). Absent when the provider doesn't say. */
+  resetsAt?: string;
+  /**
+   * The model family it limits: `opus`, `sonnet`, `fable`, or a Codex model
+   * slug. Absent: every model.
+   */
+  modelFamily?: string;
+}
+
+export const EXECUTION_PROVIDER_USAGE_SOURCES = ["turn", "read"] as const;
+export type ExecutionProviderUsageSource =
+  (typeof EXECUTION_PROVIDER_USAGE_SOURCES)[number];
+
+export const EXECUTION_PROVIDER_USAGE_STATUSES = [
+  "ok",
+  "warning",
+  "limited",
+] as const;
+export type ExecutionProviderUsageStatus =
+  (typeof EXECUTION_PROVIDER_USAGE_STATUSES)[number];
+
+export const EXECUTION_PROVIDER_USAGE_WINDOW_SPANS = [
+  "session",
+  "week",
+  "other",
+] as const;
+export type ExecutionProviderUsageWindowSpan =
+  (typeof EXECUTION_PROVIDER_USAGE_WINDOW_SPANS)[number];
+
+/**
+ * The longest a usage window's `id`, `label` or `modelFamily` is read, in
+ * UTF-16 units: past it the text is cut, as an account's is.
+ */
+export const EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH = 128;
 
 export interface ExecutionProviderListResponse {
   /** Absent on hosts that served the catalogue before the payload was contracted. */
