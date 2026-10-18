@@ -113,6 +113,34 @@ describe("the providers' catalogue", () => {
     expect("usage" in providers[1]!).toBe(false);
   });
 
+  it("hands on credits and drops malformed credits without losing usage (MAR-4249)", async () => {
+    const usage = {
+      observedAt: "2026-10-17T14:02:11.000Z",
+      source: "read",
+      status: "limited",
+      windows: [],
+    };
+    const credits = {
+      hasCredits: true,
+      unlimited: false,
+      balance: "9007199254740993.0012300",
+    };
+    host.providersBody = {
+      providers: [
+        { id: "codex", usage: { ...usage, credits } },
+        {
+          id: "claude",
+          usage: { ...usage, credits: { ...credits, balance: 12 } },
+        },
+      ],
+    };
+
+    const providers = await client().providers();
+
+    expect(providers[0]!.usage).toStrictEqual({ ...usage, credits });
+    expect(providers[1]!.usage).toStrictEqual(usage);
+  });
+
   it("asks with the token, which the catalogue sits behind", async () => {
     await expect(client("wrong-token").providers()).rejects.toMatchObject({
       kind: "auth",

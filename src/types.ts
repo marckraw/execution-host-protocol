@@ -1351,7 +1351,35 @@ export interface ExecutionProviderUsage {
   status?: ExecutionProviderUsageStatus;
   /** Each limit window, in the host's order. A window this build cannot read is left out. */
   windows: ExecutionProviderUsageWindow[];
+  /**
+   * The provider's credits, for display in usage details only (MAR-4249).
+   * Optional under `providers.usage.v1`; absent or unreadable is unknown.
+   * Credits do not change whether a used-up window refuses a turn.
+   */
+  credits?: ExecutionProviderUsageCredits;
 }
+
+/** A provider's reported credits, independent of its limit windows. */
+export interface ExecutionProviderUsageCredits {
+  hasCredits: boolean;
+  unlimited: boolean;
+  /**
+   * A plain decimal string, with an optional minus sign, as reported: never
+   * converted to a number. Controls and bidi formatting are removed and
+   * surrounding whitespace trimmed. More than
+   * `EXECUTION_PROVIDER_USAGE_CREDITS_BALANCE_MAX_LENGTH` UTF-16 units after
+   * cleaning drops the credits rather than changing the amount by cutting it.
+   */
+  balance?: string;
+  /**
+   * When the host heard the credits (ISO 8601), if different from the usage's
+   * `observedAt`. Absent or unreadable: use the usage's timestamp.
+   */
+  observedAt?: string;
+}
+
+/** Maximum cleaned credit balance length; an overlong balance is never cut. */
+export const EXECUTION_PROVIDER_USAGE_CREDITS_BALANCE_MAX_LENGTH = 128;
 
 /** One limit window of a provider's account: how much of it is used. */
 export interface ExecutionProviderUsageWindow {

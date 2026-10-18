@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   decodeExecutionProviderListResponse,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
+  EXECUTION_PROVIDER_USAGE_CREDITS_BALANCE_MAX_LENGTH,
   EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH,
   executionProviderUsageWindowLimits,
   type ExecutionProvider,
+  type ExecutionProviderUsage,
+  type ExecutionProviderUsageCredits,
   type ExecutionProviderUsageWindow,
 } from "../src/index.js";
 import { PROVIDERS_BODY } from "./client/stub-host.js";
@@ -120,7 +123,7 @@ describe("a provider's usage", () => {
         source: "turn",
         windows: [{ ...SESSION_WINDOW, utilization: 0.02, isUsingOverage: 1 }],
         overageStatus: "rejected",
-        credits: { balance: "12" },
+        futureUsageField: { balance: "12" },
       }).usage,
     ).toStrictEqual({
       observedAt: OBSERVED_AT,
@@ -300,6 +303,120 @@ describe("a provider's usage", () => {
     expect(long?.id).toBe("i".repeat(128));
     expect(long?.label).toBe("l".repeat(128));
     expect(long?.modelFamily).toBe("m".repeat(128));
+  });
+});
+
+describe("a provider's usage credits (MAR-4249)", () => {
+  const usage: ExecutionProviderUsage = {
+    observedAt: OBSERVED_AT,
+    source: "read",
+    status: "limited",
+    windows: [{ ...SESSION_WINDOW, span: "session", usedPercent: 100 }],
+  };
+  const credits: ExecutionProviderUsageCredits = {
+    hasCredits: true,
+    unlimited: false,
+    balance: "9007199254740993.0012300",
+    observedAt: "2026-10-17T14:01:00+02:00",
+  };
+  const readCredits = (raw: unknown) => read({ ...usage, credits: raw }).usage;
+
+  it("preserves the provider's decimal string and separate observation time", () => {
+    expect(readCredits(credits)).toStrictEqual({ ...usage, credits });
+  });
+
+  it("keeps absent credits absent, as on an older host", () => {
+    expect(read(usage).usage).toStrictEqual(usage);
+    expect(readCredits(undefined)).toStrictEqual(usage);
+  });
+
+  it.each([
+    { hasCredits: true, unlimited: true },
+    { hasCredits: false, unlimited: false },
+    { hasCredits: false, unlimited: false, balance: "0.00" },
+    { hasCredits: true, unlimited: false },
+  ])(
+    "reads credits without inferring a balance or changing limited usage: %j",
+    (raw) => {
+      expect(readCredits(raw)).toStrictEqual({ ...usage, credits: raw });
+    },
+  );
+
+  it("cleans balance text as windows are cleaned and projects only known fields", () => {
+    expect(
+      readCredits({
+        ...credits,
+        balance: " \u000012.300\n\u202e\u2066 ",
+        futureCreditsField: { amount: 7 },
+      }),
+    ).toStrictEqual({ ...usage, credits: { ...credits, balance: "12.300" } });
+  });
+
+  it.each(["0", "0012.3000", "-0.001", "9".repeat(128)])(
+    "preserves a plain decimal amount exactly: %s",
+    (balance) => {
+      expect(readCredits({ ...credits, balance })?.credits?.balance).toBe(
+        balance,
+      );
+    },
+  );
+
+  it("drops malformed credits, keeping all usage windows and the verdict", () => {
+    expect(EXECUTION_PROVIDER_USAGE_CREDITS_BALANCE_MAX_LENGTH).toBe(128);
+    const unreadable: Array<[string, unknown]> = [
+      ["null", null],
+      ["a list", [credits]],
+      ["a string", "12.3"],
+      ["a missing hasCredits", { unlimited: false, balance: "12.3" }],
+      ["a missing unlimited", { hasCredits: true }],
+      ["hasCredits as a number", { ...credits, hasCredits: 1 }],
+      ["unlimited as a string", { ...credits, unlimited: "false" }],
+      ["a number for balance", { ...credits, balance: 12.3 }],
+      ["a null balance", { ...credits, balance: null }],
+      ["an empty balance", { ...credits, balance: " \u0000 " }],
+      ["a non-decimal balance", { ...credits, balance: "12 credits" }],
+      ["an exponent", { ...credits, balance: "1e3" }],
+      ["a non-finite amount", { ...credits, balance: "Infinity" }],
+      ["an internal space", { ...credits, balance: "1 2" }],
+      ["a missing fraction", { ...credits, balance: "12." }],
+      ["a non-ASCII digit", { ...credits, balance: "١٢" }],
+      ["one past the bound", { ...credits, balance: "9".repeat(129) }],
+      ["a very long string", { ...credits, balance: "9".repeat(10_000) }],
+    ];
+    for (const [name, raw] of unreadable) {
+      expect(readCredits(raw), name).toStrictEqual(usage);
+    }
+  });
+
+  it("leaves out an unreadable observation time alone, falling back to usage", () => {
+    const { observedAt: _, ...withoutTime } = credits;
+    for (const observedAt of [
+      undefined,
+      null,
+      1792242000,
+      "2026-10-17",
+      "2026-02-30T10:00:00Z",
+    ]) {
+      expect(readCredits({ ...credits, observedAt })).toStrictEqual({
+        ...usage,
+        credits: withoutTime,
+      });
+    }
+  });
+
+  it("round trips through JSON and the public catalogue codec without losing precision", () => {
+    const providers = [{ ...WITHOUT_USAGE, usage: { ...usage, credits } }];
+    const result = decodeExecutionProviderListResponse(
+      JSON.parse(JSON.stringify({ protocolVersion: 1, providers })),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toStrictEqual({ protocolVersion: 1, providers });
+    expect(
+      decodeExecutionProviderListResponse(
+        JSON.parse(JSON.stringify(result.value)),
+      ),
+    ).toStrictEqual(result);
   });
 });
 

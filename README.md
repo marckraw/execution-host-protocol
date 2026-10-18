@@ -1455,6 +1455,34 @@ build does not know reads as `other`, so the window still counts. Text is
 cleaned as an account's is and cut at 128 UTF-16 units, a missing `label` is
 the `id`, `usedPercent` is clamped to 0–100, and a `status`, `resetsAt` or
 `modelFamily` that cannot be read is left out alone.
+Usage may also carry optional `credits` (MAR-4249), under the same
+`providers.usage.v1` capability. It holds required booleans `hasCredits` and
+`unlimited`, an optional `balance` as the provider's decimal string, and an
+optional ISO 8601 `observedAt` if credits were heard at a different time from
+the usage. A missing or unreadable credits timestamp falls back to the usage's
+timestamp. For example:
+
+```json
+{
+  "hasCredits": true,
+  "unlimited": false,
+  "balance": "12.3000"
+}
+```
+
+Balance text is cleaned of control and bidirectional-formatting characters
+and trimmed as window text is. It must be a plain decimal (digits, optionally
+a leading minus sign and a fractional part), never parsed to a float: keep
+its precision and trailing zeros. It is bounded at 128 UTF-16 units after
+cleaning (`EXECUTION_PROVIDER_USAGE_CREDITS_BALANCE_MAX_LENGTH`); an overlong
+amount is rejected rather than cut. A malformed credits object, missing or
+non-boolean flag, or invalid balance drops only `credits`, preserving the
+usage and its windows. Unknown fields are ignored. Absent credits are unknown;
+`hasCredits: false` explicitly reports none, and `unlimited: true` needs no
+balance. Older hosts can omit credits and older clients ignore them. Credits
+are for display in the usage card's details only, never its rings or summary;
+they do not change whether a used-up window refuses a turn or authorize spending.
+
 `executionProviderUsageWindowLimits(window, model, at)` says whether a window
 still limits a model: only while its `resetsAt` is ahead of `at` (one without
 a `resetsAt` still limits), and only when it has no `modelFamily` or the model
