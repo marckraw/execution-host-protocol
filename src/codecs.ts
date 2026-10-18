@@ -29,6 +29,7 @@ import {
   EXECUTION_PROTOCOL_VERSION,
   EXECUTION_PROVIDER_ACCOUNT_SOURCES,
   EXECUTION_PROVIDER_ACCOUNT_TEXT_MAX_LENGTH,
+  EXECUTION_PROVIDER_USAGE_CREDITS_BALANCE_MAX_LENGTH,
   EXECUTION_PROVIDER_USAGE_SOURCES,
   EXECUTION_PROVIDER_USAGE_STATUSES,
   EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH,
@@ -79,6 +80,7 @@ import {
   type ExecutionProviderModel,
   type ExecutionProviderPermissions,
   type ExecutionProviderUsage,
+  type ExecutionProviderUsageCredits,
   type ExecutionProviderUsageSource,
   type ExecutionProviderUsageStatus,
   type ExecutionProviderUsageWindow,
@@ -2126,7 +2128,7 @@ function decodeExecutionProviderAccount(
  * object, its `observedAt` is not a timestamp (nothing could say how old it
  * is), its `source` is not one this build knows, or its `windows` are not a
  * list. A `status` this build does not know is left out alone, and so is a
- * window it cannot read.
+ * window or credits it cannot read.
  */
 function decodeExecutionProviderUsage(
   raw: unknown,
@@ -2158,6 +2160,44 @@ function decodeExecutionProviderUsage(
     source: raw.source as ExecutionProviderUsageSource,
     ...optionalProperty("status", status),
     windows,
+    ...optionalProperty(
+      "credits",
+      decodeExecutionProviderUsageCredits(raw.credits),
+    ),
+  };
+}
+
+/** Malformed credits never cost the usage or its windows (MAR-4249). */
+function decodeExecutionProviderUsageCredits(
+  raw: unknown,
+): ExecutionProviderUsageCredits | undefined {
+  if (
+    !isRecord(raw) ||
+    typeof raw.hasCredits !== "boolean" ||
+    typeof raw.unlimited !== "boolean"
+  ) {
+    return undefined;
+  }
+  let balance: string | undefined;
+  if (raw.balance !== undefined) {
+    if (typeof raw.balance !== "string") return undefined;
+    balance = raw.balance.replace(UNSHOWABLE_CHARACTERS, "").trim();
+    // Never parse or truncate an amount: both can change the provider's value.
+    if (
+      balance.length > EXECUTION_PROVIDER_USAGE_CREDITS_BALANCE_MAX_LENGTH ||
+      !/^-?\d+(?:\.\d+)?$/.test(balance)
+    ) {
+      return undefined;
+    }
+  }
+  return {
+    hasCredits: raw.hasCredits,
+    unlimited: raw.unlimited,
+    ...optionalProperty("balance", balance),
+    ...optionalProperty(
+      "observedAt",
+      isTimestamp(raw.observedAt) ? raw.observedAt : undefined,
+    ),
   };
 }
 
