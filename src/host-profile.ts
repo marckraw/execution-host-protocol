@@ -1,3 +1,4 @@
+import { decodeExecutionHostFileReach } from "./file-reach.js";
 import {
   isBoundedString,
   isRecord,
@@ -45,7 +46,9 @@ const isProfileString = (value: unknown): value is string =>
  * unreadable is `invalid-payload`, with the field at `path`. The inventory
  * degrades instead (MAR-3725): an unreadable trait, toolchain, runtime, device
  * type, system image or AVD is dropped, and so is an unreadable device family,
- * each named in `warnings`. A drop under-claims; it never invents a tool.
+ * each named in `warnings`. So is an unreadable `fileReach`, and the host
+ * reads as one without a fence (MAR-4352). A drop under-claims; it never
+ * invents a tool.
  *
  * Bounded, so a hostile body costs little: strings are 1 to 256 characters,
  * a list is read to its 1024th entry and the rest named once, as
@@ -95,6 +98,7 @@ export function decodeExecutionHostProfile(
     decodeToolchain,
   );
   const devices = decodeDevices(raw.devices, warn);
+  const fileReach = decodeFileReach(raw.fileReach, warnings);
   const profile: ExecutionHostProfile = {
     id: raw.id,
     label: raw.label,
@@ -106,6 +110,7 @@ export function decodeExecutionHostProfile(
     traits,
     toolchains,
     ...(devices === undefined ? {} : { devices }),
+    ...(fileReach === undefined ? {} : { fileReach }),
     checkedAt: raw.checkedAt,
   };
   return warnings.length > 0
@@ -156,6 +161,24 @@ export function decodeExecutionStartRequirementsRefusal(
       missingTraits: [...raw.missingTraits],
     },
   };
+}
+
+/**
+ * A host's fence (MAR-4352): one that doesn't read is dropped whole, named,
+ * and the host reads as one that can't fence. Its own drops are named too.
+ */
+function decodeFileReach(
+  raw: unknown,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionHostProfile["fileReach"] | undefined {
+  if (raw === undefined) return undefined;
+  const decoded = decodeExecutionHostFileReach(raw, "fileReach");
+  if (!decoded.ok) {
+    warnings.push({ reason: "dropped-invalid-field", path: "fileReach" });
+    return undefined;
+  }
+  warnings.push(...(decoded.warnings ?? []));
+  return decoded.value;
 }
 
 function decodeToolchain(raw: unknown): ExecutionHostToolchain | null {

@@ -1,3 +1,7 @@
+import type {
+  ExecutionFileReach,
+  ExecutionHostFileReach,
+} from "./file-reach.js";
 import type { HarnessEvidence } from "./harness-evidence.js";
 import type {
   ExecutionToolAttachment,
@@ -131,6 +135,17 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * such a host has nothing heard yet: unknown, as on a host without it.
    */
   "providers.usage.v1",
+  /**
+   * The host takes a start's `fileReach` (MAR-4352): it checks the reach
+   * before preparing anything, refuses one it can't hold with a 400 coded
+   * `file-reach-refused` (`ExecutionFileReachRefusal`), holds the session to
+   * it for its whole life otherwise, and echoes it on its 201, or on its 409
+   * what the existing session is held to (`ExecutionFileReachEcho`). Its
+   * fence, places and ceiling are `fileReach` in `GET /v0/host`. A host
+   * without it may ignore `fileReach` and start the session unfenced, so the
+   * shared client refuses to send it there.
+   */
+  "start.fileReach.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -221,6 +236,11 @@ export interface ExecutionHostProfile {
     iosSimulator?: ExecutionHostIosSimulator;
     androidEmulator?: ExecutionHostAndroidEmulator;
   };
+  /**
+   * How this host fences a session's files (`start.fileReach.v1`, MAR-4352).
+   * Absent on a host predating it: no fence.
+   */
+  fileReach?: ExecutionHostFileReach;
   checkedAt: string;
 }
 
@@ -966,6 +986,16 @@ export interface ExecutionStartRequest {
    * this field, so the shared client refuses to send it there (MAR-3725).
    */
   requires?: string[];
+  /**
+   * What the session's files may be (MAR-4352): a host advertising
+   * `start.fileReach.v1` holds it to this, narrower than or as wide as what
+   * the host allows, or refuses the start (`ExecutionFileReachRefusal`), and
+   * echoes it on its 201 and 409 (`ExecutionFileReachEcho`). Absent means
+   * the host's own choice for the session, as before. A host without that
+   * capability may ignore this field, so the shared client refuses to send
+   * it there.
+   */
+  fileReach?: ExecutionFileReach;
   metadata?: ExecutionSessionMetadata | null;
   workspace?: ExecutionWorkspaceSource;
   callback?: ExecutionCallbackConfig;

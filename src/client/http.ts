@@ -1,3 +1,8 @@
+import type {
+  ExecutionFileReach,
+  ExecutionFileReachProblem,
+} from "../file-reach.js";
+
 /**
  * The HTTP plumbing every call shares: one error type a caller can branch on,
  * deadlines that cover the body as well as the headers, and the host's own
@@ -111,6 +116,83 @@ export class ExecutionStartRequirementsError extends Error {
     this.requires = [...details.requires];
     this.missingTraits = details.missingTraits
       ? [...details.missingTraits]
+      : null;
+    this.status = status;
+    this.sessionId = details.sessionId ?? null;
+    this.sessionDeleted = details.sessionDeleted ?? null;
+    this.reason = reason;
+  }
+}
+
+/**
+ * `file-reach-unenforced`: the host does not advertise `start.fileReach.v1`,
+ * or its descriptor is unreadable, so it might ignore `fileReach` and start
+ * the session unfenced; nothing was sent.
+ * `file-reach-refused`: the host refused the start's reach (a 400 coded
+ * `file-reach-refused`); no session started.
+ * `file-reach-unconfirmed`: the host's 201, or its 409 for a session it
+ * already has, does not echo that it holds the session to exactly this
+ * reach, so the session may run unfenced, or fenced otherwise. After a 201
+ * the client tries to delete it; see `sessionDeleted`.
+ */
+export type ExecutionStartFileReachErrorCode =
+  "file-reach-unenforced" | "file-reach-refused" | "file-reach-unconfirmed";
+
+/**
+ * A start whose `fileReach` this host can't be trusted with, or refused
+ * (MAR-4352): a caller branches on `code`, and on `problems` for which
+ * entry and why, without reading the host's prose. Not an
+ * `ExecutionHostError`: a caller converting errors checks for both.
+ * Unenforced or refused, no session started. Unconfirmed, one runs or ran:
+ * `sessionId` names it, and `sessionDeleted` says what became of it.
+ */
+export class ExecutionStartFileReachError extends Error {
+  readonly code: ExecutionStartFileReachErrorCode;
+  readonly operation = "start";
+  /** The reach the start carried. */
+  readonly fileReach: ExecutionFileReach;
+  /**
+   * What the host said is wrong with it: only problems about the whole reach
+   * or about one of its entries, never an index past them. Null when it was
+   * not asked, or named none.
+   */
+  readonly problems: ExecutionFileReachProblem[] | null;
+  /** The host's status for its answer; null when nothing was sent. */
+  readonly status: number | null;
+  /** The session the host started or holds without confirming; null otherwise. */
+  readonly sessionId: string | null;
+  /**
+   * Unconfirmed after a 201, which created the session: true when the client
+   * deleted it (or the host no longer had it), false when deleting failed
+   * and it may still run. Null otherwise, a 409 included: that session is
+   * older than the request, and the client leaves it alone.
+   */
+  readonly sessionDeleted: boolean | null;
+  /** Safe to show: the host's words, or why nothing was sent. */
+  readonly reason: string;
+
+  constructor(
+    code: ExecutionStartFileReachErrorCode,
+    reason: string,
+    details: {
+      fileReach: ExecutionFileReach;
+      problems?: ExecutionFileReachProblem[] | null;
+      status?: number | null;
+      sessionId?: string | null;
+      sessionDeleted?: boolean | null;
+    },
+  ) {
+    const status = details.status ?? null;
+    super(
+      `start failed: ${status === null ? code : `HTTP ${status}`}: ${reason}`,
+    );
+    this.name = "ExecutionStartFileReachError";
+    this.code = code;
+    this.fileReach = {
+      entries: details.fileReach.entries.map((entry) => ({ ...entry })),
+    };
+    this.problems = details.problems
+      ? details.problems.map((problem) => ({ ...problem }))
       : null;
     this.status = status;
     this.sessionId = details.sessionId ?? null;

@@ -1,5 +1,6 @@
 export * from "./attachments.js";
 export * from "./codecs.js";
+export * from "./file-reach.js";
 export * from "./harness-evidence-codecs.js";
 export * from "./harness-evidence.js";
 export * from "./host-profile.js";

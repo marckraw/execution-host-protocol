@@ -1,3 +1,8 @@
+import {
+  isExecutionFileReach,
+  readExecutionFileReach,
+  type ExecutionFileReach,
+} from "./file-reach.js";
 import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
   decodeToolAttachments,
@@ -358,6 +363,14 @@ export function decodeExecutionStartRequest(
   ) {
     return failure("invalid-payload");
   }
+  // Dropped, a reach would start the session with the host's own: refused
+  // instead. What its paths say is the host's to judge, with its own code.
+  if (
+    base.value.fileReach !== undefined &&
+    !isExecutionFileReach(base.value.fileReach)
+  ) {
+    return failure("invalid-payload");
+  }
   const metadata = decodeOptionalMetadata(base.value.metadata);
   if (!metadata.ok) return metadata;
   const workspace = decodeOptionalWorkspace(base.value.workspace);
@@ -382,6 +395,12 @@ export function decodeExecutionStartRequest(
     ...optionalProperty(
       "requires",
       base.value.requires as string[] | undefined,
+    ),
+    ...optionalProperty(
+      "fileReach",
+      base.value.fileReach === undefined
+        ? undefined
+        : readExecutionFileReach(base.value.fileReach as ExecutionFileReach),
     ),
     ...optionalProperty("metadata", metadata.value),
     ...optionalProperty("workspace", workspace.value),
