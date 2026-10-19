@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "providerId": "claude",
+  "config": {
+    "sessionId": "tutor",
+    "workingDirectory": "/tmp/agents-daemon-requires-picBpa",
+    "initialMessage": "hello",
+    "model": null,
+    "effort": null,
+    "continuationToken": null,
+    "instructions": "You are a patient tutor.\nAsk one question."
+  },
+  "commandId": "2585d03c-ea2a-4013-854f-5e650220febe"
+}

@@ -15,6 +15,8 @@ import {
   type HarnessEvidence,
 } from "../../src/index.js";
 
+import instructionsStart from "./agents-daemon-0.45-instructions-start.json" with { type: "json" };
+
 type FixtureSource = "recorded" | "hand-authored";
 interface Fixture<Value> {
   source: FixtureSource;
@@ -690,3 +692,9 @@ export const evidenceFixtures: {
     at,
   },
 };
+
+/** Captured from the shared client against the daemon's real start route; see fixtures/README.md. */
+export const startRequestWithInstructionsFixture = {
+  source: "recorded",
+  value: instructionsStart as ExecutionStartRequest,
+} as const satisfies Fixture<ExecutionStartRequest>;

@@ -1,3 +1,8 @@
+import { isExecutionInstructions } from "../instructions.js";
+import {
+  ExecutionStartInstructionsError,
+  hostTakesInstructions,
+} from "./instructions.js";
 import {
   decodeExecutionProjectListResponse,
   decodeExecutionProviderListResponse,
@@ -308,6 +313,14 @@ export interface ExecutionHostClient {
    * 201 or 409 that does not echo exactly that reach, are the same error;
    * the unconfirmed session a 201 made is deleted (MAR-4352). A malformed
    * `fileReach` is a `TypeError`, unsent.
+   * `config.instructions` is capped at 32 KiB UTF-8 (TypeError before probing).
+   * When present, including an empty string, the same health probe must
+   * advertise start.instructions.v1, or ExecutionStartInstructionsError
+   * refuses it unsent with code instructions-unsupported (MAR-4364).
+   * A capable host's 400 instructions-unsupported-provider is the same typed
+   * error, with its distinct code and status 400. See providers().sessionInstructions.
+   * Instructions are fixed at the first successful start. A 409 / exists
+   * neither updates nor confirms them; use a fresh id to establish a frame.
    */
   start(
     request: ExecutionStartRequest,
@@ -795,6 +808,15 @@ export function createExecutionHostClient(
         );
       }
       const reach = fileReach as ExecutionFileReach | undefined;
+      const instructions: unknown = startRequest.config.instructions;
+      if (
+        instructions !== undefined &&
+        !isExecutionInstructions(instructions)
+      ) {
+        throw new TypeError(
+          "config.instructions must be a string of at most 32768 UTF-8 bytes",
+        );
+      }
       const withFiles = carriesFiles(
         "start",
         startRequest.config.inlineAttachments,
@@ -804,7 +826,12 @@ export function createExecutionHostClient(
       };
       // A host that predates `requires` drops it and starts anyway, so the
       // only safe place to refuse is here, before it is sent (MAR-3725).
-      if (requires.length > 0 || withFiles || reach) {
+      if (
+        requires.length > 0 ||
+        withFiles ||
+        reach ||
+        instructions !== undefined
+      ) {
         const probed = await health({
           signal: requestOptions.signal,
           timeoutMs: Math.min(
@@ -812,6 +839,14 @@ export function createExecutionHostClient(
             requestOptions.timeoutMs ?? healthTimeoutMs,
           ),
         });
+        if (instructions !== undefined && !hostTakesInstructions(probed)) {
+          throw new ExecutionStartInstructionsError(
+            "instructions-unsupported",
+            probed.executionProtocolValid
+              ? "the host does not advertise start.instructions.v1; nothing was sent"
+              : "the host's protocol descriptor is unreadable; nothing was sent",
+          );
+        }
         if (withFiles && !hostTakesInlineFiles(probed)) {
           throw inlineFilesRefusal("start", probed);
         }
@@ -898,6 +933,19 @@ export function createExecutionHostClient(
           }
           if (!response.ok) {
             const text = await refusalText(response);
+            const refusal = parseOrNull(text);
+            if (
+              instructions !== undefined &&
+              response.status === 400 &&
+              isRecord(refusal) &&
+              refusal.code === "instructions-unsupported-provider"
+            ) {
+              throw new ExecutionStartInstructionsError(
+                "instructions-unsupported-provider",
+                "the host cannot apply session instructions for this provider",
+                400,
+              );
+            }
             const reason = reasonOfText(
               text,
               response.status,

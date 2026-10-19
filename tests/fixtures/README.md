@@ -41,3 +41,12 @@ packages as dependencies or modify the outputs to fit the new reader.
 
 Current pins rechecked on 12 Oct 2026: agents-daemon's `bun.lock` resolves 0.17.0
 from `^0.17.0`; accentdot's `pnpm-lock.yaml` resolves 0.22.0 from `^0.22.0`.
+
+## Session instructions start (MAR-4364)
+
+`agents-daemon-0.45-instructions-start.json` is the unmodified request body
+captured on 2026-10-19 from the shared client's POST to the real agents-daemon
+0.45.1 Hono execution route in `execution-sessions.requires.test.ts`, test
+"the shared client sees the capability and sends instructions separately from
+the user's message". The provider is a test adapter; this records the wire
+request, not a live model response. It contains no authorization headers.

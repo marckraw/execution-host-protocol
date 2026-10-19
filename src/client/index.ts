@@ -10,6 +10,11 @@
  */
 
 export {
+  ExecutionStartInstructionsError,
+  type ExecutionStartInstructionsErrorCode,
+  hostTakesInstructions,
+} from "./instructions.js";
+export {
   ExecutionInlineAttachmentsError,
   hostTakesInlineFiles,
   type ExecutionInlineAttachmentsErrorCode,
