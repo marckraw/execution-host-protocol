@@ -317,6 +317,10 @@ export interface ExecutionHostClient {
    * When present, including an empty string, the same health probe must
    * advertise start.instructions.v1, or ExecutionStartInstructionsError
    * refuses it unsent with code instructions-unsupported (MAR-4364).
+   * A capable host's 400 instructions-unsupported-provider is the same typed
+   * error, with its distinct code and status 400. See providers().sessionInstructions.
+   * Instructions are fixed at the first successful start. A 409 / exists
+   * neither updates nor confirms them; use a fresh id to establish a frame.
    */
   start(
     request: ExecutionStartRequest,
@@ -836,7 +840,12 @@ export function createExecutionHostClient(
           ),
         });
         if (instructions !== undefined && !hostTakesInstructions(probed)) {
-          throw new ExecutionStartInstructionsError(probed);
+          throw new ExecutionStartInstructionsError(
+            "instructions-unsupported",
+            probed.executionProtocolValid
+              ? "the host does not advertise start.instructions.v1; nothing was sent"
+              : "the host's protocol descriptor is unreadable; nothing was sent",
+          );
         }
         if (withFiles && !hostTakesInlineFiles(probed)) {
           throw inlineFilesRefusal("start", probed);
@@ -924,6 +933,19 @@ export function createExecutionHostClient(
           }
           if (!response.ok) {
             const text = await refusalText(response);
+            const refusal = parseOrNull(text);
+            if (
+              instructions !== undefined &&
+              response.status === 400 &&
+              isRecord(refusal) &&
+              refusal.code === "instructions-unsupported-provider"
+            ) {
+              throw new ExecutionStartInstructionsError(
+                "instructions-unsupported-provider",
+                "the host cannot apply session instructions for this provider",
+                400,
+              );
+            }
             const reason = reasonOfText(
               text,
               response.status,

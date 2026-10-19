@@ -152,3 +152,22 @@ describe("decodeExecutionProviderListResponse", () => {
     });
   });
 });
+
+it.each([true, false, undefined, "yes"])(
+  "reads per-provider instruction support tolerantly (%s)",
+  (sessionInstructions) => {
+    const result = decoded({
+      providers: [{ id: "provider", features: { sessionInstructions } }],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    if (typeof sessionInstructions === "boolean")
+      expect(result.value.providers[0]?.sessionInstructions).toBe(
+        sessionInstructions,
+      );
+    else
+      expect(result.value.providers[0]).not.toHaveProperty(
+        "sessionInstructions",
+      );
+  },
+);

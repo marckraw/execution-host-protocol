@@ -102,3 +102,32 @@ describe("instructions capability gate (MAR-4364)", () => {
     expect(host.startRequests[0]?.config).not.toHaveProperty("instructions");
   });
 });
+
+it("types the capable host's provider refusal separately from the missing host capability", async () => {
+  advertise("start.instructions.v1");
+  host.startStatus = 400;
+  host.startRefusal = {
+    code: "instructions-unsupported-provider",
+    error: "Unsupported provider",
+  };
+  const error = await client()
+    .start(request("private frame"))
+    .catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(ExecutionStartInstructionsError);
+  expect(error).toMatchObject({
+    code: "instructions-unsupported-provider",
+    status: 400,
+    operation: "start",
+  });
+  expect(host.startRequests).toHaveLength(1);
+  expect(String(error)).not.toContain("private frame");
+});
+
+it("a 409 exists neither confirms nor changes the instructions", async () => {
+  advertise("start.instructions.v1");
+  host.startStatus = 409;
+  const result = await client().start(request("different frame"));
+  expect(result.status).toBe("exists");
+  expect(result).not.toHaveProperty("instructions");
+  expect(host.deleteRequests).toEqual([]);
+});

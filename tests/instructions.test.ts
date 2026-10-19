@@ -5,7 +5,10 @@ import {
   EXECUTION_INSTRUCTIONS_MAX_BYTES,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
 } from "../src/index.js";
-import { startRequestWithEnvironmentFixture } from "./fixtures/contract-fixtures.js";
+import {
+  startRequestWithEnvironmentFixture,
+  startRequestWithInstructionsFixture,
+} from "./fixtures/contract-fixtures.js";
 
 const base = startRequestWithEnvironmentFixture.value;
 const request = (instructions: unknown) => ({
@@ -53,4 +56,14 @@ describe("session instructions (MAR-4364)", () => {
       "instructions",
     );
   });
+});
+
+it("round-trips the recorded daemon start with instructions", () => {
+  const fixture = startRequestWithInstructionsFixture;
+  expect(fixture.source).toBe("recorded");
+  expect(
+    decodeExecutionStartRequest(encodeExecutionStartRequest(fixture.value)),
+  ).toEqual({ ok: true, value: fixture.value });
+  expect(fixture.value.config.instructions).toContain("patient tutor");
+  expect(fixture.value.config.initialMessage).toBe("hello");
 });

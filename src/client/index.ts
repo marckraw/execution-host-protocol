@@ -11,6 +11,7 @@
 
 export {
   ExecutionStartInstructionsError,
+  type ExecutionStartInstructionsErrorCode,
   hostTakesInstructions,
 } from "./instructions.js";
 export {

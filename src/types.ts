@@ -953,7 +953,11 @@ export interface ExecutionHostCommandEnvelope {
 }
 
 export interface ExecutionStartConfig {
-  /** Session-level provider instructions, at most 32 KiB of UTF-8. Requires start.instructions.v1. */
+  /**
+   * Session-level provider instructions, at most 32 KiB of UTF-8.
+   * Requires start.instructions.v1 and provider features.sessionInstructions.
+   * Fixed at first start: 409 / exists neither updates nor confirms them.
+   */
   instructions?: string;
   sessionId: string;
   workingDirectory?: string;
@@ -1284,6 +1288,8 @@ export interface ExecutionProvider {
    * or says it in a shape this build cannot read: unknown, not none (MAR-3783).
    */
   attachmentKinds?: string[];
+  /** Whether features.sessionInstructions says this provider applies session instructions. Absent: unknown. */
+  sessionInstructions?: boolean;
   /**
    * The account the provider is signed in as, as the host says it (MAR-3821).
    * Absent when the host does not say, or says it in a shape this build

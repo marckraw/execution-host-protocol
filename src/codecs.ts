@@ -1974,6 +1974,13 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
     effortLevels,
     models,
     ...optionalProperty("attachmentKinds", attachmentKinds),
+    ...optionalProperty(
+      "sessionInstructions",
+      isRecord(raw.features) &&
+        typeof raw.features.sessionInstructions === "boolean"
+        ? raw.features.sessionInstructions
+        : undefined,
+    ),
     ...optionalProperty("account", decodeExecutionProviderAccount(raw.account)),
     ...optionalProperty("usage", decodeExecutionProviderUsage(raw.usage)),
     ...optionalProperty(

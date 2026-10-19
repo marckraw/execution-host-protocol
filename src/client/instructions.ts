@@ -1,19 +1,18 @@
 import type { ExecutionHostHealth } from "./health.js";
 
-/** Nothing was sent: this host may silently drop session instructions. */
-export class ExecutionStartInstructionsError extends Error {
-  readonly code = "instructions-unsupported";
-  readonly operation = "start";
-  readonly status = null;
-  readonly reason: string;
+/** Host capability missing (unsent), or a capable host refusing this provider (400). */
+export type ExecutionStartInstructionsErrorCode =
+  "instructions-unsupported" | "instructions-unsupported-provider";
 
-  constructor(health: Pick<ExecutionHostHealth, "executionProtocolValid">) {
-    const reason = health.executionProtocolValid
-      ? "the host does not advertise start.instructions.v1; nothing was sent"
-      : "the host's protocol descriptor is unreadable; nothing was sent";
-    super(`start failed: instructions-unsupported: ${reason}`);
+export class ExecutionStartInstructionsError extends Error {
+  readonly operation = "start";
+  constructor(
+    readonly code: ExecutionStartInstructionsErrorCode,
+    readonly reason: string,
+    readonly status: number | null = null,
+  ) {
+    super(`start failed: ${code}: ${reason}`);
     this.name = "ExecutionStartInstructionsError";
-    this.reason = reason;
   }
 }
 

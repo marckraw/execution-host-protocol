@@ -32,7 +32,22 @@ process, including after a host restart. The host preserves its provider's
 default prompt and appends the instructions at system/developer priority.
 
 The limit is 32 KiB of UTF-8, including whitespace. Empty strings are valid;
-omission preserves existing behavior. Invalid or oversized values fail decoding
+omission preserves existing behavior. Instructions are fixed by the first
+successful start for a session id. A `409` / `status: "exists"` neither updates
+nor confirms the frame: the existing session may have different instructions,
+or none. A caller that needs to establish a particular frame must use a fresh
+session id; the client does not echo or compare an instructions digest.
+
+Support is per provider. The host-wide capability means the host understands
+the field; `/v0/providers` advertises `features.sessionInstructions` for each
+adapter (decoded as `ExecutionProvider.sessionInstructions` by the shared
+client). A capable host refuses an unsupported provider with HTTP 400 and
+`{ "code": "instructions-unsupported-provider" }`. The shared client types this
+as `ExecutionStartInstructionsError` with the same code and `status: 400`.
+`instructions-unsupported` is reserved for the missing host capability; that
+refusal has `status: null` and nothing is sent.
+
+Invalid or oversized values fail decoding
 with `invalid-payload`; the shared client rejects them with a `TypeError` before
 probing. For any supplied string the client probes `/health` once (shared with
 other start gates) and refuses `ExecutionStartInstructionsError` with code
