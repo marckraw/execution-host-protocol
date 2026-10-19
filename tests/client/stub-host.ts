@@ -83,6 +83,11 @@ export interface StubHost {
   startStatus: number;
   /** The `requires` a 409 echoes for a session the stub already has. */
   existingRequires: string[];
+  /**
+   * The `fileReach` a 409 echoes for a session the stub already has, to a
+   * start carrying one (MAR-4352); null by default: held to none.
+   */
+  existingFileReach: unknown;
   /** What a start refused by `startStatus` answers with. */
   startRefusal: unknown;
   startBody: ((request: Record<string, unknown>) => unknown) | null;
@@ -253,6 +258,7 @@ export function createStubHost(): StubHost {
     startRequests: [],
     startStatus: 201,
     existingRequires: [],
+    existingFileReach: null,
     startRefusal: { error: "Provider claude failed to start" },
     startBody: null,
     commandRequests: [],
@@ -411,6 +417,9 @@ export function createStubHost(): StubHost {
               ...(body.requires === undefined
                 ? {}
                 : { requires: host.existingRequires }),
+              ...(body.fileReach === undefined
+                ? {}
+                : { fileReach: host.existingFileReach }),
             },
             409,
           );
@@ -426,6 +435,15 @@ export function createStubHost(): StubHost {
             sessionId,
             // As a host advertising `start.requires.v1` does (MAR-3725).
             ...(body.requires === undefined ? {} : { requires: body.requires }),
+            // As a host advertising `start.fileReach.v1` does (MAR-4352).
+            ...(body.fileReach === undefined
+              ? {}
+              : {
+                  fileReach: {
+                    entries: (body.fileReach as { entries: unknown }).entries,
+                    abi: 6,
+                  },
+                }),
           },
           201,
         );

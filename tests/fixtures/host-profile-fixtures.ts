@@ -13,6 +13,29 @@ export const linuxHostProfileFixture = {
   checkedAt: "2026-10-05T10:00:00.000Z",
 } satisfies ExecutionHostProfile;
 
+/**
+ * A Linux container that fences sessions (MAR-4352), as agents-daemon
+ * advertises it: illustrative, not a recording.
+ */
+export const fencingHostProfileFixture = {
+  ...linuxHostProfileFixture,
+  id: "linux-container",
+  label: "Linux container",
+  fileReach: {
+    fence: "landlock",
+    abi: 6,
+    places: ["worktree", "tmp", "clone", "home", "attachments"],
+    ceiling: {
+      worktree: "write",
+      tmp: "write",
+      clone: "read",
+      home: "write",
+      attachments: "read",
+    },
+    floor: ["home", "tmp"],
+  },
+} satisfies ExecutionHostProfile;
+
 export const macHostProfileFixture = {
   id: "mac-mini",
   label: "Mac Mini",

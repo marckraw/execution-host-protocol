@@ -8,7 +8,11 @@ import {
   type ExecutionInlineAttachmentsProblem,
 } from "../attachments.js";
 import type { ExecutionHostHealth } from "./health.js";
-import { ExecutionHostError, ExecutionStartRequirementsError } from "./http.js";
+import {
+  ExecutionHostError,
+  ExecutionStartFileReachError,
+  ExecutionStartRequirementsError,
+} from "./http.js";
 
 /**
  * `files-unsupported`: the request carries a `kind: "file"` entry and the host
@@ -125,6 +129,22 @@ export function withoutHostWords(error: unknown): unknown {
       {
         requires: error.requires,
         missingTraits: error.missingTraits,
+        status: error.status,
+      },
+    );
+  }
+  // The code and which entries are the client's to keep; the host's words
+  // may quote the request, and with it the file (MAR-4352).
+  if (
+    error instanceof ExecutionStartFileReachError &&
+    error.code === "file-reach-refused"
+  ) {
+    return new ExecutionStartFileReachError(
+      error.code,
+      "the host refused this start's file reach; its words are not carried, since the request held a file",
+      {
+        fileReach: error.fileReach,
+        problems: error.problems,
         status: error.status,
       },
     );

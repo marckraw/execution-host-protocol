@@ -10,6 +10,13 @@ import {
   encodeExecutionStartRequest,
 } from "../codecs.js";
 import { checkExecutionInlineAttachments } from "../attachments.js";
+import {
+  confirmsExecutionFileReach,
+  decodeExecutionFileReachRefusal,
+  isExecutionFileReach,
+  type ExecutionFileReach,
+  type ExecutionFileReachEcho,
+} from "../file-reach.js";
 import { isStringArray } from "../guards.js";
 import {
   confirmsExecutionStartRequirements,
@@ -54,6 +61,7 @@ import {
 } from "./follow.js";
 import {
   evaluateExecutionHostHandshake,
+  hostEnforcesFileReach,
   hostEnforcesStartRequirements,
   parseExecutionHostHealth,
   type ExecutionHostHandshake,
@@ -63,6 +71,7 @@ import {
 import {
   ExecutionHostError,
   boundedReason,
+  ExecutionStartFileReachError,
   ExecutionStartRequirementsError,
   failureOf,
   joinUrl,
@@ -197,14 +206,25 @@ export interface ExecutionCommandOptions extends ExecutionRequestOptions {
  * prepared it, when it says. `exists` — it already has a session by that id
  * (409): a retried start, or one another process made first.
  */
+/**
+ * `fileReach` is present for a start that carried one (MAR-4352): what the
+ * host echoed it holds the session to, already checked against what was
+ * asked, with the ABI it fences with.
+ */
 export type ExecutionStartResult =
   | {
       status: "started";
       sessionId: string;
       commandId: string;
       workspace: ExecutionSessionWorkspace | null;
+      fileReach?: NonNullable<ExecutionFileReachEcho["fileReach"]>;
     }
-  | { status: "exists"; sessionId: string; commandId: string };
+  | {
+      status: "exists";
+      sessionId: string;
+      commandId: string;
+      fileReach?: NonNullable<ExecutionFileReachEcho["fileReach"]>;
+    };
 
 /** `no-session` — the host has no session by that id (404). */
 export interface ExecutionCommandResult {
@@ -281,6 +301,13 @@ export interface ExecutionHostClient {
    * operation `health`. Without `requires`, nothing changes: one request.
    * `config.inlineAttachments` are checked as `command()` checks them, and a
    * start carrying a file reads the same one `/health` (MAR-3783).
+   * A start carrying `fileReach` reads the same one `/health` too, and is
+   * refused here, unsent, with an `ExecutionStartFileReachError` coded
+   * `file-reach-unenforced` when the host does not advertise
+   * `start.fileReach.v1`. The host's 400 coded `file-reach-refused`, and a
+   * 201 or 409 that does not echo exactly that reach, are the same error;
+   * the unconfirmed session a 201 made is deleted (MAR-4352). A malformed
+   * `fileReach` is a `TypeError`, unsent.
    */
   start(
     request: ExecutionStartRequest,
@@ -759,6 +786,15 @@ export function createExecutionHostClient(
       if (!isStringArray(requires)) {
         throw new TypeError("requires must be an array of non-empty trait ids");
       }
+      const fileReach: unknown = startRequest.fileReach;
+      // Checked here, where the mistake is: a host would refuse it, and one
+      // predating `fileReach` would start the session unfenced.
+      if (fileReach !== undefined && !isExecutionFileReach(fileReach)) {
+        throw new TypeError(
+          "fileReach must be { entries } with at most 32 entries, each a path of 1 to 256 characters and an access of read or write",
+        );
+      }
+      const reach = fileReach as ExecutionFileReach | undefined;
       const withFiles = carriesFiles(
         "start",
         startRequest.config.inlineAttachments,
@@ -768,7 +804,7 @@ export function createExecutionHostClient(
       };
       // A host that predates `requires` drops it and starts anyway, so the
       // only safe place to refuse is here, before it is sent (MAR-3725).
-      if (requires.length > 0 || withFiles) {
+      if (requires.length > 0 || withFiles || reach) {
         const probed = await health({
           signal: requestOptions.signal,
           timeoutMs: Math.min(
@@ -788,6 +824,15 @@ export function createExecutionHostClient(
             { requires },
           );
         }
+        if (reach && !hostEnforcesFileReach(probed)) {
+          throw new ExecutionStartFileReachError(
+            "file-reach-unenforced",
+            probed.executionProtocolValid
+              ? "the host does not advertise start.fileReach.v1, so it could start the session unfenced; nothing was sent"
+              : "the host's protocol descriptor is unreadable, so it cannot be trusted to hold the session to its file reach; nothing was sent",
+            { fileReach: reach },
+          );
+        }
       }
       const answer = await request(
         "start",
@@ -803,24 +848,53 @@ export function createExecutionHostClient(
           response,
           body,
         ): Promise<
-          ExecutionStartResult | { status: "unconfirmed"; httpStatus: number }
+          | ExecutionStartResult
+          | {
+              status: "unconfirmed";
+              httpStatus: number;
+              unconfirmed: "requires" | "fileReach";
+              /** Why, in the client's words, where it isn't the echo. */
+              why?: string;
+            }
         > => {
           if (response.status === 409) {
-            if (requires.length === 0) {
+            if (requires.length === 0 && !reach) {
               await response.body?.cancel().catch(() => {});
               return { status: "exists", sessionId, commandId };
             }
             // The session is older than this request: what it was checked
             // against is the host's echo on the 409, or nothing (MAR-3725).
             const existing = parseOrNull(await refusalText(response));
-            if (!confirmsExecutionStartRequirements(existing, requires)) {
+            if (
+              requires.length > 0 &&
+              !confirmsExecutionStartRequirements(existing, requires)
+            ) {
               throw new ExecutionStartRequirementsError(
                 "requirements-unconfirmed",
                 `the host already has session ${sessionId}, and does not echo that it was checked for ${requires.join(", ")}; it was left running`,
                 { requires, status: 409, sessionId, sessionDeleted: null },
               );
             }
-            return { status: "exists", sessionId, commandId };
+            // Held to another reach, or to none, it is not this start's
+            // session to adopt (MAR-4352).
+            if (reach && !confirmsExecutionFileReach(existing, reach)) {
+              throw new ExecutionStartFileReachError(
+                "file-reach-unconfirmed",
+                `the host already has session ${sessionId}, and does not echo that it holds it to this file reach; it was left running`,
+                {
+                  fileReach: reach,
+                  status: 409,
+                  sessionId,
+                  sessionDeleted: null,
+                },
+              );
+            }
+            return {
+              status: "exists",
+              sessionId,
+              commandId,
+              ...(reach ? { fileReach: echoedFileReach(existing) } : {}),
+            };
           }
           if (!response.ok) {
             const text = await refusalText(response);
@@ -834,6 +908,28 @@ export function createExecutionHostClient(
               response.status === 400
                 ? decodeExecutionStartRequirementsRefusal(parseOrNull(text))
                 : null;
+            const reachRefused =
+              response.status === 400 && reach
+                ? decodeExecutionFileReachRefusal(parseOrNull(text))
+                : null;
+            if (reachRefused?.ok && reach) {
+              // Only problems about this reach: the host's indexes are its
+              // words, and may point past it.
+              const problems = reachRefused.value.problems.filter(
+                (problem) =>
+                  problem.entry === null ||
+                  problem.entry < reach.entries.length,
+              );
+              throw new ExecutionStartFileReachError(
+                "file-reach-refused",
+                boundedReason(reachRefused.value.error, connection.scrub),
+                {
+                  fileReach: reach,
+                  problems: problems.length > 0 ? problems : null,
+                  status: response.status,
+                },
+              );
+            }
             if (unmet?.ok) {
               // Only traits this start asked for: the host's list is its
               // words, unscrubbed and unbounded, and may name anything.
@@ -860,8 +956,31 @@ export function createExecutionHostClient(
               },
             );
           }
-          const echo = await body.json();
+          // A 2xx to a start carrying a reach made the session it asked for,
+          // whatever its body says. One that can't be read, or names no
+          // session or another, confirms nothing: the requested session is
+          // deleted, as for a missing echo (MAR-4352).
+          const unverified = (why: string) => ({
+            status: "unconfirmed" as const,
+            httpStatus: response.status,
+            unconfirmed: "fileReach" as const,
+            why,
+          });
+          let echo: unknown;
+          try {
+            echo = await body.json();
+          } catch (error) {
+            if (!reach) throw error;
+            return unverified("its answer could not be read");
+          }
           const echoed = isRecord(echo) ? echo.sessionId : undefined;
+          if (reach && echoed !== sessionId) {
+            return unverified(
+              typeof echoed === "string"
+                ? "its answer is about another session"
+                : "its answer names no session",
+            );
+          }
           // An answer about another session is not an answer about this one,
           // and filing it here would describe this session with another's
           // workspace (Convergence MAR-2694).
@@ -878,7 +997,18 @@ export function createExecutionHostClient(
             requires.length > 0 &&
             !confirmsExecutionStartRequirements(echo, requires)
           ) {
-            return { status: "unconfirmed", httpStatus: response.status };
+            return {
+              status: "unconfirmed",
+              httpStatus: response.status,
+              unconfirmed: "requires",
+            };
+          }
+          if (reach && !confirmsExecutionFileReach(echo, reach)) {
+            return {
+              status: "unconfirmed",
+              httpStatus: response.status,
+              unconfirmed: "fileReach",
+            };
           }
           let workspace: ExecutionSessionWorkspace | null = null;
           const raw = isRecord(echo) ? echo.workspace : undefined;
@@ -897,7 +1027,13 @@ export function createExecutionHostClient(
               });
             }
           }
-          return { status: "started", sessionId, commandId, workspace };
+          return {
+            status: "started",
+            sessionId,
+            commandId,
+            workspace,
+            ...(reach ? { fileReach: echoedFileReach(echo) } : {}),
+          };
         },
       ).catch(told);
       if (answer.status !== "unconfirmed") return answer;
@@ -911,9 +1047,26 @@ export function createExecutionHostClient(
         () => true,
         () => false,
       );
+      const fate = sessionDeleted
+        ? "it was deleted"
+        : "deleting it failed, so it may still be running";
+      if (answer.unconfirmed === "fileReach" && reach) {
+        throw new ExecutionStartFileReachError(
+          "file-reach-unconfirmed",
+          answer.why
+            ? `the host started session ${sessionId}, but ${answer.why}, so it does not confirm this file reach; ${fate}`
+            : `the host started session ${sessionId} without echoing that it holds it to this file reach; ${fate}`,
+          {
+            fileReach: reach,
+            status: answer.httpStatus,
+            sessionId,
+            sessionDeleted,
+          },
+        );
+      }
       throw new ExecutionStartRequirementsError(
         "requirements-unconfirmed",
-        `the host started session ${sessionId} without echoing that it checked ${requires.join(", ")}; ${sessionDeleted ? "it was deleted" : "deleting it failed, so it may still be running"}`,
+        `the host started session ${sessionId} without echoing that it checked ${requires.join(", ")}; ${fate}`,
         { requires, status: answer.httpStatus, sessionId, sessionDeleted },
       );
     },
@@ -1312,6 +1465,20 @@ function randomCommandId(): string {
   if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
   // Unique within a session is all a command id needs to be.
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/** A confirmed echo's reach, copied: what the host holds the session to. */
+function echoedFileReach(
+  answer: unknown,
+): NonNullable<ExecutionFileReachEcho["fileReach"]> {
+  const echoed = (answer as ExecutionFileReachEcho).fileReach!;
+  return {
+    entries: echoed.entries.map((entry) => ({
+      path: entry.path,
+      access: entry.access,
+    })),
+    abi: echoed.abi,
+  };
 }
 
 function parseOrNull(text: string): unknown {

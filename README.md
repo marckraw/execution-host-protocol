@@ -775,6 +775,139 @@ asks the question ahead of time, of a `health()` result or a handshake's
 `.health`. Device allocation and probing are the host implementation's work,
 outside this package.
 
+## A session's file reach
+
+A host advertising `start.fileReach.v1` holds a session's files to a
+**reach** the start carries (MAR-4352): which of the session's places its
+provider, and everything that provider starts, may read or write. On a Linux
+host it is enforced by the kernel (Landlock), not asked for in a prompt.
+
+**What the host can do** is `fileReach` in authenticated `GET /v0/host`
+(`ExecutionHostFileReach`, read by `decodeExecutionHostProfile`):
+
+```json
+{
+  "fence": "landlock",
+  "abi": 6,
+  "places": ["worktree", "tmp", "clone", "home", "attachments"],
+  "ceiling": {
+    "worktree": "write",
+    "tmp": "write",
+    "clone": "read",
+    "home": "write",
+    "attachments": "read"
+  },
+  "floor": ["home", "tmp"]
+}
+```
+
+- `fence` is `landlock` where the host fences sessions, and `none` where it
+  can't (a Mac, a kernel below ABI 4, a helper that failed its boot
+  self-test), with a `reason` for a person. A host with `none` refuses every
+  start carrying a reach. Anything else is a fence this reader does not know.
+  A `landlock` fence names an `abi` of 4 or newer
+  (`EXECUTION_FILE_REACH_MIN_LANDLOCK_ABI`); one that names none, or an
+  older one, is dropped as unreadable and the host reads as one without a
+  fence.
+- `places` are the names a reach may use here. `ceiling` is the most each
+  may be granted; a place left out is never granted.
+- `floor` is what every fenced session here writes whatever its reach says:
+  its own `home` and `tmp`, which its provider can't run without and which
+  hold nothing of anyone else's. The host also adds what every fenced process
+  reads (its toolchain), which no reach names or removes.
+- An unreadable place, ceiling or floor entry is dropped and named. A
+  `fileReach` whose `fence`, `abi` or lists don't read is dropped whole,
+  named at `fileReach`, and the host reads as one without a fence.
+
+**A start carries a reach** at the top level, as `fileReach`
+(`ExecutionFileReach`), at most 32 entries:
+
+```json
+{
+  "fileReach": {
+    "entries": [
+      { "path": "{worktree}", "access": "read" },
+      { "path": "{worktree}/apps/server/src/**", "access": "write" },
+      { "path": "{tmp}", "access": "write" }
+    ]
+  }
+}
+```
+
+A path is a place, then optional segments below it: letters, digits and
+`. _ - @ +`, never `.` or `..`. A trailing `/**` says "and everything in it"
+and means the same as the path without it: `{worktree}/**` is `{worktree}`.
+An empty segment (`{worktree}/`, `{worktree}//**`) is refused. No other
+wildcard exists, and no
+path is absolute: the host maps each place to the session's own folder, and
+no real path travels. `read` also lists and runs; `write` also creates,
+changes, renames and removes. Rights add up. `parseExecutionFileReachPath`
+reads one path. A reach that isn't `{ entries }` of `{ path, access }` with
+paths of 1 to 256 characters is `invalid-payload`, never dropped.
+
+**A reach only narrows.** The host's own choice for a session (an
+Environment that fences it, or none) is the most it can get: an entry past
+it is refused, never granted, and a session its host fences is fenced
+whether or not the wire says so. Without `fileReach`, a session is what the
+host would make it, as before.
+
+**The host refuses** a reach it can't hold with a `400`, before anything is
+prepared, whose body is an `ExecutionFileReachRefusal`:
+
+```json
+{
+  "error": "This session's file reach can't be held: \"{clone}\" asks to write; this host allows {clone} read only.",
+  "code": "file-reach-refused",
+  "problems": [{ "problem": "past-ceiling", "entry": 1 }]
+}
+```
+
+`entry` is the index in `fileReach.entries`, or null for the whole reach.
+The problems are:
+
+| `problem`       | The entry                                                                                                                               |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `unknown-place` | names no place the host knows, or no place                                                                                              |
+| `escapes-place` | is absolute, has `.` or `..` or an empty segment, a character a segment can't hold, or a symlink: it isn't a plain path below its place |
+| `past-ceiling`  | asks for more than the host allows its place                                                                                            |
+| `path-missing`  | isn't there when the session starts: refused, never skipped                                                                             |
+| `cannot-fence`  | (`entry: null`) this host, or the session's provider or folder, can't be fenced                                                         |
+
+`executionFileReachProblems(reach, hostFileReach)` says what an
+advertisement can tell before sending: everything but `path-missing`.
+`decodeExecutionFileReachRefusal` reads the body, keeping the problems it
+knows.
+
+**The host echoes** what it holds the session to (`ExecutionFileReachEcho`):
+on its `201`, `fileReach: { entries, abi }`, the entries as they were asked;
+on its `409`, the same for the session it already has, or `fileReach: null`
+when that session is held to no reach of the wire's.
+`confirmsExecutionFileReach` reads it: the same entries, path for path and
+access for access, and an ABI of 4 or newer, or it confirms nothing.
+
+The shared client mirrors `requires`. `start()` with a `fileReach` reads
+`/health` first (once, with `requires` or files), and every outcome but a
+failed probe is an `ExecutionStartFileReachError`, whose `code` says which:
+
+- `file-reach-unenforced`: the host does not advertise `start.fileReach.v1`,
+  or its descriptor is unreadable. Nothing is sent: a host predating
+  `fileReach` would drop it and start the session unfenced.
+- `file-reach-refused`: the host's coded `400`. `problems` keeps only those
+  about this reach (null when none were), and `reason` is the host's
+  `error`, scrubbed and cut. A start that also carries a file keeps the code
+  and `problems` but not the host's words, which may quote the file.
+- `file-reach-unconfirmed`: a `201` or `409` that does not echo exactly this
+  reach. After a `201` (or any success) the client deletes the session it
+  asked for, as for `requires`. So it does when the answer can't be read,
+  names no session, or names another: that request still made the session it
+  asked for, and nothing confirms its fence. After a `409` it leaves the
+  older session alone (`sessionDeleted: null`).
+
+A confirmed start returns the echo as `fileReach` on its `started` or
+`exists` result. A `fileReach` of the wrong shape is a `TypeError`, unsent.
+`hostEnforcesFileReach(health)` asks the question ahead of time. A start
+without `fileReach` is unchanged: one request, no probe.
+
 ## One-shots: one answer, no tools
 
 On a host advertising `oneshot.v1`, authenticated `POST /v0/oneshot` answers

@@ -53,6 +53,7 @@ export {
   type ExecutionInteractionResponseErrorCode,
 } from "./interactions.js";
 export {
+  hostEnforcesFileReach,
   hostEnforcesStartRequirements,
   parseExecutionHostHealth,
   SUPPORTED_EXECUTION_HOST_API_VERSIONS,
@@ -63,8 +64,10 @@ export {
 } from "./health.js";
 export {
   ExecutionHostError,
+  ExecutionStartFileReachError,
   ExecutionStartRequirementsError,
   type ExecutionHostErrorKind,
+  type ExecutionStartFileReachErrorCode,
   type ExecutionStartRequirementsErrorCode,
 } from "./http.js";
 export {

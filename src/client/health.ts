@@ -87,6 +87,17 @@ export function hostEnforcesStartRequirements(
 }
 
 /**
+ * Whether the host holds a start to its `fileReach`, or refuses it
+ * (`start.fileReach.v1`, MAR-4352). A host that does not may ignore it and
+ * start the session unfenced, so `start()` will not send it there.
+ */
+export function hostEnforcesFileReach(
+  health: Pick<ExecutionHostHealth, "capabilities">,
+): boolean {
+  return health.capabilities.includes("start.fileReach.v1");
+}
+
+/**
  * `connected` — the host answered, speaks a protocol this client knows, and
  * accepted the token. `unauthorized` — it answered and refused the token, or
  * there is none. `incompatible` — it answered in a version this client does
