@@ -267,6 +267,97 @@ describe("starting with a file reach (MAR-4352)", () => {
     },
   );
 
+  /** A host that fences on `/health`, then answers a start with `body`. */
+  const answering =
+    (
+      status: number,
+      body: string,
+      deletes: string[],
+    ): typeof globalThis.fetch =>
+    async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/health")) return host.fetch(input, init);
+      if (init?.method === "DELETE") {
+        deletes.push(new URL(url).pathname);
+        return new Response(null, { status: 200 });
+      }
+      return new Response(body, { status });
+    };
+
+  it.each([
+    ["is not JSON", "<html>oops</html>", "its answer could not be read"],
+    ["is empty", "", "its answer names no session"],
+    ["is {}", "{}", "its answer names no session"],
+    [
+      "names no session",
+      JSON.stringify({ protocolVersion: 1 }),
+      "its answer names no session",
+    ],
+    [
+      "names another session",
+      JSON.stringify({
+        protocolVersion: 1,
+        sessionId: "someone-elses",
+        fileReach: { entries: fileReach.entries, abi: 6 },
+      }),
+      "its answer is about another session",
+    ],
+  ])(
+    "deletes the requested session when a 201's answer %s, and refuses it",
+    async (_, body, why) => {
+      enforcing();
+      const deletes: string[] = [];
+      const connection = createExecutionHostClient({
+        baseUrl: "https://host.test",
+        token: host.token,
+        fetch: answering(201, body, deletes),
+      });
+      const refusal = await connection
+        .start(reaching())
+        .catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(ExecutionStartFileReachError);
+      expect(refusal).toMatchObject({
+        code: "file-reach-unconfirmed",
+        status: 201,
+        sessionId,
+        sessionDeleted: true,
+      });
+      expect((refusal as Error).message).toContain(why);
+      expect((refusal as Error).message).not.toContain("someone-elses");
+      // The session this request asked for, never the one the answer named.
+      expect(deletes).toEqual([`/v0/execution/sessions/${sessionId}`]);
+    },
+  );
+
+  it("keeps a malformed 201 for a start without a reach as before: malformed, nothing deleted", async () => {
+    const deletes: string[] = [];
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: answering(201, "{}", deletes),
+    });
+    await expect(
+      connection.start(startRequestWithEnvironmentFixture.value),
+    ).rejects.toMatchObject({ kind: "malformed", operation: "start" });
+    expect(deletes).toEqual([]);
+  });
+
+  it("leaves an older session alone when a 409 to a start with a reach can't be read", async () => {
+    enforcing();
+    const deletes: string[] = [];
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: answering(409, "not json", deletes),
+    });
+    await expect(connection.start(reaching())).rejects.toMatchObject({
+      code: "file-reach-unconfirmed",
+      status: 409,
+      sessionDeleted: null,
+    });
+    expect(deletes).toEqual([]);
+  });
+
   it("says so when deleting the unconfirmed session fails", async () => {
     enforcing();
     host.startBody = (body) => ({
@@ -395,5 +486,78 @@ describe("starting with a file reach (MAR-4352)", () => {
     expect(hostEnforcesFileReach({ capabilities: ["start.requires.v1"] })).toBe(
       false,
     );
+  });
+});
+
+describe("a reach beside a file (MAR-4352)", () => {
+  const SECRET_NAME = "payroll-2026-Q3-salaries.xlsx";
+  const SECRET_BASE64 = Buffer.from("account 4242 4242 4242 4242").toString(
+    "base64",
+  );
+  const withFile = {
+    ...startRequestWithEnvironmentFixture.value,
+    config: {
+      ...startRequestWithEnvironmentFixture.value.config,
+      inlineAttachments: [
+        {
+          kind: "file" as const,
+          name: SECRET_NAME,
+          mimeType: "application/vnd.ms-excel",
+          sizeBytes: Buffer.from(SECRET_BASE64, "base64").byteLength,
+          dataBase64: SECRET_BASE64,
+        },
+      ],
+    },
+    fileReach,
+  };
+  const everythingSaid = (error: unknown): string =>
+    error instanceof Error
+      ? [
+          error.message,
+          error.stack ?? "",
+          JSON.stringify(error, Object.getOwnPropertyNames(error)),
+          everythingSaid(error.cause),
+        ].join("\n")
+      : String(error ?? "");
+
+  it("carries the code and which entries, never the host's words, which may quote the file", async () => {
+    enforcing("attachments.inline-file.v1");
+    host.takesFiles = true;
+    host.startStatus = 400;
+    host.startRefusal = {
+      error: `Refused ${SECRET_NAME} (${SECRET_BASE64}): "{worktree}/apps/server/src/**" isn't there`,
+      code: "file-reach-refused",
+      problems: [{ problem: "path-missing", entry: 1 }],
+    };
+    const refusal = await client()
+      .start(withFile)
+      .catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ExecutionStartFileReachError);
+    expect(refusal).toMatchObject({
+      code: "file-reach-refused",
+      status: 400,
+      problems: [{ problem: "path-missing", entry: 1 }],
+      fileReach,
+    });
+    const said = everythingSaid(refusal);
+    expect(said).not.toContain(SECRET_NAME);
+    expect(said).not.toContain(SECRET_BASE64);
+    expect(said).not.toContain("4242");
+    expect((refusal as ExecutionStartFileReachError).reason).toContain(
+      "its words are not carried",
+    );
+  });
+
+  it("keeps the host's words for a reach without a file", async () => {
+    enforcing();
+    host.startStatus = 400;
+    host.startRefusal = {
+      error: `"{worktree}/x" isn't there`,
+      code: "file-reach-refused",
+      problems: [{ problem: "path-missing", entry: 0 }],
+    };
+    await expect(client().start(reaching())).rejects.toMatchObject({
+      reason: `"{worktree}/x" isn't there`,
+    });
   });
 });

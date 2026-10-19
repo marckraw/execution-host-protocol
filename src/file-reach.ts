@@ -72,6 +72,14 @@ export const EXECUTION_FILE_REACH_MAX_ENTRIES = 32;
 export const EXECUTION_FILE_REACH_PATH_MAX_LENGTH = 256;
 
 /**
+ * The oldest Landlock a fence holds with: ABI 4, Linux 6.7. Below it there
+ * is no `REFER` across directories, no `TRUNCATE` and no TCP rights a host
+ * relies on, so a fence claimed on it is no fence: an advertisement or an
+ * echo naming an older ABI is read as none.
+ */
+export const EXECUTION_FILE_REACH_MIN_LANDLOCK_ABI = 4;
+
+/**
  * How a host holds a session to a reach: `fileReach` in authenticated
  * `GET /v0/host`, on a host advertising `start.fileReach.v1`.
  *
@@ -79,7 +87,9 @@ export const EXECUTION_FILE_REACH_PATH_MAX_LENGTH = 256;
  *   its self-test passed at boot); `none` where it can't, and refuses every
  *   start carrying a reach, coded `cannot-fence`. Open to fences this reader
  *   does not know: anything but `landlock` is a fence it can't describe.
- * - `abi`: the kernel's Landlock ABI where it was asked; null where not.
+ * - `abi`: the kernel's Landlock ABI where it was asked; null where not. A
+ *   `landlock` fence names `EXECUTION_FILE_REACH_MIN_LANDLOCK_ABI` (4) or
+ *   newer: one that doesn't is unreadable, and dropped.
  * - `places`: the places a reach may name here.
  * - `ceiling`: the most each place may be granted. A place left out is never
  *   granted. Empty where the fence is `none`.
@@ -151,6 +161,18 @@ export interface ExecutionFileReachEcho {
   fileReach: { entries: ExecutionFileReachEntry[]; abi: number } | null;
 }
 
+/** Whether `abi` is a Landlock ABI a fence holds with: an integer, 4 or newer. */
+function isUsableLandlockAbi(abi: unknown): abi is number {
+  return (
+    isSafePositiveInteger(abi) && abi >= EXECUTION_FILE_REACH_MIN_LANDLOCK_ABI
+  );
+}
+
+/** Whether an advertisement is a fence a reach can be held to. */
+function fencesWithLandlock(host: ExecutionHostFileReach): boolean {
+  return host.fence === "landlock" && isUsableLandlockAbi(host.abi);
+}
+
 const SEGMENT = /^[A-Za-z0-9._@+-]+$/;
 const PLACE = /^\{([^{}/]*)\}(?:\/(.*))?$/;
 
@@ -159,7 +181,7 @@ const PLACE = /^\{([^{}/]*)\}(?:\/(.*))?$/;
  * absolute path or one that is no plain path below its place is
  * `escapes-place`, one naming no place `unknown-place`. Whether the place is
  * one a host knows is the caller's question. A trailing `/**` is dropped:
- * it means what the path means without it.
+ * it means what the path means without it, `{worktree}/**` included.
  */
 export function parseExecutionFileReachPath(
   path: string,
@@ -173,8 +195,9 @@ export function parseExecutionFileReachPath(
   if (below === undefined) return { ok: true, place: match[1], segments: [] };
   const segments = below.split("/");
   if (segments.at(-1) === "**") segments.pop();
+  // `{worktree}/**` is `{worktree}`; an empty segment, `{worktree}/` or
+  // `{worktree}//**` included, never is.
   if (
-    segments.length === 0 ||
     segments.some(
       (segment) =>
         !SEGMENT.test(segment) || segment === "." || segment === "..",
@@ -188,7 +211,8 @@ export function parseExecutionFileReachPath(
 /**
  * What a host would refuse in `reach`, from what it advertises: every entry
  * that names no place it knows, escapes its place, or asks past its ceiling,
- * and `cannot-fence` where it has no fence. Empty where the host would take
+ * and `cannot-fence` where it has no fence (anything but `landlock` on ABI
+ * 4 or newer). Empty where the host would take
  * it, as far as an advertisement can tell: whether each path is there is
  * the host's to say (`path-missing`). A host checks a start's reach with it
  * before anything is prepared; a client may, before anything is sent.
@@ -198,7 +222,7 @@ export function executionFileReachProblems(
   host: ExecutionHostFileReach,
 ): ExecutionFileReachProblem[] {
   const problems: ExecutionFileReachProblem[] = [];
-  if (host.fence !== "landlock") {
+  if (!fencesWithLandlock(host)) {
     problems.push({ problem: "cannot-fence", entry: null });
   }
   reach.entries.forEach((entry, index) => {
@@ -267,7 +291,8 @@ const isPlace = (value: unknown): value is string =>
  * tolerated; an unreadable place, ceiling entry or floor entry is dropped and
  * named, which under-claims. A `fence`, `abi`, `places`, `ceiling` or
  * `floor` that doesn't read leaves nothing to trust: `invalid-payload`, and
- * the profile drops `fileReach` whole, as a host that can't fence.
+ * the profile drops `fileReach` whole, as a host that can't fence. So does a
+ * `landlock` fence whose `abi` is null or below 4.
  */
 export function decodeExecutionHostFileReach(
   raw: unknown,
@@ -277,6 +302,10 @@ export function decodeExecutionHostFileReach(
   if (!isRecord(raw)) return refused;
   if (!isPlace(raw.fence)) return refused;
   if (!(raw.abi === null || isSafeNonNegativeInteger(raw.abi))) return refused;
+  // A Landlock fence on an ABI too old to hold one claims what it can't.
+  if (raw.fence === "landlock" && !isUsableLandlockAbi(raw.abi)) {
+    return refused;
+  }
   if (!Array.isArray(raw.places) || !Array.isArray(raw.floor)) return refused;
   if (!isRecord(raw.ceiling)) return refused;
   if (!(raw.reason === undefined || typeof raw.reason === "string")) {
@@ -341,7 +370,8 @@ export function decodeExecutionHostFileReach(
 /**
  * Whether a host's 201 for a start, or its 409 for a session it already
  * has, echoes that it holds the session to exactly `reach`: the same
- * entries, path for path and access for access, and an ABI. An answer
+ * entries, path for path and access for access, and an ABI a fence holds
+ * with (4 or newer). An answer
  * without the echo, from a process that dropped `fileReach` whatever
  * `/health` said, confirms nothing; neither does one holding the session to
  * more, or to less.
@@ -352,7 +382,7 @@ export function confirmsExecutionFileReach(
 ): boolean {
   if (!isRecord(answer) || !isRecord(answer.fileReach)) return false;
   const echoed = answer.fileReach;
-  if (!isSafePositiveInteger(echoed.abi)) return false;
+  if (!isUsableLandlockAbi(echoed.abi)) return false;
   if (!Array.isArray(echoed.entries)) return false;
   if (!echoed.entries.every(isFileReachEntry)) return false;
   const key = (entry: ExecutionFileReachEntry) =>

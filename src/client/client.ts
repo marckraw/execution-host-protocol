@@ -853,6 +853,8 @@ export function createExecutionHostClient(
               status: "unconfirmed";
               httpStatus: number;
               unconfirmed: "requires" | "fileReach";
+              /** Why, in the client's words, where it isn't the echo. */
+              why?: string;
             }
         > => {
           if (response.status === 409) {
@@ -954,8 +956,31 @@ export function createExecutionHostClient(
               },
             );
           }
-          const echo = await body.json();
+          // A 2xx to a start carrying a reach made the session it asked for,
+          // whatever its body says. One that can't be read, or names no
+          // session or another, confirms nothing: the requested session is
+          // deleted, as for a missing echo (MAR-4352).
+          const unverified = (why: string) => ({
+            status: "unconfirmed" as const,
+            httpStatus: response.status,
+            unconfirmed: "fileReach" as const,
+            why,
+          });
+          let echo: unknown;
+          try {
+            echo = await body.json();
+          } catch (error) {
+            if (!reach) throw error;
+            return unverified("its answer could not be read");
+          }
           const echoed = isRecord(echo) ? echo.sessionId : undefined;
+          if (reach && echoed !== sessionId) {
+            return unverified(
+              typeof echoed === "string"
+                ? "its answer is about another session"
+                : "its answer names no session",
+            );
+          }
           // An answer about another session is not an answer about this one,
           // and filing it here would describe this session with another's
           // workspace (Convergence MAR-2694).
@@ -1028,7 +1053,9 @@ export function createExecutionHostClient(
       if (answer.unconfirmed === "fileReach" && reach) {
         throw new ExecutionStartFileReachError(
           "file-reach-unconfirmed",
-          `the host started session ${sessionId} without echoing that it holds it to this file reach; ${fate}`,
+          answer.why
+            ? `the host started session ${sessionId}, but ${answer.why}, so it does not confirm this file reach; ${fate}`
+            : `the host started session ${sessionId} without echoing that it holds it to this file reach; ${fate}`,
           {
             fileReach: reach,
             status: answer.httpStatus,

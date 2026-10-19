@@ -6,6 +6,7 @@ import {
   decodeExecutionHostProfile,
   decodeExecutionStartRequest,
   encodeExecutionStartRequest,
+  EXECUTION_FILE_REACH_MIN_LANDLOCK_ABI,
   EXECUTION_FILE_REACH_PROBLEMS,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
   executionFileReachProblems,
@@ -32,6 +33,8 @@ describe("a reach path (MAR-4352)", () => {
     ["{worktree}", "worktree", []],
     ["{worktree}/apps/server/src", "worktree", ["apps", "server", "src"]],
     ["{worktree}/apps/server/src/**", "worktree", ["apps", "server", "src"]],
+    // The place itself, "and everything in it", as the grammar says.
+    ["{worktree}/**", "worktree", []],
     ["{home}/.cache", "home", [".cache"]],
     ["{tmp}/a_b-c@1+2", "tmp", ["a_b-c@1+2"]],
     ["{future}/x", "future", ["x"]],
@@ -54,7 +57,8 @@ describe("a reach path (MAR-4352)", () => {
     "{worktree}/.",
     "{worktree}/",
     "{worktree}//a",
-    "{worktree}/**",
+    "{worktree}//**",
+    "{worktree}/**/",
     "{worktree}/**/a",
     "{worktree}/*.ts",
     "{worktree}/a b",
@@ -166,6 +170,27 @@ describe("what a host would refuse in a reach", () => {
         fence: "container",
       }),
     ).toEqual([{ problem: "cannot-fence", entry: null }]);
+  });
+
+  it.each([null, 0, 1, 2, 3])(
+    "refuses every reach on a Landlock host whose ABI is %j: below 4 there is no fence",
+    (abi) => {
+      expect(
+        executionFileReachProblems(reach(["{worktree}", "read"]), {
+          ...fencing,
+          abi,
+        }),
+      ).toEqual([{ problem: "cannot-fence", entry: null }]);
+    },
+  );
+
+  it("takes {worktree}/** as {worktree}", () => {
+    expect(
+      executionFileReachProblems(reach(["{worktree}/**", "write"]), {
+        ...fencing,
+        abi: 4,
+      }),
+    ).toEqual([]);
   });
 });
 
@@ -286,6 +311,9 @@ describe("a host's fence in its profile", () => {
     ["an empty fence", { ...fencing, fence: "" }],
     ["a fractional abi", { ...fencing, abi: 4.5 }],
     ["a negative abi", { ...fencing, abi: -1 }],
+    ["a Landlock fence with no abi", { ...fencing, abi: null }],
+    ["a Landlock fence on ABI 1", { ...fencing, abi: 1 }],
+    ["a Landlock fence on ABI 3", { ...fencing, abi: 3 }],
     ["no places", { ...fencing, places: undefined }],
     ["a ceiling list", { ...fencing, ceiling: ["worktree"] }],
     ["no floor", { ...fencing, floor: undefined }],
@@ -432,6 +460,10 @@ describe("a host's echo of a reach", () => {
     ["a null echo (held to none)", { fileReach: null }],
     ["no ABI", { fileReach: { entries: asked.entries } }],
     ["an ABI of 0", { fileReach: { entries: asked.entries, abi: 0 } }],
+    ["an ABI of 1", { fileReach: { entries: asked.entries, abi: 1 } }],
+    ["an ABI of 2", { fileReach: { entries: asked.entries, abi: 2 } }],
+    ["an ABI of 3", { fileReach: { entries: asked.entries, abi: 3 } }],
+    ["a fractional ABI", { fileReach: { entries: asked.entries, abi: 4.5 } }],
     [
       "one entry left out",
       { fileReach: { entries: asked.entries.slice(0, 1), abi: 4 } },
@@ -460,5 +492,34 @@ describe("a host's echo of a reach", () => {
     ],
   ])("confirms nothing with %s", (_, answer) => {
     expect(confirmsExecutionFileReach(answer, asked)).toBe(false);
+  });
+});
+
+describe("the oldest Landlock a fence holds with", () => {
+  it("is ABI 4: a Landlock advertisement on it reads, and an echo on it confirms", () => {
+    expect(EXECUTION_FILE_REACH_MIN_LANDLOCK_ABI).toBe(4);
+    expect(decodeExecutionHostFileReach({ ...fencing, abi: 4 })).toEqual({
+      ok: true,
+      value: { ...fencing, abi: 4 },
+    });
+    const asked = reach(["{worktree}", "read"]);
+    expect(
+      confirmsExecutionFileReach(
+        { fileReach: { entries: asked.entries, abi: 4 } },
+        asked,
+      ),
+    ).toBe(true);
+  });
+
+  it("is no bar to a host that says it has no fence", () => {
+    expect(
+      decodeExecutionHostFileReach({
+        fence: "none",
+        abi: 3,
+        places: [],
+        ceiling: {},
+        floor: [],
+      }).ok,
+    ).toBe(true);
   });
 });

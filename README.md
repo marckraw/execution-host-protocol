@@ -805,6 +805,10 @@ host it is enforced by the kernel (Landlock), not asked for in a prompt.
   can't (a Mac, a kernel below ABI 4, a helper that failed its boot
   self-test), with a `reason` for a person. A host with `none` refuses every
   start carrying a reach. Anything else is a fence this reader does not know.
+  A `landlock` fence names an `abi` of 4 or newer
+  (`EXECUTION_FILE_REACH_MIN_LANDLOCK_ABI`); one that names none, or an
+  older one, is dropped as unreadable and the host reads as one without a
+  fence.
 - `places` are the names a reach may use here. `ceiling` is the most each
   may be granted; a place left out is never granted.
 - `floor` is what every fenced session here writes whatever its reach says:
@@ -832,7 +836,9 @@ host it is enforced by the kernel (Landlock), not asked for in a prompt.
 
 A path is a place, then optional segments below it: letters, digits and
 `. _ - @ +`, never `.` or `..`. A trailing `/**` says "and everything in it"
-and means the same as the path without it. No other wildcard exists, and no
+and means the same as the path without it: `{worktree}/**` is `{worktree}`.
+An empty segment (`{worktree}/`, `{worktree}//**`) is refused. No other
+wildcard exists, and no
 path is absolute: the host maps each place to the session's own folder, and
 no real path travels. `read` also lists and runs; `write` also creates,
 changes, renames and removes. Rights add up. `parseExecutionFileReachPath`
@@ -877,7 +883,7 @@ on its `201`, `fileReach: { entries, abi }`, the entries as they were asked;
 on its `409`, the same for the session it already has, or `fileReach: null`
 when that session is held to no reach of the wire's.
 `confirmsExecutionFileReach` reads it: the same entries, path for path and
-access for access, and an ABI, or it confirms nothing.
+access for access, and an ABI of 4 or newer, or it confirms nothing.
 
 The shared client mirrors `requires`. `start()` with a `fileReach` reads
 `/health` first (once, with `requires` or files), and every outcome but a
@@ -888,10 +894,14 @@ failed probe is an `ExecutionStartFileReachError`, whose `code` says which:
   `fileReach` would drop it and start the session unfenced.
 - `file-reach-refused`: the host's coded `400`. `problems` keeps only those
   about this reach (null when none were), and `reason` is the host's
-  `error`, scrubbed and cut.
+  `error`, scrubbed and cut. A start that also carries a file keeps the code
+  and `problems` but not the host's words, which may quote the file.
 - `file-reach-unconfirmed`: a `201` or `409` that does not echo exactly this
-  reach. After a `201` the client deletes the session, as for `requires`;
-  after a `409` it leaves the older session alone (`sessionDeleted: null`).
+  reach. After a `201` (or any success) the client deletes the session it
+  asked for, as for `requires`. So it does when the answer can't be read,
+  names no session, or names another: that request still made the session it
+  asked for, and nothing confirms its fence. After a `409` it leaves the
+  older session alone (`sessionDeleted: null`).
 
 A confirmed start returns the echo as `fileReach` on its `started` or
 `exists` result. A `fileReach` of the wrong shape is a `TypeError`, unsent.
