@@ -1,3 +1,4 @@
+import { isExecutionInstructions } from "./instructions.js";
 import {
   isExecutionFileReach,
   readExecutionFileReach,
@@ -1675,6 +1676,12 @@ function decodeStartConfig(
     typeof raw.automationMode !== "boolean"
   )
     return failure("invalid-payload");
+  if (
+    raw.instructions !== undefined &&
+    !isExecutionInstructions(raw.instructions)
+  ) {
+    return failure("invalid-payload");
+  }
   const permissionConfig = decodeOptionalPermissionConfig(raw.permissionConfig);
   if (!permissionConfig.ok) return permissionConfig;
   const inlineAttachments = decodeOptionalInlineAttachments(
@@ -1685,6 +1692,7 @@ function decodeStartConfig(
   if (!researchEvidence.ok) return researchEvidence;
   return success({
     sessionId: raw.sessionId,
+    ...optionalProperty("instructions", raw.instructions),
     ...optionalProperty("workingDirectory", raw.workingDirectory),
     initialMessage: raw.initialMessage,
     model: raw.model,

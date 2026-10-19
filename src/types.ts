@@ -108,6 +108,8 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * refuses a 201 or 409 that does not echo what it asked.
    */
   "start.requires.v1",
+  /** The host applies config.instructions to every provider process of the session. */
+  "start.instructions.v1",
   /**
    * The host takes `kind: "file"` entries in `inlineAttachments` beside images
    * (MAR-3783): it keeps each file for that session only, tells the agent
@@ -912,6 +914,8 @@ export interface ExecutionHostCommandEnvelope {
 }
 
 export interface ExecutionStartConfig {
+  /** Session-level provider instructions, at most 32 KiB of UTF-8. Requires start.instructions.v1. */
+  instructions?: string;
   sessionId: string;
   workingDirectory?: string;
   initialMessage: string;

@@ -23,6 +23,21 @@ Readers ignore unknown object fields so additive producers remain compatible.
 Required known fields and discriminants are still validated. Package semver
 tracks library releases; `EXECUTION_PROTOCOL_VERSION` tracks wire compatibility.
 
+## Session instructions
+
+`ExecutionStartRequest.config.instructions` supplies session-level provider
+instructions separately from `initialMessage`. A host advertising
+`start.instructions.v1` applies them on start, resume, and every replacement
+process, including after a host restart. The host preserves its provider's
+default prompt and appends the instructions at system/developer priority.
+
+The limit is 32 KiB of UTF-8, including whitespace. Empty strings are valid;
+omission preserves existing behavior. Invalid or oversized values fail decoding
+with `invalid-payload`; the shared client rejects them with a `TypeError` before
+probing. For any supplied string the client probes `/health` once (shared with
+other start gates) and refuses `ExecutionStartInstructionsError` with code
+`instructions-unsupported` before sending unless the capability is advertised.
+
 ## Streaming text: full patches and negotiated increments
 
 A `conversation.item.patch` normally carries `text`: the item's **whole** text
