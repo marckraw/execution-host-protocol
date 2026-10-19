@@ -453,3 +453,16 @@ function codeOf(value: unknown): string | null {
 export function seconds(ms: number): string {
   return ms < 1_000 ? `${Math.round(ms)} ms` : `${Math.round(ms / 100) / 10} s`;
 }
+
+/** A host cannot apply these session picks; or it refused an unknown name. */
+export class ExecutionStartSelectionError extends Error {
+  readonly operation = "start";
+  constructor(
+    readonly code: import("../selections.js").ExecutionStartSelectionRefusalCode,
+    message: string,
+    readonly status: number | null = null,
+  ) {
+    super(message);
+    this.name = "ExecutionStartSelectionError";
+  }
+}

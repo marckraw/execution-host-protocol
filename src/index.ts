@@ -12,3 +12,5 @@ export * from "./provider-usage.js";
 export * from "./task-output.js";
 export * from "./tool-attachments.js";
 export * from "./types.js";
+
+export * from "./selections.js";

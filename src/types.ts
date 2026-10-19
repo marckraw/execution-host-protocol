@@ -148,6 +148,8 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * shared client refuses to send it there.
    */
   "start.fileReach.v1",
+  /** Per-session MCP server and skill selections, including explicit empty lists. */
+  "start.selections.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -959,6 +961,13 @@ export interface ExecutionStartConfig {
    * Fixed at first start: 409 / exists neither updates nor confirms them.
    */
   instructions?: string;
+  /**
+   * Names from host.inventory. Omitted: host defaults; []: none (MAR-4365).
+   * Requires start.selections.v1. Fixed at first start; 409 neither updates nor confirms picks.
+   */
+  mcpServers?: string[];
+  /** Names from host.inventory for this provider. Omitted: host defaults; []: none. */
+  skills?: string[];
   sessionId: string;
   workingDirectory?: string;
   initialMessage: string;

@@ -70,6 +70,7 @@ export {
 export {
   ExecutionHostError,
   ExecutionStartFileReachError,
+  ExecutionStartSelectionError,
   ExecutionStartRequirementsError,
   type ExecutionHostErrorKind,
   type ExecutionStartFileReachErrorCode,

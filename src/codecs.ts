@@ -1,4 +1,5 @@
 import { isExecutionInstructions } from "./instructions.js";
+import { isExecutionSelectionNames } from "./selections.js";
 import {
   isExecutionFileReach,
   readExecutionFileReach,
@@ -1682,6 +1683,10 @@ function decodeStartConfig(
   ) {
     return failure("invalid-payload");
   }
+  for (const key of ["mcpServers", "skills"] as const) {
+    if (raw[key] !== undefined && !isExecutionSelectionNames(raw[key]))
+      return failure("invalid-payload");
+  }
   const permissionConfig = decodeOptionalPermissionConfig(raw.permissionConfig);
   if (!permissionConfig.ok) return permissionConfig;
   const inlineAttachments = decodeOptionalInlineAttachments(
@@ -1693,6 +1698,16 @@ function decodeStartConfig(
   return success({
     sessionId: raw.sessionId,
     ...optionalProperty("instructions", raw.instructions),
+    ...optionalProperty(
+      "mcpServers",
+      raw.mcpServers === undefined
+        ? undefined
+        : [...(raw.mcpServers as string[])],
+    ),
+    ...optionalProperty(
+      "skills",
+      raw.skills === undefined ? undefined : [...(raw.skills as string[])],
+    ),
     ...optionalProperty("workingDirectory", raw.workingDirectory),
     initialMessage: raw.initialMessage,
     model: raw.model,
