@@ -8,6 +8,7 @@ import {
 import { encodeExecutionStartRequest } from "../../src/index.js";
 import { startRequestWithEnvironmentFixture } from "../fixtures/contract-fixtures.js";
 import {
+  inventoryHostProfileFixture,
   linuxHostProfileFixture,
   macHostProfileFixture,
 } from "../fixtures/host-profile-fixtures.js";
@@ -151,6 +152,35 @@ describe("authenticated host profiles", () => {
           androidEmulator: macHostProfileFixture.devices.androidEmulator,
         },
       },
+      warnings,
+    });
+    expect(heard).toEqual([{ operation: "host", sessionId: null, warnings }]);
+  });
+
+  it("reads the host's MCP servers and skills, and tells the listener what it dropped (MAR-4363)", async () => {
+    host.hostBody = inventoryHostProfileFixture;
+    expect(await client().host()).toEqual({
+      profile: inventoryHostProfileFixture,
+      warnings: [],
+    });
+
+    const { inventory } = inventoryHostProfileFixture;
+    host.hostBody = {
+      ...inventoryHostProfileFixture,
+      inventory: { ...inventory, skills: [{ name: "s" }, ...inventory.skills] },
+    };
+    const heard: unknown[] = [];
+    const warnings = [
+      { reason: "dropped-invalid-field", path: "inventory.skills.0" },
+    ];
+    const connection = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: host.fetch,
+      onWarnings: (notice) => heard.push(notice),
+    });
+    expect(await connection.host()).toEqual({
+      profile: inventoryHostProfileFixture,
       warnings,
     });
     expect(heard).toEqual([{ operation: "host", sessionId: null, warnings }]);

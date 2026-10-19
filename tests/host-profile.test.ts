@@ -11,6 +11,7 @@ import {
 } from "../src/index.js";
 import { startRequestWithEnvironmentFixture } from "./fixtures/contract-fixtures.js";
 import {
+  inventoryHostProfileFixture,
   linuxHostProfileFixture,
   macHostProfileFixture,
   sdkRepositorySystemImagesFixture,
@@ -560,5 +561,157 @@ describe("a host's echo of the requirements it checked (MAR-3725)", () => {
     expect(
       confirmsExecutionStartRequirements(answer, ["ios.simulator", "xcode"]),
     ).toBe(confirmed);
+  });
+});
+
+describe("a host's inventory (MAR-4363)", () => {
+  const listing = inventoryHostProfileFixture;
+  const { inventory } = listing;
+  const dropped = (...paths: string[]) =>
+    paths.map((path) => ({ reason: "dropped-invalid-field", path }));
+  const withInventory = (value: unknown) => ({ ...listing, inventory: value });
+  const { inventory: _listed, ...withoutInventory } = listing;
+
+  it("reads the MCP servers and skills a host lists, each skill's providers too", () => {
+    expect(decodeExecutionHostProfile(listing)).toEqual({
+      ok: true,
+      value: listing,
+    });
+  });
+
+  it("reads an older host, which sends none, as one listing nothing", () => {
+    const decoded = decodeExecutionHostProfile(linuxHostProfileFixture);
+    expect(decoded).toEqual({ ok: true, value: linuxHostProfileFixture });
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value.inventory).toBeUndefined();
+  });
+
+  it("reads empty lists, and ignores unknown fields at every level", () => {
+    expect(
+      decodeExecutionHostProfile(withInventory({ mcpServers: [], skills: [] })),
+    ).toEqual({
+      ok: true,
+      value: withInventory({ mcpServers: [], skills: [] }),
+    });
+    const raw = structuredClone(listing);
+    const extra = (value: object) =>
+      Object.assign(value, { future: { value: true } });
+    extra(raw.inventory);
+    extra(raw.inventory.mcpServers[0]!);
+    extra(raw.inventory.skills[0]!);
+    expect(decodeExecutionHostProfile(raw)).toEqual({
+      ok: true,
+      value: listing,
+    });
+  });
+
+  it.each([null, [], "inventory", 1])(
+    "drops an unreadable inventory %j whole, naming it, and keeps the profile",
+    (bad) => {
+      expect(decodeExecutionHostProfile(withInventory(bad))).toEqual({
+        ok: true,
+        value: withoutInventory,
+        warnings: dropped("inventory"),
+      });
+    },
+  );
+
+  it.each(["mcpServers", "skills"] as const)(
+    "reads an unreadable or missing %s as empty, naming it, and keeps the other list",
+    (key) => {
+      for (const bad of [undefined, null, {}, "linear"]) {
+        expect(
+          decodeExecutionHostProfile(
+            withInventory({ ...inventory, [key]: bad }),
+          ),
+        ).toEqual({
+          ok: true,
+          value: withInventory({ ...inventory, [key]: [] }),
+          warnings: dropped(`inventory.${key}`),
+        });
+      }
+    },
+  );
+
+  it.each([
+    null,
+    "linear",
+    {},
+    { name: "" },
+    { name: 1 },
+    { name: "n".repeat(257) },
+    { name: "linear", label: "" },
+    { name: "linear", label: null },
+  ])("drops an unreadable MCP server %j, naming it", (bad) => {
+    expect(
+      decodeExecutionHostProfile(
+        withInventory({
+          ...inventory,
+          mcpServers: [inventory.mcpServers[0], bad, inventory.mcpServers[1]],
+        }),
+      ),
+    ).toEqual({
+      ok: true,
+      value: listing,
+      warnings: dropped("inventory.mcpServers.1"),
+    });
+  });
+
+  it.each([
+    null,
+    "code-review",
+    { name: "s" },
+    { name: "", providers: ["claude"] },
+    { name: "s", providers: "claude" },
+    { name: "s", providers: [] },
+    { name: "s", providers: ["claude", ""] },
+    { name: "s", providers: ["claude", 1] },
+    { name: "s", providers: Array.from({ length: 17 }, () => "claude") },
+  ])("drops an unreadable skill %j, naming it", (bad) => {
+    expect(
+      decodeExecutionHostProfile(
+        withInventory({
+          ...inventory,
+          skills: [bad, ...inventory.skills],
+        }),
+      ),
+    ).toEqual({
+      ok: true,
+      value: listing,
+      warnings: dropped("inventory.skills.0"),
+    });
+  });
+
+  it("skips a provider it doesn't know, and leaves out unnamed a skill for none it knows", () => {
+    expect(
+      decodeExecutionHostProfile(
+        withInventory({
+          ...inventory,
+          skills: [
+            { name: "code-review", providers: ["gemini", "claude", "codex"] },
+            { name: "gemini-only", providers: ["gemini"] },
+            { name: "design-pattern-fit", providers: ["claude", "claude"] },
+          ],
+        }),
+      ),
+    ).toEqual({ ok: true, value: listing });
+  });
+
+  it("reads a list to its 1024th entry and names the rest once", () => {
+    const mcpServers = Array.from({ length: 1030 }, (_, index) => ({
+      name: `server-${index}`,
+    }));
+    expect(
+      decodeExecutionHostProfile(withInventory({ ...inventory, mcpServers })),
+    ).toEqual({
+      ok: true,
+      value: withInventory({
+        ...inventory,
+        mcpServers: mcpServers.slice(0, 1024),
+      }),
+      warnings: [
+        { reason: "dropped-excess-entries", path: "inventory.mcpServers" },
+      ],
+    });
   });
 });

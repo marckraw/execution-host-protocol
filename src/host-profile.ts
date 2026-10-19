@@ -7,14 +7,19 @@ import {
   isStringArray,
 } from "./guards.js";
 import {
+  EXECUTION_HOST_SKILL_PROVIDERS,
   EXECUTION_START_REQUIREMENTS_UNMET,
   type ExecutionDecodeResult,
   type ExecutionDecodeWarning,
   type ExecutionHostAndroidEmulator,
   type ExecutionHostAndroidSystemImage,
   type ExecutionHostDeviceSlots,
+  type ExecutionHostInventory,
   type ExecutionHostIosSimulator,
+  type ExecutionHostMcpServer,
   type ExecutionHostProfile,
+  type ExecutionHostSkill,
+  type ExecutionHostSkillProvider,
   type ExecutionHostToolchain,
   type ExecutionStartRequirementsRefusal,
 } from "./types.js";
@@ -25,6 +30,8 @@ const MAX_PROFILE_STRING_LENGTH = 256;
 const MAX_PROFILE_LIST_ENTRIES = 1024;
 /** The most dropped entries one profile names; past it, they go unnamed. */
 const MAX_PROFILE_ENTRY_WARNINGS = 64;
+/** The most providers one skill may name; a skill naming more is unreadable. */
+const MAX_SKILL_PROVIDERS = 16;
 
 /**
  * Names what a profile had to drop. A dropped entry is named until 64 are;
@@ -47,8 +54,9 @@ const isProfileString = (value: unknown): value is string =>
  * degrades instead (MAR-3725): an unreadable trait, toolchain, runtime, device
  * type, system image or AVD is dropped, and so is an unreadable device family,
  * each named in `warnings`. So is an unreadable `fileReach`, and the host
- * reads as one without a fence (MAR-4352). A drop under-claims; it never
- * invents a tool.
+ * reads as one without a fence (MAR-4352), and an unreadable `inventory`,
+ * either of its lists, MCP server or skill (MAR-4363). A drop under-claims;
+ * it never invents a tool.
  *
  * Bounded, so a hostile body costs little: strings are 1 to 256 characters,
  * a list is read to its 1024th entry and the rest named once, as
@@ -99,6 +107,7 @@ export function decodeExecutionHostProfile(
   );
   const devices = decodeDevices(raw.devices, warn);
   const fileReach = decodeFileReach(raw.fileReach, warnings);
+  const inventory = decodeInventory(raw.inventory, warn);
   const profile: ExecutionHostProfile = {
     id: raw.id,
     label: raw.label,
@@ -111,6 +120,7 @@ export function decodeExecutionHostProfile(
     toolchains,
     ...(devices === undefined ? {} : { devices }),
     ...(fileReach === undefined ? {} : { fileReach }),
+    ...(inventory === undefined ? {} : { inventory }),
     checkedAt: raw.checkedAt,
   };
   return warnings.length > 0
@@ -179,6 +189,74 @@ function decodeFileReach(
   }
   warnings.push(...(decoded.warnings ?? []));
   return decoded.value;
+}
+
+/**
+ * A host's MCP servers and skills (MAR-4363). An `inventory` that is not an
+ * object is dropped whole, and either list that is not an array reads as
+ * empty, each named. A skill's provider this reader doesn't know is skipped,
+ * and a skill left for none it knows is left out unnamed: it is not
+ * unreadable, only for providers a newer reader knows.
+ */
+function decodeInventory(
+  raw: unknown,
+  warn: Drops,
+): ExecutionHostInventory | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) {
+    warn.whole("inventory");
+    return undefined;
+  }
+  const list = <T>(key: string, read: (entry: unknown) => T | null): T[] => {
+    const path = `inventory.${key}`;
+    const entries = raw[key];
+    if (!Array.isArray(entries)) {
+      warn.whole(path);
+      return [];
+    }
+    return readList(entries, path, warn, read);
+  };
+  return {
+    mcpServers: list("mcpServers", decodeMcpServer),
+    skills: list("skills", decodeSkill).filter(
+      (skill) => skill.providers.length > 0,
+    ),
+  };
+}
+
+function decodeMcpServer(raw: unknown): ExecutionHostMcpServer | null {
+  if (
+    !isRecord(raw) ||
+    !isProfileString(raw.name) ||
+    !(raw.label === undefined || isProfileString(raw.label))
+  )
+    return null;
+  return {
+    name: raw.name,
+    ...(raw.label === undefined ? {} : { label: raw.label }),
+  };
+}
+
+/** A skill naming no provider, or one that isn't a string, is unreadable. */
+function decodeSkill(raw: unknown): ExecutionHostSkill | null {
+  if (
+    !isRecord(raw) ||
+    !isProfileString(raw.name) ||
+    !Array.isArray(raw.providers) ||
+    raw.providers.length === 0 ||
+    raw.providers.length > MAX_SKILL_PROVIDERS ||
+    !raw.providers.every(isProfileString)
+  )
+    return null;
+  const known: readonly string[] = EXECUTION_HOST_SKILL_PROVIDERS;
+  const providers = [
+    ...new Set(
+      raw.providers.filter((provider): provider is ExecutionHostSkillProvider =>
+        known.includes(provider),
+      ),
+    ),
+  ];
+  return { name: raw.name, providers };
 }
 
 function decodeToolchain(raw: unknown): ExecutionHostToolchain | null {

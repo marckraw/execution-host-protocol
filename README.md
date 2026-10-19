@@ -702,7 +702,7 @@ entry, and the rest are named once as `dropped-excess-entries` at the list's
 path (`traits`). At most 64 dropped entries are named; past that, later
 entries go unnamed. A dropped `devices` or device family, and a cut list,
 are always named, so a lost family never hides behind the cap. There are at
-most eight such warnings. When 64 entries have been named, treat every absent
+most eight such warnings, and two more for the inventory below. When 64 entries have been named, treat every absent
 entry as unknown.
 
 **Authenticated only.** `/health` advertises the capability ids, never the
@@ -922,6 +922,46 @@ A confirmed start returns the echo as `fileReach` on its `started` or
 `exists` result. A `fileReach` of the wrong shape is a `TypeError`, unsent.
 `hostEnforcesFileReach(health)` asks the question ahead of time. A start
 without `fileReach` is unchanged: one request, no probe.
+
+## A host's MCP servers and skills
+
+Authenticated `GET /v0/host` lists what the host has for a session to use
+as `inventory` (`ExecutionHostInventory`, MAR-4363), read by
+`decodeExecutionHostProfile` and so by the client's `host()`:
+
+```json
+{
+  "mcpServers": [{ "name": "linear" }, { "name": "slack", "label": "Slack" }],
+  "skills": [
+    { "name": "code-review", "providers": ["claude", "codex"] },
+    { "name": "design-pattern-fit", "providers": ["claude"] }
+  ]
+}
+```
+
+- An MCP server has the `name` it is configured under, and a `label` for a
+  person where the host has one.
+- A skill has its `name` and the `providers` whose sessions on this host get
+  it, never empty: a host's Codex skills differ from its Claude Code ones.
+  `EXECUTION_HOST_SKILL_PROVIDERS` lists the providers this reader knows. One
+  it doesn't know is skipped, and a skill left for none it knows is left out,
+  unnamed: it isn't unreadable, only for a newer reader.
+
+**A listing, not an application.** Every session on the host gets its whole
+set; a start can't pick from it yet.
+
+**Absent is empty.** A host predating the inventory sends none, and the
+profile reads without one: it lists nothing, so a caller treats it as no
+servers and no skills. No capability id gates it.
+
+**One bad entry costs only itself**, as for devices. An unreadable server or
+skill (a name of 1 to 256 characters, a label or provider of the same, at
+most 16 providers) is dropped and named (`inventory.skills.0`). Either list
+that isn't an array, or is missing, reads as empty, named at its path
+(`inventory.mcpServers`), and an `inventory` that isn't an object is dropped
+whole, named at `inventory`. A list is read to its 1024th entry. Each drop
+under-claims, so a caller treats a name the warnings explain as unknown, not
+as missing.
 
 ## One-shots: one answer, no tools
 

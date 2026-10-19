@@ -217,6 +217,40 @@ export interface ExecutionHostAndroidEmulator {
   slots: ExecutionHostDeviceSlots;
 }
 
+/** The providers a host's skill may be for (MAR-4363). */
+export const EXECUTION_HOST_SKILL_PROVIDERS = ["claude", "codex"] as const;
+export type ExecutionHostSkillProvider =
+  (typeof EXECUTION_HOST_SKILL_PROVIDERS)[number];
+
+/** An MCP server a host has configured (MAR-4363). */
+export interface ExecutionHostMcpServer {
+  /** The name it is configured under, which a session would ask for it by. */
+  name: string;
+  /** A name for a person, where the host has one. */
+  label?: string;
+}
+
+/** A skill a host has installed (MAR-4363). */
+export interface ExecutionHostSkill {
+  /** Its SKILL.md `name`, or its directory's where it says none. */
+  name: string;
+  /**
+   * The providers whose sessions on this host get it: Codex's skills differ
+   * from Claude Code's. Never empty.
+   */
+  providers: ExecutionHostSkillProvider[];
+}
+
+/**
+ * What a host has for a session to use (MAR-4363): the MCP servers it has
+ * configured and the skills it has installed. A listing, not an application:
+ * every session gets the host's whole set until a start can pick from it.
+ */
+export interface ExecutionHostInventory {
+  mcpServers: ExecutionHostMcpServer[];
+  skills: ExecutionHostSkill[];
+}
+
 /**
  * A host's identity and probed tools: the body of authenticated `GET /v0/host`
  * (`host.profile.v1`, MAR-3699). Never part of public `/health`.
@@ -243,6 +277,11 @@ export interface ExecutionHostProfile {
    * Absent on a host predating it: no fence.
    */
   fileReach?: ExecutionHostFileReach;
+  /**
+   * The MCP servers and skills this host has (MAR-4363). Absent on a host
+   * predating it, which lists nothing: read it as empty.
+   */
+  inventory?: ExecutionHostInventory;
   checkedAt: string;
 }
 

@@ -36,6 +36,24 @@ export const fencingHostProfileFixture = {
   },
 } satisfies ExecutionHostProfile;
 
+/**
+ * A host listing its MCP servers and skills (MAR-4363), as agents-daemon
+ * does: illustrative, not a recording. Codex gets fewer skills than Claude
+ * Code on it.
+ */
+export const inventoryHostProfileFixture = {
+  ...linuxHostProfileFixture,
+  id: "linux-anton",
+  label: "Anton",
+  inventory: {
+    mcpServers: [{ name: "linear" }, { name: "slack", label: "Slack" }],
+    skills: [
+      { name: "code-review", providers: ["claude", "codex"] },
+      { name: "design-pattern-fit", providers: ["claude"] },
+    ],
+  },
+} satisfies ExecutionHostProfile;
+
 export const macHostProfileFixture = {
   id: "mac-mini",
   label: "Mac Mini",
