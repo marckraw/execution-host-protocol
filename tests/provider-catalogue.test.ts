@@ -172,19 +172,31 @@ it.each([true, false, undefined, "yes"])(
   },
 );
 
-it.each([true, false, undefined, "yes"])(
-  "reads per-provider selection support tolerantly (%s)",
-  (sessionSelections) => {
-    const result = decoded({
-      providers: [{ id: "provider", features: { sessionSelections } }],
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    if (typeof sessionSelections === "boolean")
-      expect(result.value.providers[0]?.sessionSelections).toBe(
-        sessionSelections,
-      );
-    else
-      expect(result.value.providers[0]).not.toHaveProperty("sessionSelections");
-  },
-);
+it.each([
+  { mcpServers: true, skills: true },
+  { mcpServers: true, skills: false },
+  { mcpServers: false, skills: false },
+  undefined,
+  true,
+  "yes",
+  {},
+  { mcpServers: true },
+  { mcpServers: true, skills: "yes" },
+])("reads per-field selection support tolerantly (%j)", (sessionSelections) => {
+  const result = decoded({
+    providers: [{ id: "provider", features: { sessionSelections } }],
+  });
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  if (
+    typeof sessionSelections === "object" &&
+    sessionSelections !== null &&
+    typeof sessionSelections.mcpServers === "boolean" &&
+    typeof sessionSelections.skills === "boolean"
+  )
+    expect(result.value.providers[0]?.sessionSelections).toEqual(
+      sessionSelections,
+    );
+  else
+    expect(result.value.providers[0]).not.toHaveProperty("sessionSelections");
+});

@@ -26,6 +26,8 @@ const start = (picks: Record<string, unknown> = {}): ExecutionStartRequest => ({
 describe("session selections (MAR-4365)", () => {
   it.each([
     {},
+    { mcpServers: [] },
+    { skills: [] },
     { mcpServers: [], skills: [] },
     { mcpServers: ["linear"], skills: ["review"] },
   ])("round trips picks without turning absence into empty: %j", (picks) => {
@@ -111,7 +113,10 @@ describe("session selections (MAR-4365)", () => {
       fetch: (url, init) =>
         init?.method === "POST"
           ? Promise.resolve(
-              Response.json({ code, error: "refused" }, { status: 400 }),
+              Response.json(
+                { code, reason: "skills", error: "refused" },
+                { status: 400 },
+              ),
             )
           : host.fetch(url, init),
     });
@@ -123,7 +128,7 @@ describe("session selections (MAR-4365)", () => {
       expect(error).toMatchObject({
         code,
         status: 400,
-        reason: "The host refused the session selections",
+        reason: "skills",
         operation: "start",
       });
     }

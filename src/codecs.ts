@@ -1999,8 +1999,13 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
     ...optionalProperty(
       "sessionSelections",
       isRecord(raw.features) &&
-        typeof raw.features.sessionSelections === "boolean"
-        ? raw.features.sessionSelections
+        isRecord(raw.features.sessionSelections) &&
+        typeof raw.features.sessionSelections.mcpServers === "boolean" &&
+        typeof raw.features.sessionSelections.skills === "boolean"
+        ? {
+            mcpServers: raw.features.sessionSelections.mcpServers,
+            skills: raw.features.sessionSelections.skills,
+          }
         : undefined,
     ),
     ...optionalProperty("account", decodeExecutionProviderAccount(raw.account)),

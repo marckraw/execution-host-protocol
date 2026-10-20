@@ -71,19 +71,16 @@ The host advertises `start.selections.v1`. The client refuses to send picks,
 including empty lists, to a host without it: `ExecutionStartSelectionError`,
 code `selection-unsupported`, `status: null`. Per-provider support is offered
 as `/v0/providers`' `features.sessionSelections`, decoded as
-`ExecutionProvider.sessionSelections`; absent means unknown. A capable host's
+`ExecutionProvider.sessionSelections`. Both have the shape
+`{ mcpServers: boolean, skills: boolean }`; absent means unknown. Each field
+is checked independently, including when its selection is `[]`. A capable host's
 unsupported-provider refusal is a distinct HTTP 400 code,
 `selection-unsupported-provider`. Coded 400s become `ExecutionStartSelectionError`
-with `code`, `reason`, `operation: "start"`, and `status: 400`.
+with `code`, `reason` (`"mcpServers"` or `"skills"`, identifying the refused field),
+`operation: "start"`, and `status: 400`.
 
-agents-daemon supports Claude and Codex; Gemini and Cursor refuse selections.
-Claude uses strict private MCP config. Its skill picks require a CLI that
-honors the SDK skill filter (2.1.296 or newer), and disable Agent/Task whenever `skills` is
-supplied: subagents cannot yet honor that filter. Claude matches skills by
-name, so a project skill with a selected name is included too. Codex uses
-per-thread MCP/skill overrides and process-local extra skill roots, including
-on resume. These controls select provider context and tools; they are not a
-file-access sandbox.
+For agents-daemon provider support and enforcement details, see the
+[daemon FAQ](https://github.com/ef-global/agents-daemon/blob/master/docs/ecosystem-faq.md#can-a-session-choose-only-some-host-mcp-servers-and-skills).
 
 ## Streaming text: full patches and negotiated increments
 

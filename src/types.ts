@@ -1299,8 +1299,8 @@ export interface ExecutionProvider {
   attachmentKinds?: string[];
   /** Whether features.sessionInstructions says this provider applies session instructions. Absent: unknown. */
   sessionInstructions?: boolean;
-  /** Whether features.sessionSelections applies both MCP and skill picks. Absent: unknown. */
-  sessionSelections?: boolean;
+  /** Per-field support from features.sessionSelections. Absent: unknown. */
+  sessionSelections?: { mcpServers: boolean; skills: boolean };
   /**
    * The account the provider is signed in as, as the host says it (MAR-3821).
    * Absent when the host does not say, or says it in a shape this build

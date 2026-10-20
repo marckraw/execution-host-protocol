@@ -984,7 +984,9 @@ export function createExecutionHostClient(
             ) {
               throw new ExecutionStartSelectionError(
                 refusal.code,
-                "The host refused the session selections",
+                refusal.reason === "mcpServers" || refusal.reason === "skills"
+                  ? refusal.reason
+                  : "The host refused the session selections",
                 400,
               );
             }
