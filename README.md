@@ -53,6 +53,38 @@ probing. For any supplied string the client probes `/health` once (shared with
 other start gates) and refuses `ExecutionStartInstructionsError` with code
 `instructions-unsupported` before sending unless the capability is advertised.
 
+## Session MCP servers and skills
+
+`config.mcpServers?: string[]` and `config.skills?: string[]` select names from
+`GET /v0/host`'s inventory. Omit a field to retain its host/provider defaults;
+`[]` enables none. Each list has at most 1024 unique names, each 1–256
+characters and not blank. Duplicate, malformed, or oversized lists are refused
+as `invalid-payload`; the client rejects them locally with `TypeError`.
+Unknown MCP names get HTTP 400 `unknown-mcp-server`. Unknown skills, including
+skills unavailable to the chosen provider, get HTTP 400 `unknown-skill`.
+
+Picks are fixed at first start and persist across resume, process replacement,
+and host restart. A 409 / `status: "exists"` neither changes nor confirms them;
+use a fresh session id to establish a particular selection.
+
+The host advertises `start.selections.v1`. The client refuses to send picks,
+including empty lists, to a host without it: `ExecutionStartSelectionError`,
+code `selection-unsupported`, `status: null`. Per-provider support is offered
+as `/v0/providers`' `features.sessionSelections`, decoded as
+`ExecutionProvider.sessionSelections`; absent means unknown. A capable host's
+unsupported-provider refusal is a distinct HTTP 400 code,
+`selection-unsupported-provider`. Coded 400s become `ExecutionStartSelectionError`
+with `code`, `reason`, `operation: "start"`, and `status: 400`.
+
+agents-daemon supports Claude and Codex; Gemini and Cursor refuse selections.
+Claude uses strict private MCP config. Its skill picks require a CLI that
+honors the SDK skill filter (2.1.296 or newer), and disable Agent/Task whenever `skills` is
+supplied: subagents cannot yet honor that filter. Claude matches skills by
+name, so a project skill with a selected name is included too. Codex uses
+per-thread MCP/skill overrides and process-local extra skill roots, including
+on resume. These controls select provider context and tools; they are not a
+file-access sandbox.
+
 ## Streaming text: full patches and negotiated increments
 
 A `conversation.item.patch` normally carries `text`: the item's **whole** text

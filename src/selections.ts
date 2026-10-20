@@ -3,6 +3,7 @@ export function isExecutionSelectionNames(raw: unknown): raw is string[] {
   return (
     Array.isArray(raw) &&
     raw.length <= 1024 &&
+    new Set(raw).size === raw.length &&
     raw.every(
       (name) =>
         typeof name === "string" &&
@@ -13,4 +14,4 @@ export function isExecutionSelectionNames(raw: unknown): raw is string[] {
 }
 
 export type ExecutionStartSelectionRefusalCode =
-  "unknown-mcp-server" | "unknown-skill" | "selection-unsupported";
+  "unknown-mcp-server" | "unknown-skill" | "selection-unsupported-provider";

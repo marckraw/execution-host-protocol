@@ -1,3 +1,7 @@
+import {
+  ExecutionStartSelectionError,
+  hostTakesSelections,
+} from "./selections.js";
 import { isExecutionInstructions } from "../instructions.js";
 import {
   ExecutionStartInstructionsError,
@@ -78,7 +82,6 @@ import {
   ExecutionHostError,
   boundedReason,
   ExecutionStartFileReachError,
-  ExecutionStartSelectionError,
   ExecutionStartRequirementsError,
   failureOf,
   joinUrl,
@@ -861,7 +864,7 @@ export function createExecutionHostClient(
               : "the host's protocol descriptor is unreadable; nothing was sent",
           );
         }
-        if (selected && !probed.capabilities.includes("start.selections.v1")) {
+        if (selected && !hostTakesSelections(probed)) {
           throw new ExecutionStartSelectionError(
             "selection-unsupported",
             "The host does not advertise start.selections.v1; nothing was sent",
@@ -971,17 +974,16 @@ export function createExecutionHostClient(
               response.status,
               connection.scrub,
             );
-            const selectionRefusal = parseOrNull(text);
             if (
               selected &&
               response.status === 400 &&
-              isRecord(selectionRefusal) &&
-              (selectionRefusal.code === "unknown-mcp-server" ||
-                selectionRefusal.code === "unknown-skill" ||
-                selectionRefusal.code === "selection-unsupported")
+              isRecord(refusal) &&
+              (refusal.code === "unknown-mcp-server" ||
+                refusal.code === "unknown-skill" ||
+                refusal.code === "selection-unsupported-provider")
             ) {
               throw new ExecutionStartSelectionError(
-                selectionRefusal.code,
+                refusal.code,
                 "The host refused the session selections",
                 400,
               );
@@ -990,11 +992,11 @@ export function createExecutionHostClient(
             // The code is honoured where the protocol puts it: on a 400.
             const unmet =
               response.status === 400
-                ? decodeExecutionStartRequirementsRefusal(parseOrNull(text))
+                ? decodeExecutionStartRequirementsRefusal(refusal)
                 : null;
             const reachRefused =
               response.status === 400 && reach
-                ? decodeExecutionFileReachRefusal(parseOrNull(text))
+                ? decodeExecutionFileReachRefusal(refusal)
                 : null;
             if (reachRefused?.ok && reach) {
               // Only problems about this reach: the host's indexes are its

@@ -1996,6 +1996,13 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
         ? raw.features.sessionInstructions
         : undefined,
     ),
+    ...optionalProperty(
+      "sessionSelections",
+      isRecord(raw.features) &&
+        typeof raw.features.sessionSelections === "boolean"
+        ? raw.features.sessionSelections
+        : undefined,
+    ),
     ...optionalProperty("account", decodeExecutionProviderAccount(raw.account)),
     ...optionalProperty("usage", decodeExecutionProviderUsage(raw.usage)),
     ...optionalProperty(

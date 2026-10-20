@@ -70,7 +70,6 @@ export {
 export {
   ExecutionHostError,
   ExecutionStartFileReachError,
-  ExecutionStartSelectionError,
   ExecutionStartRequirementsError,
   type ExecutionHostErrorKind,
   type ExecutionStartFileReachErrorCode,
@@ -109,3 +108,9 @@ export {
   type ExecutionTaskOutputOptions,
   type ExecutionTaskOutputResult,
 } from "./task-output.js";
+
+export {
+  ExecutionStartSelectionError,
+  hostTakesSelections,
+  type ExecutionStartSelectionErrorCode,
+} from "./selections.js";

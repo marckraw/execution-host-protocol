@@ -40,6 +40,7 @@ describe("session selections (MAR-4365)", () => {
       [1],
       [""],
       [" "],
+      ["linear", "linear"],
       ["x".repeat(257)],
       Array(1025).fill("x"),
     ])(`refuses malformed ${key}: %j`, (value) => {
@@ -91,34 +92,55 @@ describe("session selections (MAR-4365)", () => {
     await client.start(start());
     expect(host.healthRequests).toHaveLength(0);
   });
-  it.each(["unknown-mcp-server", "unknown-skill", "selection-unsupported"])(
-    "returns the host's coded 400: %s",
-    async (code) => {
-      const host = createStubHost();
-      host.healthBody = {
-        ...HEALTH_BODY,
-        executionProtocol: {
-          version: 1,
-          capabilities: ["start.selections.v1"],
-        },
-      };
+  it.each([
+    "unknown-mcp-server",
+    "unknown-skill",
+    "selection-unsupported-provider",
+  ])("returns the host's coded 400: %s", async (code) => {
+    const host = createStubHost();
+    host.healthBody = {
+      ...HEALTH_BODY,
+      executionProtocol: {
+        version: 1,
+        capabilities: ["start.selections.v1"],
+      },
+    };
+    const client = createExecutionHostClient({
+      baseUrl: "https://host.test",
+      token: host.token,
+      fetch: (url, init) =>
+        init?.method === "POST"
+          ? Promise.resolve(
+              Response.json({ code, error: "refused" }, { status: 400 }),
+            )
+          : host.fetch(url, init),
+    });
+    try {
+      await client.start(start({ mcpServers: ["linear"] }));
+      throw new Error("should refuse");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExecutionStartSelectionError);
+      expect(error).toMatchObject({
+        code,
+        status: 400,
+        reason: "The host refused the session selections",
+        operation: "start",
+      });
+    }
+  });
+  it.each(["mcpServers", "skills"])(
+    "refuses duplicate %s before any request",
+    async (field) => {
       const client = createExecutionHostClient({
         baseUrl: "https://host.test",
-        token: host.token,
-        fetch: (url, init) =>
-          init?.method === "POST"
-            ? Promise.resolve(
-                Response.json({ code, error: "refused" }, { status: 400 }),
-              )
-            : host.fetch(url, init),
+        token: "test",
+        fetch: () => {
+          throw new Error("sent");
+        },
       });
-      try {
-        await client.start(start({ mcpServers: ["linear"] }));
-        throw new Error("should refuse");
-      } catch (error) {
-        expect(error).toBeInstanceOf(ExecutionStartSelectionError);
-        expect(error).toMatchObject({ code, status: 400 });
-      }
+      await expect(
+        client.start(start({ [field]: ["review", "review"] })),
+      ).rejects.toBeInstanceOf(TypeError);
     },
   );
   it("checks bad picks locally before any request", async () => {
