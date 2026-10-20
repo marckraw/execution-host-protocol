@@ -1,8 +1,13 @@
+import {
+  ExecutionStartSelectionError,
+  hostTakesSelections,
+} from "./selections.js";
 import { isExecutionInstructions } from "../instructions.js";
 import {
   ExecutionStartInstructionsError,
   hostTakesInstructions,
 } from "./instructions.js";
+import { isExecutionSelectionNames } from "../selections.js";
 import {
   decodeExecutionProjectListResponse,
   decodeExecutionProviderListResponse,
@@ -791,6 +796,17 @@ export function createExecutionHostClient(
       ),
 
     start: async (startRequest, requestOptions = {}) => {
+      const selections = [
+        startRequest.config.mcpServers,
+        startRequest.config.skills,
+      ];
+      for (const names of selections) {
+        if (names !== undefined && !isExecutionSelectionNames(names))
+          throw new TypeError(
+            "Session selections must be bounded arrays of inventory names",
+          );
+      }
+      const selected = selections.some((names) => names !== undefined);
       const commandId = commandIdFor(startRequest.commandId);
       const sessionId = startRequest.config.sessionId;
       const requires: unknown = startRequest.requires ?? [];
@@ -830,7 +846,8 @@ export function createExecutionHostClient(
         requires.length > 0 ||
         withFiles ||
         reach ||
-        instructions !== undefined
+        instructions !== undefined ||
+        selected
       ) {
         const probed = await health({
           signal: requestOptions.signal,
@@ -845,6 +862,12 @@ export function createExecutionHostClient(
             probed.executionProtocolValid
               ? "the host does not advertise start.instructions.v1; nothing was sent"
               : "the host's protocol descriptor is unreadable; nothing was sent",
+          );
+        }
+        if (selected && !hostTakesSelections(probed)) {
+          throw new ExecutionStartSelectionError(
+            "selection-unsupported",
+            "The host does not advertise start.selections.v1; nothing was sent",
           );
         }
         if (withFiles && !hostTakesInlineFiles(probed)) {
@@ -951,14 +974,31 @@ export function createExecutionHostClient(
               response.status,
               connection.scrub,
             );
+            if (
+              selected &&
+              response.status === 400 &&
+              isRecord(refusal) &&
+              (refusal.code === "unknown-mcp-server" ||
+                refusal.code === "unknown-skill" ||
+                refusal.code === "selection-unsupported-provider")
+            ) {
+              throw new ExecutionStartSelectionError(
+                refusal.code,
+                refusal.reason === "mcpServers" || refusal.reason === "skills"
+                  ? refusal.reason
+                  : "The host refused the session selections",
+                400,
+              );
+            }
+
             // The code is honoured where the protocol puts it: on a 400.
             const unmet =
               response.status === 400
-                ? decodeExecutionStartRequirementsRefusal(parseOrNull(text))
+                ? decodeExecutionStartRequirementsRefusal(refusal)
                 : null;
             const reachRefused =
               response.status === 400 && reach
-                ? decodeExecutionFileReachRefusal(parseOrNull(text))
+                ? decodeExecutionFileReachRefusal(refusal)
                 : null;
             if (reachRefused?.ok && reach) {
               // Only problems about this reach: the host's indexes are its

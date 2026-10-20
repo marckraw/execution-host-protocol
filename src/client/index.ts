@@ -108,3 +108,9 @@ export {
   type ExecutionTaskOutputOptions,
   type ExecutionTaskOutputResult,
 } from "./task-output.js";
+
+export {
+  ExecutionStartSelectionError,
+  hostTakesSelections,
+  type ExecutionStartSelectionErrorCode,
+} from "./selections.js";
