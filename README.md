@@ -4,7 +4,8 @@ Public, transport-agnostic wire contract shared by agent execution runtimes and
 clients. It contains TypeScript types plus dependency-free runtime codecs for
 the versioned JSON envelopes used to start Sessions, send commands, and stream
 events — and, under its `client` subpath, one client that speaks them to a
-host over HTTP and SSE.
+host over HTTP and SSE, with `port` carrying the same API over a
+`MessagePort` and `testing` holding any carrier to it.
 
 ## Boundaries
 
@@ -15,6 +16,11 @@ never imports the client, so a consumer of the contract loads none.
 `@mrck-labs/execution-host-protocol/client` is the one place the contract meets
 HTTP: a host's routes, its event stream, stream sequencing, and the session
 snapshot it serves. It has no dependencies beyond the contract beside it.
+
+`/port` carries the client's `ExecutionHostApi` over a `MessagePort`, for a
+host in an Electron utility process or a worker thread, and `/testing` is the
+conformance suite every carrier passes. Neither has dependencies, and neither
+is reachable from the root.
 
 Excluded from both: persistence, provider implementations, and daemon-internal
 state.
@@ -1766,6 +1772,125 @@ stream — a stream the host closes, breaks or leaves idle past `idleTimeoutMs`
 ends as it always did, and is not an abort. (Requests such as `snapshot()` are
 different: they are one answer awaited, and a caller's abort rejects them with
 the abort, as `fetch` does.)
+
+## One API, any carrier
+
+`ExecutionHostApi` (`/client`, MAR-4862) is what a host does, whatever carries
+it: `providers`, `projects`, `start`, `command`, `listSessions`, `snapshot`,
+`patchSession`, `followSession`, `taskOutput`, `sessionChanges` and
+`downloadAttachment`. The HTTP client is one, and adds what only a host on the
+network has: health, the handshake, its profile, teardown, one-shots and the
+raw event stream. A caller written against `ExecutionHostApi` runs unchanged on
+the HTTP client, on a port, or on a runtime in the same process.
+
+Every carrier keeps the same rules. A refusal is the same error: an
+`ExecutionHostError` with its `kind`, or the operation's own typed error, and a
+request the protocol would refuse is a `TypeError` or `RangeError`. "No such
+session" is an answer where the HTTP client gives one (`snapshot` null,
+`no-session` from `command`, `patchSession` and `sessionChanges`) and a
+`not-found` error elsewhere. A caller's abort rejects with the signal's
+reason. A follow hands each envelope on once and in order, resumes after
+`afterSeq` with nothing missing and nothing twice, and ends only when it is
+stopped or the host says the session is gone.
+
+**Listing sessions** is `listSessions(query?)`, `GET /v0/execution/sessions`:
+one page, newest first, of the sessions the token owns (all of them for the
+operator's). The query is agents-daemon's — `cursor`, `limit` (1 to 100),
+`status`, `providerId`, `q`, `roomId`, `includeDeleted` — checked before
+anything is sent. Each `ExecutionSessionSummary` is a snapshot without its
+conversation, turns or continuation token, with `name`, `title`,
+`conversationItemCount` and timestamps besides; pass `nextCursor` back for the
+next page. A session without its id, provider or `lastSeq` is dropped, and a
+field that cannot be read falls back to its empty value; both are named in
+`warnings`.
+
+**A session's changes** is `sessionChanges(sessionId)`,
+`GET .../changes?scope=combined`: what the session changed across all its
+turns, each file once. `no-session` is a 404; `unavailable` is a session that
+kept no baseline (`not-recorded`, 409) or whose workspace is gone (`pruned`,
+410). A host without the route answers 404 too, so gate on
+`turns.fileChanges.combined` in its capabilities.
+
+### Over a `MessagePort`
+
+```ts
+// In the utility process, or the worker: the side that runs the host.
+import { servePort } from "@mrck-labs/execution-host-protocol/port";
+process.parentPort.once("message", ({ ports: [port] }) => {
+  servePort(port, runtime); // runtime: an ExecutionHostApi
+});
+
+// In the main process: the side that drives it.
+import { createPortClient } from "@mrck-labs/execution-host-protocol/port";
+const { port1, port2 } = new MessageChannelMain();
+child.postMessage(null, [port2]);
+const host = createPortClient(port1); // an ExecutionHostApi
+```
+
+A port is anything with `postMessage` and either `addEventListener` (Node's
+`MessagePort`, a browser's) or `on` (Electron's `MessagePortMain`); `start()`
+is called when there is one. Messages are plain data, structured-cloned, and
+carry a channel tag, so a port shared with other traffic is read for these
+alone.
+
+- **Calls** are one message each way. An error crosses with its class and
+  fields — `ExecutionHostError` keeps its `kind`, `status` and `reason`, and
+  each typed error its `code` — and anything else the host throws arrives as
+  an `ExecutionHostError` of kind `http`, as an HTTP host's 500 would. A
+  caller's abort rejects at once and cancels the call on the host, whose
+  method sees its own signal abort; `timeoutMs` travels for the host's method
+  to honour.
+- **Follows** are the HTTP client's `followSession` over a stream the host
+  feeds from its own `followSession`, so resuming, dropping duplicates,
+  redelivering after a handler throws, and the ends (`stopped`, `no-session`,
+  `unauthorized`) are the same code. Frames travel in chunks of at most
+  `PORT_FRAMES_PER_CHUNK` (256), with at most `PORT_CHUNKS_IN_FLIGHT` (4)
+  unread: a long replay is a handful of messages, and a slow reader holds the
+  host's follow back rather than queueing the whole log. `idleTimeoutMs` and
+  `maxFrameLength` do not apply.
+- **Closing.** `close()` on either side stops it and closes the port. When
+  the other side closes, calls waiting reject as `network` failures and
+  follows end `gave-up` with a `network` error: a closed port does not reopen.
+  A port without a `close` event cannot say so.
+
+### The conformance suite
+
+`/testing` registers the cases every `ExecutionHostApi` passes with a test
+runner's own `describe` and `it`, so the package depends on none:
+
+```ts
+import { describe, it } from "vitest";
+import { describeExecutionHostConformance } from "@mrck-labs/execution-host-protocol/testing";
+
+describeExecutionHostConformance(
+  { describe, it },
+  "runtime over a port",
+  async () => {
+    const runtime = await createTestRuntime();
+    const { port1, port2 } = new MessageChannel();
+    const server = servePort(port2, runtime.api);
+    const api = createPortClient(port1);
+    return {
+      api,
+      providerId: "claude",
+      emit: (sessionId, events) => runtime.log(sessionId, events),
+      attach: (sessionId, bytes) => runtime.attach(sessionId, bytes),
+      remove: (sessionId) => runtime.remove(sessionId),
+      close: () => {
+        api.close();
+        server.close();
+      },
+    };
+  },
+);
+```
+
+Each case sets up a fresh host. `emit`, `attach` and `remove` are what a case
+needs the host to do that no caller can make it do: log events, hold an
+attachment, lose a session. `executionHostConformanceCases` are the same cases
+for a runner of another shape. This package runs the suite against a fake host
+in process, over a `MessageChannel`, over Electron-shaped ports, and behind
+the HTTP client with a fake `fetch`.
 
 ## The work address and environments
 

@@ -5,8 +5,9 @@ by agents-daemon and its clients, and the one client for it. Cross-repository
 operational questions belong in the canonical [agent ecosystem FAQ](https://github.com/ef-global/agents-daemon/blob/master/docs/ecosystem-faq.md).
 
 - The package root is the contract only: types, pure codecs, validators, and recorded fixtures. It never imports `src/client`.
-- `src/client` (the `./client` subpath) is the one sanctioned transport: the HTTP/SSE client for an execution host. `scripts/check-package-exports.mjs` enforces the split — the root exports no client.
-- Zero runtime dependencies, root and client alike. No persistence, provider logic, or daemon-internal state anywhere.
+- `src/client` (the `./client` subpath) is the HTTP/SSE client for an execution host, and owns `ExecutionHostApi`, the transport-neutral interface it implements. `src/port` (`./port`) carries that API over a `MessagePort`; `src/testing` (`./testing`) is the conformance suite every carrier passes. These are the only sanctioned transports. `scripts/check-package-exports.mjs` enforces the split — the root exports none of them.
+- Zero runtime dependencies, root, client, port and testing alike: the suite takes the runner's `describe` and `it`. No persistence, provider logic, or daemon-internal state anywhere.
+- A new `ExecutionHostApi` method changes every carrier: the HTTP client, `src/port`'s method table, and a conformance case.
 - Readers are tolerant of unknown fields and strict about required known fields.
 - Package semver and wire `protocolVersion` are independent.
 - Wire changes are additive unless an explicitly coordinated protocol-version change is approved.

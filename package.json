@@ -25,6 +25,16 @@
       "types": "./dist/client/index.d.ts",
       "import": "./dist/client/index.js",
       "require": "./dist/cjs/client/index.js"
+    },
+    "./port": {
+      "types": "./dist/port/index.d.ts",
+      "import": "./dist/port/index.js",
+      "require": "./dist/cjs/port/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "require": "./dist/cjs/testing/index.js"
     }
   },
   "files": [

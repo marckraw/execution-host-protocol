@@ -131,6 +131,17 @@ import {
   type ExecutionTaskOutputOptions,
   type ExecutionTaskOutputResult,
 } from "./task-output.js";
+import type { ExecutionHostApi } from "./api.js";
+import {
+  decodeExecutionSessionChanges,
+  type ExecutionSessionChangesResult,
+} from "./session-changes.js";
+import {
+  decodeExecutionSessionList,
+  encodeExecutionSessionListQuery,
+  type ExecutionSessionList,
+  type ExecutionSessionListQuery,
+} from "./session-list.js";
 import {
   streamSessionEvents,
   type ExecutionEventStreamOptions,
@@ -272,7 +283,12 @@ export interface ExecutionDeleteSessionResult {
   sessionId: string;
 }
 
-export interface ExecutionHostClient {
+/**
+ * The HTTP carrier of an `ExecutionHostApi` (MAR-4862), and what only a host
+ * on the network has besides: health, the handshake, its profile, teardown,
+ * one-shots and the raw event stream.
+ */
+export interface ExecutionHostClient extends ExecutionHostApi {
   readonly baseUrl: string;
   /** `GET /health`, unauthenticated. Throws `ExecutionHostError` when unreadable. */
   health(options?: ExecutionRequestOptions): Promise<ExecutionHostHealth>;
@@ -385,6 +401,31 @@ export interface ExecutionHostClient {
     sessionId: string,
     options?: ExecutionRequestOptions,
   ): Promise<ExecutionSessionSnapshot | null>;
+  /**
+   * One page of the sessions the host holds for this token
+   * (`GET /v0/execution/sessions`), newest first: a client token sees the
+   * sessions it owns, the operator's sees all. A query agents-daemon would
+   * refuse is a `TypeError` or `RangeError`, unsent. Pass the page's
+   * `nextCursor` as `cursor` for the next one. A session or field this build
+   * cannot read is dropped and named in `warnings`; an unreadable page is
+   * `malformed`.
+   */
+  listSessions(
+    query?: ExecutionSessionListQuery,
+    options?: ExecutionRequestOptions,
+  ): Promise<ExecutionSessionList>;
+  /**
+   * The session's changes across all its turns
+   * (`GET .../changes?scope=combined`). It does not read `/health` first;
+   * gate on `turns.fileChanges.combined` in its capabilities, since a host
+   * without the route answers 404 too, which reads as `no-session`. 409 and
+   * 410 are `unavailable`; any other refusal is an `ExecutionHostError`, and
+   * an answer about another session `malformed`.
+   */
+  sessionChanges(
+    sessionId: string,
+    options?: ExecutionRequestOptions,
+  ): Promise<ExecutionSessionChangesResult>;
   /**
    * Authenticated GET of a session attachment, with both IDs encoded. Reads
    * at most the kind's ceiling — 8 MiB for a tool image (the default), 10 MiB
@@ -1332,6 +1373,71 @@ export function createExecutionHostClient(
             });
           }
           return decoded.value;
+        },
+      ),
+
+    listSessions: async (query = {}, requestOptions = {}) => {
+      const search = encodeExecutionSessionListQuery(query);
+      return request(
+        "list sessions",
+        `/v0/execution/sessions${search === "" ? "" : `?${search}`}`,
+        {
+          method: "GET",
+          authenticated: true,
+          timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+          signal: requestOptions.signal,
+        },
+        async (response, body): Promise<ExecutionSessionList> => {
+          if (!response.ok) throw await refusal("list sessions", response);
+          const decoded = decodeExecutionSessionList(await body.json());
+          if (!decoded.ok) {
+            throw new ExecutionHostError(
+              "malformed",
+              `the session list is unreadable (${decoded.reason})`,
+              { operation: "list sessions", status: response.status },
+            );
+          }
+          return decoded.value;
+        },
+      );
+    },
+
+    sessionChanges: (sessionId, requestOptions = {}) =>
+      request(
+        "session changes",
+        `${sessionPath(sessionId)}/changes?scope=combined`,
+        {
+          method: "GET",
+          authenticated: true,
+          timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+          signal: requestOptions.signal,
+        },
+        async (response, body): Promise<ExecutionSessionChangesResult> => {
+          if (response.status === 404) {
+            await response.body?.cancel().catch(() => {});
+            return { status: "no-session", sessionId };
+          }
+          if (response.status === 409 || response.status === 410) {
+            await response.body?.cancel().catch(() => {});
+            return {
+              status: "unavailable",
+              sessionId,
+              reason: response.status === 409 ? "not-recorded" : "pruned",
+            };
+          }
+          if (!response.ok) throw await refusal("session changes", response);
+          const decoded = decodeExecutionSessionChanges(
+            await body.json(),
+            sessionId,
+          );
+          if (!decoded.ok) {
+            throw new ExecutionHostError(
+              "malformed",
+              `the changes are unreadable (${decoded.reason})`,
+              { operation: "session changes", status: response.status },
+            );
+          }
+          return { status: "changes", sessionId, ...decoded.value };
         },
       ),
 
