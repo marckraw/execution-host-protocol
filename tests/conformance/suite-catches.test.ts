@@ -18,12 +18,12 @@ import { FakeHostModel, fakeApi, modelHooks } from "./fake-host.js";
 async function runCase(
   name: string,
   breakIt: (api: ExecutionHostApi) => ExecutionHostApi,
+  model = new FakeHostModel(),
 ): Promise<unknown> {
   const found = executionHostConformanceCases.find(
     (entry) => entry.name === name,
   );
   if (!found) throw new Error(`no case named ${name}`);
-  const model = new FakeHostModel();
   const host: ExecutionHostConformanceHost = {
     api: breakIt(fakeApi(model)),
     ...modelHooks(model),
@@ -38,6 +38,19 @@ describe("the conformance suite", () => {
   it("passes the fake API as it is", async () => {
     for (const entry of executionHostConformanceCases) {
       expect(await runCase(entry.name, (api) => api), entry.name).toBeNull();
+    }
+  });
+
+  it("passes a fake host that records no turn usage", async () => {
+    for (const entry of executionHostConformanceCases) {
+      expect(
+        await runCase(
+          entry.name,
+          (api) => api,
+          new FakeHostModel({ recordsUsage: false }),
+        ),
+        entry.name,
+      ).toBeNull();
     }
   });
 
@@ -147,6 +160,150 @@ describe("the conformance suite", () => {
       }),
     );
     expect(String(error)).toMatch(/failed as http, not not-found/);
+  });
+
+  describe("turn usage (MAR-4943)", () => {
+    const HISTORY_CASE =
+      "lists turn usage in the order recorded, each once, and catches up from its last cursor";
+
+    it("fails a snapshot whose turns lost their usage", async () => {
+      const error = await runCase(
+        "hands a turn's usage to its followers and its snapshot",
+        (api) => ({
+          ...api,
+          snapshot: async (sessionId, options) => {
+            const snapshot = await api.snapshot(sessionId, options);
+            return (
+              snapshot && {
+                ...snapshot,
+                turns: snapshot.turns.map(({ usage: _, ...turn }) => turn),
+              }
+            );
+          },
+        }),
+      );
+      expect(String(error)).toMatch(/carries no usage/);
+    });
+
+    it("fails a followed turn.patch whose usage changed on the way", async () => {
+      const error = await runCase(
+        "hands a turn's usage to its followers and its snapshot",
+        (api) => ({
+          ...api,
+          followSession: (sessionId, options) =>
+            api.followSession(sessionId, {
+              ...options,
+              onEnvelope: (envelope, info) => {
+                const event = envelope.event;
+                if (
+                  event.kind === "delta" &&
+                  event.delta.kind === "turn.patch" &&
+                  event.delta.patch.usage
+                ) {
+                  // Codex's way: cached tokens counted in the input too.
+                  const usage = event.delta.patch.usage;
+                  const tokens = {
+                    ...usage.tokens,
+                    input: usage.tokens.input + usage.tokens.cacheRead,
+                  };
+                  return options.onEnvelope(
+                    {
+                      ...envelope,
+                      event: {
+                        ...event,
+                        delta: {
+                          ...event.delta,
+                          patch: {
+                            ...event.delta.patch,
+                            usage: { ...usage, tokens },
+                          },
+                        },
+                      },
+                    },
+                    info,
+                  );
+                }
+                return options.onEnvelope(envelope, info);
+              },
+            }),
+        }),
+      );
+      expect(String(error)).toMatch(/the turn's turn.patch carries/);
+    });
+
+    it("fails a history that lists a turn twice", async () => {
+      const error = await runCase(HISTORY_CASE, (api) => ({
+        ...api,
+        listTurnUsage: async (query, options) => {
+          const page = await api.listTurnUsage(query, options);
+          return { ...page, records: [...page.records, ...page.records] };
+        },
+      }));
+      expect(String(error)).toMatch(/times, not once|a page of at most/);
+    });
+
+    it("fails a history whose last cursor starts over instead of catching up", async () => {
+      const error = await runCase(HISTORY_CASE, (api) => ({
+        ...api,
+        listTurnUsage: async (query, options) => {
+          const page = await api.listTurnUsage(query, options);
+          // The fake's cursor is a position: the end's is back at the start.
+          return page.hasMore ? page : { ...page, nextCursor: "0|" };
+        },
+      }));
+      expect(String(error)).toMatch(/listed turns read before it/);
+    });
+
+    it("fails a history that ignores since", async () => {
+      const error = await runCase(
+        "lists only the turn usage of turns that ended since a given time",
+        (api) => ({
+          ...api,
+          listTurnUsage: (query, options) =>
+            api.listTurnUsage(
+              query?.since === undefined
+                ? query
+                : { ...query, since: undefined },
+              options,
+            ),
+        }),
+      );
+      expect(String(error)).toMatch(/since/);
+    });
+
+    it("fails a host that answers the history but cannot record usage", async () => {
+      const model = new FakeHostModel({ recordsUsage: false });
+      const error = await runCase(
+        HISTORY_CASE,
+        (api) => ({
+          ...api,
+          listTurnUsage: async () => ({
+            records: [],
+            nextCursor: null,
+            hasMore: false,
+            warnings: [],
+          }),
+        }),
+        model,
+      );
+      expect(String(error)).toMatch(/resolved; it should reject/);
+    });
+
+    it("fails a host that lets a bad query through", async () => {
+      const error = await runCase(
+        "refuses a turn usage query the protocol would refuse",
+        (api) => ({
+          ...api,
+          listTurnUsage: async () => ({
+            records: [],
+            nextCursor: null,
+            hasMore: false,
+            warnings: [],
+          }),
+        }),
+      );
+      expect(String(error)).toMatch(/since with a cursor resolved/);
+    });
   });
 
   it("leaves no timer behind when a live envelope never comes (Codex review of #64)", async () => {

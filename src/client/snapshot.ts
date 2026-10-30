@@ -256,6 +256,9 @@ function readTurns(
       });
       return;
     }
+    for (const warning of turn.warnings ?? []) {
+      warnings.push({ ...warning, path: `turns.${index}.${warning.path}` });
+    }
     const rawChanges = (entry as { fileChanges?: unknown }).fileChanges;
     const fileChanges: ExecutionTurnFileChange[] = [];
     if (Array.isArray(rawChanges)) {

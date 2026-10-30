@@ -202,6 +202,42 @@ for (const [loaded, client] of [
   server.close();
 }
 
+// Turn usage (MAR-4943): the contract and its codecs at the root; the read on
+// the client, its capability check, and the same read over a port.
+for (const loaded of [commonJs, esModule]) {
+  assert.ok(
+    loaded.EXECUTION_PROTOCOL_CAPABILITY_IDS.includes("turns.usage.v1"),
+  );
+  assert.equal(typeof loaded.decodeExecutionTurnUsage, "function");
+  assert.equal(typeof loaded.decodeExecutionTurnUsageRecord, "function");
+  assert.equal(typeof loaded.decodeExecutionTurnUsagePage, "function");
+  assert.equal(typeof loaded.encodeExecutionTurnUsageQuery, "function");
+  assert.deepEqual(loaded.EXECUTION_TURN_USAGE_SOURCES, ["live", "backfill"]);
+  assert.deepEqual(loaded.EXECUTION_TURN_USAGE_COST_BASES, ["list"]);
+  assert.equal(loaded.EXECUTION_TURN_USAGE_PAGE_MAX_LIMIT, 500);
+}
+for (const loaded of [commonJsClient, esModuleClient]) {
+  assert.equal(typeof loaded.hostRecordsTurnUsage, "function");
+  const client = loaded.createExecutionHostClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "check",
+    fetch: async () => new Response(null, { status: 404 }),
+  });
+  assert.equal(
+    await client.listTurnUsage().catch((error) => error.kind),
+    "not-found",
+  );
+}
+for (const loaded of [commonJsPort, esModulePort]) {
+  const { port1, port2 } = new MessageChannel();
+  const page = { records: [], nextCursor: null, hasMore: false, warnings: [] };
+  const server = loaded.servePort(port2, { listTurnUsage: async () => page });
+  const api = loaded.createPortClient(port1);
+  assert.deepEqual(await api.listTurnUsage({ limit: 1 }), page);
+  api.close();
+  server.close();
+}
+
 const commonJsTesting = require(`${packageName}/testing`);
 const esModuleTesting = await import(`${packageName}/testing`);
 for (const loaded of [commonJsTesting, esModuleTesting]) {

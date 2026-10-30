@@ -92,6 +92,7 @@ export const PORT_METHODS = [
   "taskOutput",
   "sessionChanges",
   "downloadAttachment",
+  "listTurnUsage",
 ] as const;
 
 export type PortMethod = (typeof PORT_METHODS)[number];
@@ -108,6 +109,7 @@ export const PORT_OPTIONS_INDEX: Record<PortMethod, number> = {
   taskOutput: 2,
   sessionChanges: 1,
   downloadAttachment: 2,
+  listTurnUsage: 1,
 };
 
 interface Tagged {

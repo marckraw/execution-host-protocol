@@ -7,6 +7,7 @@ import type {
   ExecutionToolAttachment,
   ExecutionToolAttachmentOmissions,
 } from "./tool-attachments.js";
+import type { ExecutionTurnUsage } from "./turn-usage.js";
 
 export const EXECUTION_PROTOCOL_VERSION = 1 as const;
 
@@ -150,6 +151,14 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "start.fileReach.v1",
   /** Per-session MCP server and skill selections, including explicit empty lists. */
   "start.selections.v1",
+  /**
+   * What each turn cost (MAR-4943): the host sends a turn's
+   * `ExecutionTurnUsage` once it ends, on the turn in a snapshot and on
+   * followers' `turn.patch`, and keeps every record in a history it answers
+   * at `GET /v0/usage/turns` (`listTurnUsage`). A host without it sends no
+   * usage, and answers that route 404.
+   */
+  "turns.usage.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -687,6 +696,13 @@ export interface ExecutionTurn {
    * is refused, never taken as `user`.
    */
   origin: ExecutionTurnOrigin;
+  /**
+   * What the turn cost, once it ended, on a host advertising
+   * `turns.usage.v1` (MAR-4943). Absent while it runs, from a host without
+   * it, and when the host heard nothing: unknown, never nothing. A reader
+   * that cannot read it leaves it out and says so; the turn stays.
+   */
+  usage?: ExecutionTurnUsage;
 }
 
 export interface ExecutionTurnFileChange {
@@ -755,7 +771,13 @@ export type ExecutionSessionDelta =
   | {
       kind: "turn.patch";
       turnId: string;
-      patch: Partial<Pick<ExecutionTurn, "endedAt" | "status" | "summary">>;
+      /**
+       * `usage` comes once the turn ends, with its end or after it
+       * (`turns.usage.v1`), whole: a later one replaces it.
+       */
+      patch: Partial<
+        Pick<ExecutionTurn, "endedAt" | "status" | "summary" | "usage">
+      >;
     }
   | {
       kind: "turn.fileChanges.add";
@@ -1491,6 +1513,12 @@ export interface ExecutionProviderUsageWindow {
    * slug. Absent: every model.
    */
   modelFamily?: string;
+  /**
+   * When the host heard this window (ISO 8601), where it heard the usage's
+   * windows at different times (MAR-4943), so a reader can keep each one's
+   * history. Absent or unreadable: the usage's `observedAt`.
+   */
+  observedAt?: string;
 }
 
 export const EXECUTION_PROVIDER_USAGE_SOURCES = ["turn", "read"] as const;

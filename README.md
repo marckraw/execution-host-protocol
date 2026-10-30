@@ -596,7 +596,7 @@ session's record.
 | `conversation.item.add`   | a new item, with `agentRunId` and `taskId` when a subagent or a task produced it                                                                               |
 | `conversation.item.patch` | an item's changed fields, or `textAppend`                                                                                                                      |
 | `turn.add`                | a new turn, with its `origin`                                                                                                                                  |
-| `turn.patch`              | a turn's `endedAt`, `status` or `summary`                                                                                                                      |
+| `turn.patch`              | a turn's `endedAt`, `status`, `summary` or, once it ends, its `usage` ([what each turn cost](#what-each-turn-cost))                                            |
 | `turn.fileChanges.add`    | the files a turn changed                                                                                                                                       |
 | `evidence`                | one fact of the harness's record — `turnId` and `evidence`                                                                                                     |
 
@@ -1721,6 +1721,10 @@ balance. Older hosts can omit credits and older clients ignore them. Credits
 are for display in the usage card's details only, never its rings or summary;
 they do not change whether a used-up window refuses a turn or authorize spending.
 
+A window may carry its own `observedAt` (MAR-4943), when the host heard its
+windows at different times, so a reader can keep each one's history; absent or
+unreadable, the usage's `observedAt` applies.
+
 `executionProviderUsageWindowLimits(window, model, at)` says whether a window
 still limits a model: only while its `resetsAt` is ahead of `at` (one without
 a `resetsAt` still limits), and only when it has no `modelFamily` or the model
@@ -1773,12 +1777,202 @@ ends as it always did, and is not an abort. (Requests such as `snapshot()` are
 different: they are one answer awaited, and a caller's abort rejects them with
 the abort, as `fetch` does.)
 
+## What each turn cost
+
+On a host advertising `turns.usage.v1` (MAR-4943), every turn says what it
+cost once it ends: `ExecutionTurnUsage`, on the turn in a snapshot
+(`turn.usage`) and to followers on a `turn.patch`, either the one that ends the
+turn or one of its own after it. A later one replaces it whole. The host keeps
+every record in a history, read with `listTurnUsage`. Nothing changes for a
+reader that does not know it: an older one ignores the field, and a turn
+without one is unknown, never free.
+
+```json
+{
+  "kind": "turn.patch",
+  "turnId": "turn-7",
+  "patch": {
+    "endedAt": "2026-10-30T21:00:00.000Z",
+    "status": "completed",
+    "usage": {
+      "providerId": "claude",
+      "model": "claude-opus-5-5",
+      "accountId": null,
+      "tokens": {
+        "input": 14,
+        "cacheWrite5m": 5621,
+        "cacheWrite1h": 0,
+        "cacheRead": 15268,
+        "output": 912
+      },
+      "costUsdReported": 0.1342,
+      "costBasis": "list",
+      "models": [
+        {
+          "model": "claude-opus-5-5",
+          "tokens": {
+            "input": 2,
+            "cacheWrite5m": 5621,
+            "cacheWrite1h": 0,
+            "cacheRead": 15268,
+            "output": 870
+          },
+          "costUsdReported": 0.1331
+        },
+        {
+          "model": "claude-haiku-4-5-20251001",
+          "tokens": {
+            "input": 12,
+            "cacheWrite5m": 0,
+            "cacheWrite1h": 0,
+            "cacheRead": 0,
+            "output": 42
+          },
+          "costUsdReported": 0.0011
+        }
+      ]
+    }
+  }
+}
+```
+
+**Counted once.** Each kind of token is apart from the others, so each is
+priced once at its own rate:
+
+| Field          | Is                                                                                  |
+| -------------- | ----------------------------------------------------------------------------------- |
+| `input`        | input at the full rate: never a cache read or write                                 |
+| `cacheWrite5m` | input written to the cache for five minutes (all of Claude's writes when unsplit)   |
+| `cacheWrite1h` | input written to the cache for an hour                                              |
+| `cacheRead`    | input read from the cache                                                           |
+| `output`       | output, reasoning included                                                          |
+| `reasoning`    | of `output`, what was reasoning (Codex): already in `output`, never added; optional |
+
+A kind the provider has none of is 0 (Codex writes no cache); a count it does
+not report is absent (`reasoning`, from Claude). Two providers report
+otherwise, and the host turns their words into these:
+
+- **Codex** counts its cached tokens inside its input (`input_tokens`
+  includes `cached_input_tokens`): the host sends `input` without them and
+  `cacheRead` as them. Its `last` usage is the turn's; `total` is the
+  thread's.
+- **Claude**'s `total_cost_usd` is the total of its process so far, and a
+  resident session's process outlives many turns: the host sends the
+  difference from the turn before. Its `usage` leaves subagents and helper
+  models out; `modelUsage` has every model once, and is what `models` and the
+  turn's `tokens` come from.
+
+**Models.** `model` is the one the turn ran on. `models` splits a turn that
+ran on several (a subagent, a Haiku helper), each model once, and the turn's
+`tokens` are their sum: a reader pricing by model prices `models` and not
+`tokens`, and without `models` prices the whole turn as `model`.
+
+**Cost.** `costUsdReported` is what the provider said, in US dollars, and
+`costBasis` what that is: `list`, its list price for the tokens — what they
+would cost through its API, never what the account was billed. Claude reports
+one, for the turn and for each model; Codex none, and a reader prices its
+tokens with its own dated prices.
+
+**Account.** `accountId` is which of the provider's accounts the turn ran on:
+the host's opaque id, never an email. Null is the provider's own account on the
+host, the one `GET /v0/providers` describes, which is all a host has today.
+
+**Reading it.** `decodeExecutionTurnUsage` reads one. A provider, a model and
+an account that are each an id or null, and every count (a whole number from 0
+to 2^53) are required, and an account id with an `@` in it is refused, never
+shown. A cost without a basis this build knows is dropped, every cost with it,
+and a `models` split that cannot be read whole (empty, past 32 models, a model
+twice, an entry without its tokens) is dropped too, the totals kept; each is
+named in `warnings`. On a turn or a `turn.patch`, a usage that cannot be read
+at all is dropped and named, and never costs the turn: its end and status
+still arrive.
+
+### The usage history
+
+`listTurnUsage({ since?, cursor?, limit? })` (`GET /v0/usage/turns`) reads the
+history a host keeps of its turns' usage, one page at a time, for backfill and
+catch-up. It is on `ExecutionHostApi`, so it reads the same over HTTP and over
+a port.
+
+```ts
+let cursor = saved.cursor; // undefined the first time
+for (;;) {
+  const page = await host.listTurnUsage(
+    cursor === undefined ? { since: "2026-07-01T00:00:00Z" } : { cursor },
+  );
+  await store.upsert(page.records); // by turnId
+  if (page.nextCursor !== null) cursor = page.nextCursor;
+  if (!page.hasMore) break;
+}
+saved.cursor = cursor; // next time, what was recorded since
+```
+
+```json
+{
+  "protocolVersion": 1,
+  "records": [
+    {
+      "turnId": "turn-7",
+      "sessionId": "accent_8f2c",
+      "endedAt": "2026-10-30T21:00:00.000Z",
+      "source": "live",
+      "providerId": "claude",
+      "model": "claude-opus-5-5",
+      "accountId": null,
+      "tokens": {
+        "input": 14,
+        "cacheWrite5m": 5621,
+        "cacheWrite1h": 0,
+        "cacheRead": 15268,
+        "output": 912
+      },
+      "costUsdReported": 0.1342,
+      "costBasis": "list"
+    }
+  ],
+  "nextCursor": "opaque",
+  "hasMore": false
+}
+```
+
+- **A record** is an `ExecutionTurnUsage` with the turn it was: `turnId`,
+  `sessionId`, `endedAt` and `source`. `live` was recorded as the turn
+  ended; `backfill` was read afterwards from what the host keeps on disk (a
+  provider's transcripts, its own traces), for what ran before it recorded
+  usage. A backfilled turn's `turnId` is one the host makes from what it read,
+  the same on every read, and its `sessionId` is null when no session of the
+  host's owns it.
+- **Idempotent.** `turnId` is unique on the host. A record may come again —
+  the host re-read its history, or revised a turn — and replaces the one
+  before: store by `turnId`.
+- **Ordered as recorded.** Oldest first, in the order the host recorded them,
+  so a turn backfilled today comes after yesterday's live ones whatever its
+  `endedAt`, and a reader that keeps its cursor misses neither.
+- **Paged.** `limit` is 1 to 500, the host's default when absent. `since`
+  starts a read with the turns that ended at or after it; `cursor` carries one
+  on, with its `since`, so a query names one or the other. `nextCursor` is
+  where a page ends: pass it back for the rest at once while `hasMore`, or
+  later for what the host has recorded since. It is null only when there is
+  nothing to resume after (an empty history): keep the cursor you had.
+- **Checked first.** A query naming both `since` and `cursor`, a `since` that
+  is not a timestamp, or a `limit` out of bounds is a `TypeError` or
+  `RangeError` before anything is sent; `encodeExecutionTurnUsageQuery` is the
+  check, for a host in the same process too.
+- **Read tolerantly.** `decodeExecutionTurnUsagePage` requires the frame —
+  `protocolVersion`, `records`, `hasMore` and a `nextCursor` that is one or
+  null — and drops a record it cannot read, naming it in `warnings`.
+- **Gated.** `listTurnUsage` does not read `/health` first: gate on
+  `hostRecordsTurnUsage(health)`. A host without `turns.usage.v1` answers 404,
+  an `ExecutionHostError` of kind `not-found`, and every carrier refuses it
+  so.
+
 ## One API, any carrier
 
 `ExecutionHostApi` (`/client`, MAR-4862) is what a host does, whatever carries
 it: `providers`, `projects`, `start`, `command`, `listSessions`, `snapshot`,
-`patchSession`, `followSession`, `taskOutput`, `sessionChanges` and
-`downloadAttachment`. The HTTP client is one, and adds what only a host on the
+`patchSession`, `followSession`, `taskOutput`, `sessionChanges`,
+`downloadAttachment` and `listTurnUsage` ([the usage
+history](#the-usage-history)). The HTTP client is one, and adds what only a host on the
 network has: health, the handshake, its profile, teardown, one-shots and the
 raw event stream. A caller written against `ExecutionHostApi` runs unchanged on
 the HTTP client, on a port, or on a runtime in the same process.
@@ -1894,7 +2088,12 @@ describeExecutionHostConformance(
 
 Each case sets up a fresh host. `emit`, `attach` and `remove` are what a case
 needs the host to do that no caller can make it do: log events, hold an
-attachment, lose a session. `executionHostConformanceCases` are the same cases
+attachment, lose a session. `endTurnWithUsage(sessionId, usage)` runs a turn
+that ends having cost `usage` and says its id, for the turn-usage cases: its
+`turn.patch` and snapshot carry the usage, and `listTurnUsage` lists it,
+`live`, in order, paged, and from its last cursor. A host that records no
+usage leaves it out, and is held instead to refusing `listTurnUsage` as
+`not-found`. `executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind
 the HTTP client with a fake `fetch`.

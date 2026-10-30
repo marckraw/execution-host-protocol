@@ -3,10 +3,15 @@ import {
   decodeExecutionSessionPatchRequest,
   decodeExecutionStartRequest,
   encodeExecutionSessionPatchRequest,
+  encodeExecutionTurnUsageQuery,
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
   type ExecutionSessionPatchRequest,
+  type ExecutionTurn,
+  type ExecutionTurnUsage,
+  type ExecutionTurnUsagePage,
+  type ExecutionTurnUsageRecord,
 } from "../../src/index.js";
 import {
   ExecutionHostError,
@@ -32,16 +37,33 @@ export interface FakeSession {
   title: string | null;
   log: ExecutionHostEventEnvelope[];
   attachments: Map<string, Uint8Array>;
+  turns: ExecutionTurn[];
   createdAt: string;
+}
+
+export interface FakeHostOptions {
+  /**
+   * Whether it records what turns cost (`turns.usage.v1`). Without it, it is
+   * a host predating it: no hook, and the history is a 404.
+   */
+  recordsUsage?: boolean;
 }
 
 export class FakeHostModel {
   readonly sessions = new Map<string, FakeSession>();
+  /** Every turn's usage, in the order it was recorded. */
+  readonly usage: ExecutionTurnUsageRecord[] = [];
+  readonly recordsUsage: boolean;
   /** Told of each envelope logged, and of a session going (`null`). */
   readonly watchers = new Set<
     (sessionId: string, envelope: ExecutionHostEventEnvelope | null) => void
   >();
   private created = 0;
+  private turnsEnded = 0;
+
+  constructor(options: FakeHostOptions = {}) {
+    this.recordsUsage = options.recordsUsage ?? true;
+  }
 
   start(sessionId: string, providerId: string): "started" | "exists" {
     if (this.sessions.has(sessionId)) return "exists";
@@ -52,6 +74,7 @@ export class FakeHostModel {
       title: null,
       log: [],
       attachments: new Map(),
+      turns: [],
       createdAt: new Date(
         Date.UTC(2026, 9, 29, 0, 0, this.created),
       ).toISOString(),
@@ -87,6 +110,90 @@ export class FakeHostModel {
     const id = `attachment-${session.attachments.size + 1}`;
     session.attachments.set(id, bytes.slice());
     return id;
+  }
+
+  /**
+   * Runs a turn that ends having cost `usage`, as a runtime does when its
+   * provider reports it: `turn.add`, then the `turn.patch` that ends it with
+   * its usage, and a record in the history.
+   */
+  endTurnWithUsage(sessionId: string, usage: ExecutionTurnUsage): string {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`no session ${sessionId}`);
+    this.turnsEnded += 1;
+    const turnId = `turn-${this.turnsEnded}`;
+    const startedAt = new Date().toISOString();
+    const turn: ExecutionTurn = {
+      id: turnId,
+      sessionId,
+      sequence: session.turns.length + 1,
+      startedAt,
+      endedAt: null,
+      status: "running",
+      summary: null,
+      origin: "user",
+    };
+    session.turns.push(turn);
+    this.emit(sessionId, [
+      { kind: "delta", delta: { kind: "turn.add", turn: { ...turn } } },
+    ]);
+    const endedAt = new Date().toISOString();
+    Object.assign(turn, { endedAt, status: "completed", usage });
+    this.emit(sessionId, [
+      {
+        kind: "delta",
+        delta: {
+          kind: "turn.patch",
+          turnId,
+          patch: { endedAt, status: "completed", usage },
+        },
+      },
+    ]);
+    this.usage.push({
+      turnId,
+      sessionId,
+      endedAt,
+      source: "live",
+      ...usage,
+    });
+    return turnId;
+  }
+
+  /**
+   * One page of the usage history: the cursor is where the last page's scan
+   * ended, with the `since` it started with; the default page is 2.
+   */
+  usagePage(query: {
+    since?: string;
+    cursor?: string;
+    limit?: number;
+  }): Omit<ExecutionTurnUsagePage, "warnings"> {
+    let from = 0;
+    let since = query.since;
+    if (query.cursor !== undefined) {
+      const [position, given] = query.cursor.split("|");
+      from = Number(position);
+      since = given === "" ? undefined : given;
+    }
+    const limit = query.limit ?? 2;
+    const matches = (record: ExecutionTurnUsageRecord) =>
+      since === undefined || Date.parse(record.endedAt) >= Date.parse(since);
+    const records: ExecutionTurnUsageRecord[] = [];
+    let position = from;
+    while (position < this.usage.length && records.length < limit) {
+      const record = this.usage[position]!;
+      position += 1;
+      if (matches(record)) records.push(record);
+    }
+    if (records.length < limit) position = this.usage.length;
+    return {
+      records,
+      nextCursor:
+        position === 0 && query.cursor === undefined
+          ? null
+          : `${position}|${since ?? ""}`,
+      hasMore: this.usage.slice(position).some(matches),
+    };
   }
 
   summary(session: FakeSession): ExecutionSessionSummary {
@@ -140,7 +247,7 @@ export class FakeHostModel {
       continuationToken: null,
       contextWindow: null,
       conversation: [],
-      turns: [],
+      turns: session.turns.map((turn) => ({ ...turn, fileChanges: [] })),
       lastSeq: session.log.length,
       workspace: null,
       prUrl: null,
@@ -305,6 +412,18 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
       }
       return { bytes: bytes.slice(), sizeBytes: bytes.byteLength };
     },
+    listTurnUsage: async (query = {}, options) => {
+      aborted(options?.signal);
+      // Refused as the HTTP client refuses it, before anything else.
+      encodeExecutionTurnUsageQuery(query);
+      if (!model.recordsUsage) {
+        throw new ExecutionHostError("not-found", "Route not found", {
+          operation: "list turn usage",
+          status: 404,
+        });
+      }
+      return { ...model.usagePage(query), warnings: [] };
+    },
   };
 }
 
@@ -345,6 +464,17 @@ export function fakeFetch(
     }
     const path = url.pathname;
     if (path === "/v0/providers") return json(PROVIDERS_BODY);
+    if (path === "/v0/usage/turns" && model.recordsUsage) {
+      const limit = url.searchParams.get("limit");
+      return json({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        ...model.usagePage({
+          since: url.searchParams.get("since") ?? undefined,
+          cursor: url.searchParams.get("cursor") ?? undefined,
+          limit: limit === null ? undefined : Number(limit),
+        }),
+      });
+    }
     if (path === "/v0/projects") return json({ projects: [] });
     if (path === "/v0/execution/sessions") {
       if (method === "POST") {
@@ -466,5 +596,11 @@ export function modelHooks(
     emit: (sessionId, events) => model.emit(sessionId, events),
     attach: (sessionId, bytes) => model.attach(sessionId, bytes),
     remove: (sessionId) => model.remove(sessionId),
+    ...(model.recordsUsage
+      ? {
+          endTurnWithUsage: (sessionId: string, usage: ExecutionTurnUsage) =>
+            model.endTurnWithUsage(sessionId, usage),
+        }
+      : {}),
   };
 }

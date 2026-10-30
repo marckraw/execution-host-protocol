@@ -329,6 +329,8 @@ export function createPortClient(
         attachmentId,
         options,
       ]),
+    listTurnUsage: (query, options) =>
+      call("listTurnUsage", "list turn usage", [query, options]),
     followSession,
     close: () => {
       shutDown("caller");

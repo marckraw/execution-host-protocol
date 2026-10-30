@@ -73,3 +73,38 @@ describeExecutionHostConformance(
     return { api, ...modelHooks(model) };
   },
 );
+
+// A host predating turns.usage.v1 (MAR-4943) passes too, by refusing the
+// history as not-found, over a port and over HTTP.
+describeExecutionHostConformance(
+  { describe, it },
+  "a host without turn usage, over a MessageChannel",
+  () => {
+    const model = new FakeHostModel({ recordsUsage: false });
+    const { port1, port2 } = new MessageChannel();
+    const server = servePort(port2, fakeApi(model));
+    const api = createPortClient(port1);
+    return {
+      api,
+      ...modelHooks(model),
+      close: () => {
+        api.close();
+        server.close();
+      },
+    };
+  },
+);
+
+describeExecutionHostConformance(
+  { describe, it },
+  "a host without turn usage, behind the HTTP client",
+  () => {
+    const model = new FakeHostModel({ recordsUsage: false });
+    const api = createExecutionHostClient({
+      baseUrl: "http://daemon.test",
+      token: "conformance-token",
+      fetch: fakeFetch(model, "conformance-token"),
+    });
+    return { api, ...modelHooks(model) };
+  },
+);
