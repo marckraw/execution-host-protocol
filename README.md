@@ -1791,7 +1791,9 @@ session" is an answer where the HTTP client gives one (`snapshot` null,
 `not-found` error elsewhere. A caller's abort rejects with the signal's
 reason. A follow hands each envelope on once and in order, resumes after
 `afterSeq` with nothing missing and nothing twice, and ends only when it is
-stopped or the host says the session is gone.
+stopped, the host says the session is gone, or the caller's `maxAttempts`
+run out — the same end, after the same `waiting` statuses, whatever carries
+it.
 
 **Listing sessions** is `listSessions(query?)`, `GET /v0/execution/sessions`:
 one page, newest first, of the sessions the token owns (all of them for the
@@ -1840,14 +1842,19 @@ alone.
   caller's abort rejects at once and cancels the call on the host, whose
   method sees its own signal abort; `timeoutMs` travels for the host's method
   to honour.
-- **Follows** are the HTTP client's `followSession` over a stream the host
+- **Follows** are the HTTP client's `followSession` over streams the host
   feeds from its own `followSession`, so resuming, dropping duplicates,
-  redelivering after a handler throws, and the ends (`stopped`, `no-session`,
-  `unauthorized`) are the same code. Frames travel in chunks of at most
-  `PORT_FRAMES_PER_CHUNK` (256), with at most `PORT_CHUNKS_IN_FLIGHT` (4)
-  unread: a long replay is a handful of messages, and a slow reader holds the
-  host's follow back rather than queueing the whole log. `idleTimeoutMs` and
-  `maxFrameLength` do not apply.
+  redelivering after a handler throws, and the ends are the same code. One
+  port stream is one connection of the host's: when that connection ends,
+  the stream ends with its error, and the caller's own `retryDelayMs`,
+  `maxAttempts` and `healthyAfterMs` decide the wait and whether to give up.
+  So a follow over a port ends exactly as a direct one would — `gave-up` at
+  once on a 503 with `maxAttempts: 0` — and reports the same `waiting`
+  statuses. `idleTimeoutMs` and `maxFrameLength` travel for the host's own
+  connection. Frames travel in chunks of at most `PORT_FRAMES_PER_CHUNK`
+  (256), with at most `PORT_CHUNKS_IN_FLIGHT` (4) unread: a long replay is a
+  handful of messages, and a slow reader holds the host's follow back rather
+  than queueing the whole log.
 - **Closing.** `close()` on either side stops it and closes the port. When
   the other side closes, calls waiting reject as `network` failures and
   follows end `gave-up` with a `network` error: a closed port does not reopen.

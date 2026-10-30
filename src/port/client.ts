@@ -3,12 +3,10 @@ import {
   followExecutionSession,
   type ExecutionFollowEnd,
   type ExecutionSessionFollow,
+  type OpenEventStream,
 } from "../client/follow.js";
 import { ExecutionHostError } from "../client/http.js";
-import type {
-  ExecutionDeltaMode,
-  ExecutionStreamFrame,
-} from "../client/stream.js";
+import type { ExecutionStreamFrame } from "../client/stream.js";
 import { isRecord } from "../guards.js";
 import type {
   ExecutionDecodeWarning,
@@ -59,11 +57,15 @@ interface OpenStream {
  * signal's reason, and cancels it on the host. `timeoutMs` travels with the
  * call, for the host's `api` to honour.
  *
- * `followSession` is the HTTP client's follow over a stream the host feeds
- * from its own `followSession`: each envelope once and in order, resumed after
- * `afterSeq`, redelivered after a handler throws, ended by `stop()` or the
- * host saying the session is gone. `idleTimeoutMs` and `maxFrameLength` do not
- * apply: a port does not go quiet without closing.
+ * `followSession` is the HTTP client's follow over streams the host feeds
+ * from its own `followSession`, one per connection of the host's: each
+ * envelope once and in order, resumed after `afterSeq`, redelivered after a
+ * handler throws, ended by `stop()` or the host saying the session is gone.
+ * When the host's connection ends, the port stream ends with its error, and
+ * this side waits and reconnects by the caller's `retryDelayMs`,
+ * `maxAttempts` and `healthyAfterMs`, so the follow ends as a direct one
+ * would. `idleTimeoutMs` and `maxFrameLength` travel for the host's own
+ * connection.
  *
  * When the port closes from the other side, calls waiting reject, and every
  * follow ends `gave-up` with an `ExecutionHostError` of kind `network`: a
@@ -138,9 +140,9 @@ export function createPortClient(
   async function* stream(
     sessionId: string,
     afterSeq: number,
-    deltas: ExecutionDeltaMode,
-    signal: AbortSignal,
+    open: Parameters<OpenEventStream>[1],
   ): AsyncGenerator<ExecutionStreamFrame> {
+    const { deltas, signal, idleTimeoutMs, maxFrameLength } = open;
     if (closed) throw closedError("events");
     if (signal.aborted) return;
     const id = nextId++;
@@ -163,7 +165,15 @@ export function createPortClient(
     });
     signal.addEventListener("abort", nudge);
     try {
-      send({ type: "follow", id, sessionId, afterSeq, deltas });
+      send({
+        type: "follow",
+        id,
+        sessionId,
+        afterSeq,
+        deltas,
+        idleTimeoutMs,
+        ...(maxFrameLength === undefined ? {} : { maxFrameLength }),
+      });
       for (;;) {
         if (signal.aborted) return;
         const chunk = chunks.shift();
@@ -258,7 +268,7 @@ export function createPortClient(
       own.abort();
     };
     const inner = followExecutionSession(
-      (afterSeq, open) => stream(sessionId, afterSeq, open.deltas, open.signal),
+      (afterSeq, open) => stream(sessionId, afterSeq, open),
       sessionId,
       { ...options, signal: own.signal },
     );

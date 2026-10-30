@@ -151,6 +151,8 @@ export function servePort(
     sessionId: unknown,
     afterSeq: unknown,
     deltas: unknown,
+    idleTimeoutMs: unknown,
+    maxFrameLength: unknown,
   ) => {
     if (calls.has(id) || streams.has(id)) return;
     const stream: Stream = {
@@ -176,13 +178,16 @@ export function servePort(
       finish(new TypeError("A follow names a session"));
       return;
     }
-    // The host has the request: the stream is open, as a 200 opens one.
-    void push(id, stream, { type: "open" });
     try {
       const following = api.followSession(sessionId, {
         afterSeq: afterSeq as number,
         deltas:
           deltas === "append" ? "append" : ("full-text" as ExecutionDeltaMode),
+        // The caller's, for the host's own connection; its default otherwise.
+        ...(idleTimeoutMs === null || isPositiveNumber(idleTimeoutMs)
+          ? { idleTimeoutMs }
+          : {}),
+        ...(isPositiveNumber(maxFrameLength) ? { maxFrameLength } : {}),
         onEnvelope: (envelope, info) =>
           push(id, stream, {
             type: "envelope",
@@ -212,17 +217,28 @@ export function servePort(
                   replay: false,
                 },
           ),
+        // One port stream is one connection of the host's: it opens when
+        // that one opens, and ends, with its error, when that one ends. The
+        // client's follow then waits and reconnects by the caller's own
+        // `retryDelayMs`, `maxAttempts` and `healthyAfterMs`, so a follow
+        // over a port ends exactly as a direct one would.
         onStatus: (status) => {
-          // The client resequences: where the replay ends is all it needs.
-          if (status.state === "live") {
+          if (status.state === "open") {
+            void push(id, stream, { type: "open" });
+          } else if (status.state === "live") {
             void push(id, stream, {
               type: "caught-up",
               throughSeq: status.lastSeq,
             });
+          } else if (status.state === "waiting") {
+            finish(status.error);
+            void stream.follow?.stop();
           }
         },
       });
       stream.follow = following;
+      // Ended before it was held: let it go now.
+      if (stream.over) void following.stop();
       void following.done.then((end) =>
         finish(end.reason === "stopped" ? null : end.error),
       );
@@ -274,6 +290,8 @@ export function servePort(
             message.sessionId,
             message.afterSeq,
             message.deltas,
+            message.idleTimeoutMs,
+            message.maxFrameLength,
           );
         case "cancel":
           return cancel(id);
@@ -318,6 +336,10 @@ function invoke(
   };
   const run = api[name] as (...args: unknown[]) => Promise<unknown>;
   return run.apply(api, given);
+}
+
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown

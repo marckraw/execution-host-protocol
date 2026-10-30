@@ -50,7 +50,9 @@ import type {
  *   is the carrier's to honour: over HTTP it bounds the request.
  * - A follow delivers each envelope once and in `seq` order, resumes after
  *   `afterSeq` with nothing missing and nothing twice, and ends only when it
- *   is stopped or the host says the session is gone (or refuses the caller).
+ *   is stopped, the host says the session is gone (or refuses the caller),
+ *   or the caller's `maxAttempts` run out: the same end, after the same
+ *   `waiting` statuses, as the HTTP client's.
  *
  * Health, the handshake, the host profile, teardown and one-shots stay on the
  * HTTP client: they are about a host on the network, not about sessions.
@@ -92,8 +94,9 @@ export interface ExecutionHostApi {
   ): Promise<ExecutionSessionPatchResult>;
   /**
    * Follows the session across turns until stopped. See
-   * `ExecutionFollowOptions`; a carrier without a network ignores
-   * `idleTimeoutMs` and `maxFrameLength`.
+   * `ExecutionFollowOptions`; a carrier with no connection of its own (a
+   * runtime in the same process) ignores `idleTimeoutMs` and
+   * `maxFrameLength`.
    */
   followSession(
     sessionId: string,

@@ -196,6 +196,34 @@ function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
+/** How often `eventually` looks. */
+export const CONFORMANCE_POLL_MS = 5;
+
+/**
+ * Resolves once `condition` holds, looking every `CONFORMANCE_POLL_MS`, or
+ * rejects after `ms`. Either way it stops looking: a failed case leaves no
+ * timer behind.
+ */
+function eventually(
+  condition: () => boolean,
+  ms: number,
+  what: string,
+): Promise<void> {
+  const started = Date.now();
+  return new Promise<void>((resolve, reject) => {
+    const look = () => {
+      if (condition()) return resolve();
+      if (Date.now() - started >= ms) {
+        return reject(
+          new ExecutionHostConformanceError(`${what}: nothing within ${ms} ms`),
+        );
+      }
+      setTimeout(look, CONFORMANCE_POLL_MS);
+    };
+    look();
+  });
+}
+
 interface Following {
   follow: ExecutionSessionFollow;
   /** Envelopes whose handler returned, in the order they were handed on. */
@@ -523,16 +551,11 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
           await host.emit(sessionId, [
             { kind: "continuation-token", token: `${sessionId}-live` },
           ]);
-          await within(
-            new Promise<void>((resolve) => {
-              const poll = () =>
-                resumed.kept.some((envelope) =>
-                  isMark(envelope, `${sessionId}-live`),
-                )
-                  ? resolve()
-                  : setTimeout(poll, 5);
-              poll();
-            }),
+          await eventually(
+            () =>
+              resumed.kept.some((envelope) =>
+                isMark(envelope, `${sessionId}-live`),
+              ),
             waitMs,
             "a live envelope",
           );

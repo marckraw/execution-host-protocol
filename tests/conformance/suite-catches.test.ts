@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ExecutionHostError,
   type ExecutionHostApi,
@@ -8,6 +8,7 @@ import {
   executionHostConformanceCases,
   type ExecutionHostConformanceHost,
 } from "../../src/testing/index.js";
+import { CONFORMANCE_POLL_MS } from "../../src/testing/conformance.js";
 import { FakeHostModel, fakeApi, modelHooks } from "./fake-host.js";
 
 /**
@@ -146,5 +147,33 @@ describe("the conformance suite", () => {
       }),
     );
     expect(String(error)).toMatch(/failed as http, not not-found/);
+  });
+
+  it("leaves no timer behind when a live envelope never comes (Codex review of #64)", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const error = await runCase(
+        "resumes after a given seq with nothing missing and nothing twice",
+        (api) => ({
+          ...api,
+          // Replays, then never hands on what happens live.
+          followSession: (sessionId, options) =>
+            api.followSession(sessionId, {
+              ...options,
+              onEnvelope: (envelope, info) =>
+                info.replay ? options.onEnvelope(envelope, info) : undefined,
+            }),
+        }),
+      );
+      expect(String(error)).toMatch(/a live envelope: nothing within 500 ms/);
+      const looks = () =>
+        spy.mock.calls.filter(([, delay]) => delay === CONFORMANCE_POLL_MS)
+          .length;
+      const after = looks();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(looks()).toBe(after);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

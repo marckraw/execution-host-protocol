@@ -129,6 +129,9 @@ export type PortRequest = Tagged &
         sessionId: string;
         afterSeq: number;
         deltas: ExecutionDeltaMode;
+        /** The caller's, for the host's own connection. */
+        idleTimeoutMs: number | null;
+        maxFrameLength?: number;
       }
     | { type: "cancel"; id: number }
     | { type: "ack"; id: number }
