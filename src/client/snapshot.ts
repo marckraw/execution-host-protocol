@@ -280,7 +280,7 @@ function readTurns(
   return turns.sort((left, right) => left.sequence - right.sequence);
 }
 
-function oneOf<T extends string>(
+export function oneOf<T extends string>(
   values: readonly T[],
   value: unknown,
 ): { ok: true; value: T } | { ok: false } {
@@ -289,7 +289,7 @@ function oneOf<T extends string>(
     : { ok: false };
 }
 
-function nullableString(
+export function nullableString(
   value: unknown,
 ): { ok: true; value: string | null } | { ok: false } {
   return value === null || typeof value === "string"
@@ -297,7 +297,7 @@ function nullableString(
     : { ok: false };
 }
 
-function isHttpUrl(value: unknown): value is string {
+export function isHttpUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);

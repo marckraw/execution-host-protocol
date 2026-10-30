@@ -147,4 +147,68 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(loaded.EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH, 128);
 }
 
-console.log("Package exports resolve from CommonJS and ESM, root and client.");
+// The transport-neutral API (MAR-4862): the HTTP client gains the session
+// list and combined changes; `/port` carries the API over a MessagePort, and
+// `/testing` holds any carrier to it. Neither is reachable from the root or
+// the client.
+for (const loaded of [commonJs, esModule]) {
+  assert.equal(loaded.createPortClient, undefined);
+  assert.equal(loaded.servePort, undefined);
+  assert.equal(loaded.describeExecutionHostConformance, undefined);
+}
+for (const loaded of [commonJsClient, esModuleClient]) {
+  assert.equal(typeof loaded.decodeExecutionSessionList, "function");
+  assert.equal(typeof loaded.decodeExecutionSessionChanges, "function");
+  assert.equal(loaded.createPortClient, undefined);
+  const client = loaded.createExecutionHostClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "check",
+    fetch: async () => new Response(null, { status: 410 }),
+  });
+  assert.equal(typeof client.listSessions, "function");
+  assert.deepEqual(await client.sessionChanges("s"), {
+    status: "unavailable",
+    sessionId: "s",
+    reason: "pruned",
+  });
+}
+
+const { MessageChannel } = await import("node:worker_threads");
+const commonJsPort = require(`${packageName}/port`);
+const esModulePort = await import(`${packageName}/port`);
+for (const [loaded, client] of [
+  [commonJsPort, commonJsClient],
+  [esModulePort, esModuleClient],
+]) {
+  assert.equal(typeof loaded.servePort, "function");
+  assert.equal(typeof loaded.createPortClient, "function");
+  assert.equal(loaded.createExecutionHostClient, undefined);
+  const { port1, port2 } = new MessageChannel();
+  const server = loaded.servePort(port2, {
+    providers: async () => [{ id: "claude" }],
+    snapshot: async () => {
+      throw new client.ExecutionHostError("auth", "refused", {
+        operation: "snapshot",
+        status: 401,
+      });
+    },
+  });
+  const api = loaded.createPortClient(port1);
+  assert.deepEqual(await api.providers(), [{ id: "claude" }]);
+  const refused = await api.snapshot("s").catch((error) => error);
+  assert.ok(refused instanceof client.ExecutionHostError);
+  assert.equal(refused.kind, "auth");
+  api.close();
+  server.close();
+}
+
+const commonJsTesting = require(`${packageName}/testing`);
+const esModuleTesting = await import(`${packageName}/testing`);
+for (const loaded of [commonJsTesting, esModuleTesting]) {
+  assert.equal(typeof loaded.describeExecutionHostConformance, "function");
+  assert.ok(loaded.executionHostConformanceCases.length > 10);
+}
+
+console.log(
+  "Package exports resolve from CommonJS and ESM: root, client, port and testing.",
+);

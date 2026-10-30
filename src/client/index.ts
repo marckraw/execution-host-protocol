@@ -19,6 +19,7 @@ export {
   hostTakesInlineFiles,
   type ExecutionInlineAttachmentsErrorCode,
 } from "./attachments.js";
+export { type ExecutionHostApi } from "./api.js";
 export {
   createExecutionHostClient,
   type ExecutionAttachmentDownloadOptions,
@@ -95,6 +96,18 @@ export {
   type ExecutionSessionSnapshot,
   type ExecutionSessionSnapshotTurn,
 } from "./snapshot.js";
+export {
+  decodeExecutionSessionChanges,
+  EXECUTION_SESSION_CHANGES_UNAVAILABLE_STATUS,
+  type ExecutionSessionChangesResult,
+} from "./session-changes.js";
+export {
+  decodeExecutionSessionList,
+  encodeExecutionSessionListQuery,
+  type ExecutionSessionList,
+  type ExecutionSessionListQuery,
+  type ExecutionSessionSummary,
+} from "./session-list.js";
 export { createSseParser, type SseFrame } from "./sse.js";
 export {
   type ExecutionDeltaMode,
