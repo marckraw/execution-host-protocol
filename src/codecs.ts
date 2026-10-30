@@ -7,6 +7,10 @@ import {
 } from "./file-reach.js";
 import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
+  decodeExecutionTurnUsage,
+  type ExecutionTurnUsage,
+} from "./turn-usage.js";
+import {
   decodeToolAttachments,
   decodeToolAttachmentOmissions,
 } from "./tool-attachment-codecs.js";
@@ -738,9 +742,10 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
       );
     }
     case "turn.add": {
-      const turn = decodeTurn(raw.turn);
+      const warnings: ExecutionDecodeWarning[] = [];
+      const turn = decodeTurn(raw.turn, "event.delta.turn.usage", warnings);
       return turn
-        ? success({ kind: "turn.add", turn })
+        ? success({ kind: "turn.add", turn }, warnings)
         : failure("invalid-payload");
     }
     case "turn.patch": {
@@ -765,7 +770,21 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
           return failure("invalid-payload");
         patch.summary = raw.patch.summary;
       }
-      return success({ kind: "turn.patch", turnId: raw.turnId, patch });
+      // What the turn cost (MAR-4943): one this build cannot read is
+      // dropped and named, and never costs the turn its end.
+      const warnings: ExecutionDecodeWarning[] = [];
+      if (raw.patch.usage !== undefined) {
+        const usage = readTurnUsage(
+          raw.patch.usage,
+          "event.delta.patch.usage",
+          warnings,
+        );
+        if (usage) patch.usage = usage;
+      }
+      return success(
+        { kind: "turn.patch", turnId: raw.turnId, patch },
+        warnings,
+      );
     }
     case "turn.fileChanges.add": {
       if (!isNonEmptyString(raw.turnId) || !Array.isArray(raw.fileChanges)) {
@@ -820,9 +839,14 @@ function isHttpUrl(value: unknown): value is string {
  * A turn without `origin` comes from a host that predates 0.19, where a
  * person's message opened every turn: it reads as `user` (MAR-3823). An origin
  * this build does not know is a newer host saying something it cannot place,
- * and is refused, never read as `user`.
+ * and is refused, never read as `user`. A `usage` it cannot read is left out
+ * and named in `warnings`, at `usagePath`; the turn stays (MAR-4943).
  */
-function decodeTurn(raw: unknown): ExecutionTurn | null {
+function decodeTurn(
+  raw: unknown,
+  usagePath: string,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionTurn | null {
   if (!isRecord(raw)) return null;
   const origin = raw.origin === undefined ? "user" : raw.origin;
   if (
@@ -838,6 +862,10 @@ function decodeTurn(raw: unknown): ExecutionTurn | null {
   ) {
     return null;
   }
+  const usage =
+    raw.usage === undefined
+      ? undefined
+      : readTurnUsage(raw.usage, usagePath, warnings);
   return {
     id: raw.id,
     sessionId: raw.sessionId,
@@ -847,7 +875,28 @@ function decodeTurn(raw: unknown): ExecutionTurn | null {
     status: raw.status,
     summary: raw.summary as string | null,
     origin: origin as ExecutionTurn["origin"],
+    ...optionalProperty("usage", usage),
   };
+}
+
+/**
+ * A turn's usage, or undefined with a warning at `path` when it cannot be
+ * read; what the usage itself dropped is named under `path` too.
+ */
+function readTurnUsage(
+  raw: unknown,
+  path: string,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionTurnUsage | undefined {
+  const usage = decodeExecutionTurnUsage(raw);
+  if (!usage.ok) {
+    warnings.push({ reason: "dropped-invalid-field", path });
+    return undefined;
+  }
+  for (const warning of usage.warnings ?? []) {
+    warnings.push({ ...warning, path: `${path}.${warning.path}` });
+  }
+  return usage.value;
 }
 
 function decodeTurnFileChange(raw: unknown): ExecutionTurnFileChange | null {
@@ -1743,12 +1792,16 @@ export function decodeExecutionConversationItem(
   return item;
 }
 
-/** Reads one turn record, as `turn.add` carries it. */
+/**
+ * Reads one turn record, as `turn.add` and a snapshot carry it. A `usage` it
+ * cannot read is left out and named in `warnings`, at `usage`.
+ */
 export function decodeExecutionTurn(
   raw: unknown,
 ): ExecutionDecodeResult<ExecutionTurn> {
-  const turn = decodeTurn(raw);
-  return turn ? success(turn) : failure("invalid-payload");
+  const warnings: ExecutionDecodeWarning[] = [];
+  const turn = decodeTurn(raw, "usage", warnings);
+  return turn ? success(turn, warnings) : failure("invalid-payload");
 }
 
 /** Reads one turn file change, as `turn.fileChanges.add` carries it. */
@@ -2267,8 +2320,8 @@ function decodeExecutionProviderUsageCredits(
  * or no number for `usedPercent`. Its text is cleaned and cut as an account's
  * is, and `usedPercent` clamped to 0–100. A `span` this build does not know
  * reads as `other`, so a newer host's window still counts; a `label` that
- * cannot be read falls back to the `id`; a `resetsAt` or `modelFamily` that
- * cannot be read is left out alone.
+ * cannot be read falls back to the `id`; a `resetsAt`, `modelFamily` or
+ * `observedAt` (MAR-4943) that cannot be read is left out alone.
  */
 function decodeExecutionProviderUsageWindow(
   raw: unknown,
@@ -2305,6 +2358,10 @@ function decodeExecutionProviderUsageWindow(
         raw.modelFamily,
         EXECUTION_PROVIDER_USAGE_TEXT_MAX_LENGTH,
       ),
+    ),
+    ...optionalProperty(
+      "observedAt",
+      isTimestamp(raw.observedAt) ? raw.observedAt : undefined,
     ),
   };
 }

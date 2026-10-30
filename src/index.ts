@@ -11,6 +11,7 @@ export * from "./origin-key.js";
 export * from "./provider-usage.js";
 export * from "./task-output.js";
 export * from "./tool-attachments.js";
+export * from "./turn-usage.js";
 export * from "./types.js";
 
 export * from "./selections.js";

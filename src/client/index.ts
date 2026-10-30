@@ -122,6 +122,8 @@ export {
   type ExecutionTaskOutputResult,
 } from "./task-output.js";
 
+export { hostRecordsTurnUsage } from "./turn-usage.js";
+
 export {
   ExecutionStartSelectionError,
   hostTakesSelections,

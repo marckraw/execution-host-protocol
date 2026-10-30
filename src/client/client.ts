@@ -137,6 +137,12 @@ import {
   type ExecutionSessionChangesResult,
 } from "./session-changes.js";
 import {
+  decodeExecutionTurnUsagePage,
+  encodeExecutionTurnUsageQuery,
+  type ExecutionTurnUsagePage,
+  type ExecutionTurnUsageQuery,
+} from "../turn-usage.js";
+import {
   decodeExecutionSessionList,
   encodeExecutionSessionListQuery,
   type ExecutionSessionList,
@@ -426,6 +432,21 @@ export interface ExecutionHostClient extends ExecutionHostApi {
     sessionId: string,
     options?: ExecutionRequestOptions,
   ): Promise<ExecutionSessionChangesResult>;
+  /**
+   * One page of what the host's turns cost (`GET /v0/usage/turns`,
+   * `turns.usage.v1`, MAR-4943), in the order it recorded them, oldest
+   * first. `since` starts a read and `cursor` carries one on; a query naming
+   * both, or one the protocol would refuse otherwise, is a `TypeError` or
+   * `RangeError`, unsent. It does not read `/health` first: gate on
+   * `hostRecordsTurnUsage(health)`, since a host without the route answers
+   * 404, an `ExecutionHostError` of kind `not-found`. A record this build
+   * cannot read is dropped and named in `warnings`; an unreadable page is
+   * `malformed`.
+   */
+  listTurnUsage(
+    query?: ExecutionTurnUsageQuery,
+    options?: ExecutionRequestOptions,
+  ): Promise<ExecutionTurnUsagePage>;
   /**
    * Authenticated GET of a session attachment, with both IDs encoded. Reads
    * at most the kind's ceiling — 8 MiB for a tool image (the default), 10 MiB
@@ -1440,6 +1461,32 @@ export function createExecutionHostClient(
           return { status: "changes", sessionId, ...decoded.value };
         },
       ),
+
+    listTurnUsage: async (query = {}, requestOptions = {}) => {
+      const search = encodeExecutionTurnUsageQuery(query);
+      return request(
+        "list turn usage",
+        `/v0/usage/turns${search === "" ? "" : `?${search}`}`,
+        {
+          method: "GET",
+          authenticated: true,
+          timeoutMs: requestOptions.timeoutMs ?? requestTimeoutMs,
+          signal: requestOptions.signal,
+        },
+        async (response, body): Promise<ExecutionTurnUsagePage> => {
+          if (!response.ok) throw await refusal("list turn usage", response);
+          const decoded = decodeExecutionTurnUsagePage(await body.json());
+          if (!decoded.ok) {
+            throw new ExecutionHostError(
+              "malformed",
+              `the turn usage is unreadable (${decoded.reason})`,
+              { operation: "list turn usage", status: response.status },
+            );
+          }
+          return decoded.value;
+        },
+      );
+    },
 
     downloadAttachment: async (
       sessionId,

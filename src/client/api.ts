@@ -5,6 +5,10 @@ import type {
   ExecutionSessionPatchRequest,
   ExecutionStartRequest,
 } from "../types.js";
+import type {
+  ExecutionTurnUsagePage,
+  ExecutionTurnUsageQuery,
+} from "../turn-usage.js";
 import type { ExecutionAttachmentDownloadResult } from "./attachment-download.js";
 import type {
   ExecutionAttachmentDownloadOptions,
@@ -122,4 +126,13 @@ export interface ExecutionHostApi {
     attachmentId: string,
     options?: ExecutionAttachmentDownloadOptions,
   ): Promise<ExecutionAttachmentDownloadResult>;
+  /**
+   * One page of what the host's turns cost, in the order it recorded them
+   * (`turns.usage.v1`, MAR-4943). A host that records none refuses it as
+   * `not-found`, as an older host's 404 is.
+   */
+  listTurnUsage(
+    query?: ExecutionTurnUsageQuery,
+    options?: ExecutionRequestOptions,
+  ): Promise<ExecutionTurnUsagePage>;
 }

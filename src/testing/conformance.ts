@@ -5,6 +5,12 @@ import type {
 } from "../client/follow.js";
 import { ExecutionHostError } from "../client/http.js";
 import { ExecutionTaskOutputError } from "../client/task-output.js";
+import { isTimestamp } from "../guards.js";
+import type {
+  ExecutionTurnUsage,
+  ExecutionTurnUsageQuery,
+  ExecutionTurnUsageRecord,
+} from "../turn-usage.js";
 import {
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionHostEvent,
@@ -34,6 +40,32 @@ export interface ExecutionHostConformanceHost {
    * it, and the streams following it end.
    */
   remove(sessionId: string): void | Promise<void>;
+  /**
+   * Runs a turn of the session that ends having cost `usage`, as the host's
+   * runtime does when its provider reports what a turn cost
+   * (`turns.usage.v1`, MAR-4943), and says the turn's id: the turn is on the
+   * session's log and in its snapshot, its `turn.patch` carries the usage,
+   * and `listTurnUsage` lists it, `live`.
+   *
+   * Leave it out for a host that records no usage: the suite then holds it
+   * to refusing `listTurnUsage` as `not-found`, as an older host's 404 is.
+   */
+  endTurnWithUsage?(
+    sessionId: string,
+    usage: ExecutionTurnUsage,
+  ): string | Promise<string>;
+  /**
+   * Records a turn's usage as the host's backfill reads it back from its
+   * history: a `backfill` record of a turn that ended at `endedAt`, long
+   * before the case runs, recorded now, after everything before it. Says its
+   * `turnId`. A record listed out of the order turns ended is what shows a
+   * cursor that lost its `since`, so a host that backfills gives the suite
+   * this. Leave it out for one that does not: the cases use live turns alone.
+   */
+  backfillTurnUsage?(
+    usage: ExecutionTurnUsage,
+    endedAt: string,
+  ): string | Promise<string>;
   /** Runs after the case, whatever its outcome. */
   close?(): void | Promise<void>;
 }
@@ -318,6 +350,241 @@ function describe(error: unknown): string {
   return error instanceof Error
     ? `${error.name}: ${error.message}`
     : String(error);
+}
+
+/**
+ * A turn's usage the case can tell apart from another's: `n` in its tokens,
+ * on two models whose parts add up to the turn's, priced at list.
+ */
+function usageFor(providerId: string, n: number): ExecutionTurnUsage {
+  return {
+    providerId,
+    model: "conformance-main",
+    accountId: null,
+    tokens: {
+      input: 100 + n,
+      cacheWrite5m: 30,
+      cacheWrite1h: 2,
+      cacheRead: 2_000,
+      output: 50,
+      reasoning: 8,
+    },
+    costUsdReported: 0.0425,
+    costBasis: "list",
+    models: [
+      {
+        model: "conformance-main",
+        tokens: {
+          input: 90 + n,
+          cacheWrite5m: 30,
+          cacheWrite1h: 2,
+          cacheRead: 1_500,
+          output: 40,
+          reasoning: 8,
+        },
+        costUsdReported: 0.04,
+      },
+      {
+        model: "conformance-helper",
+        tokens: {
+          input: 10,
+          cacheWrite5m: 0,
+          cacheWrite1h: 0,
+          cacheRead: 500,
+          output: 10,
+          reasoning: 0,
+        },
+        costUsdReported: 0.0025,
+      },
+    ],
+  };
+}
+
+/** The usage's own fields, keys in order, for comparing two of them. */
+function usageText(usage: ExecutionTurnUsage): string {
+  const { providerId, model, accountId, tokens } = usage;
+  return canonical({
+    providerId,
+    model,
+    accountId,
+    tokens,
+    costUsdReported: usage.costUsdReported,
+    costBasis: usage.costBasis,
+    models: usage.models,
+  });
+}
+
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_, part: unknown) =>
+    typeof part === "object" && part !== null && !Array.isArray(part)
+      ? Object.fromEntries(
+          Object.entries(part).sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0,
+          ),
+        )
+      : part,
+  );
+}
+
+function checkUsage(
+  got: ExecutionTurnUsage | undefined,
+  expected: ExecutionTurnUsage,
+  what: string,
+): void {
+  check(got !== undefined, `${what} carries no usage`);
+  check(
+    usageText(got) === usageText(expected),
+    `${what} carries ${usageText(got)}, not ${usageText(expected)}`,
+  );
+}
+
+/**
+ * The host's `endTurnWithUsage`, or null after checking that a host without
+ * one refuses the history as an older host does.
+ */
+async function usageRecorder(
+  host: ExecutionHostConformanceHost,
+): Promise<NonNullable<
+  ExecutionHostConformanceHost["endTurnWithUsage"]
+> | null> {
+  if (host.endTurnWithUsage) return host.endTurnWithUsage.bind(host);
+  const error = await rejection(
+    host.api.listTurnUsage(),
+    "the usage history of a host that records none",
+  );
+  checkNotFound(error, "the usage history of a host that records none");
+  return null;
+}
+
+/**
+ * Reads the usage history from `query` to its end, a page of at most `limit`
+ * at a time, checking each page's frame. Returns the records and the last
+ * cursor the host gave.
+ */
+async function readHistory(
+  api: ExecutionHostApi,
+  query: Omit<ExecutionTurnUsageQuery, "cursor" | "limit">,
+  limit: number,
+  cursor?: string,
+): Promise<{
+  records: ExecutionTurnUsageRecord[];
+  cursor: string | undefined;
+}> {
+  const records: ExecutionTurnUsageRecord[] = [];
+  let last = cursor;
+  for (let page = 0; page < 200; page += 1) {
+    const read = await api.listTurnUsage(
+      last === undefined ? { ...query, limit } : { cursor: last, limit },
+    );
+    check(Array.isArray(read.records), "listTurnUsage() has no records");
+    check(
+      read.records.length <= limit,
+      `a page of at most ${limit} held ${read.records.length}`,
+    );
+    check(
+      typeof read.hasMore === "boolean",
+      `hasMore is ${String(read.hasMore)}`,
+    );
+    check(
+      read.nextCursor === null || typeof read.nextCursor === "string",
+      `nextCursor is ${String(read.nextCursor)}`,
+    );
+    check(
+      read.records.length === 0 || read.nextCursor !== null,
+      "a page with records gave no cursor to resume after it",
+    );
+    check(
+      !read.hasMore || read.nextCursor !== null,
+      "a page with more after it gave no cursor",
+    );
+    records.push(...read.records);
+    if (read.nextCursor !== null) last = read.nextCursor;
+    if (!read.hasMore) return { records, cursor: last };
+  }
+  throw new ExecutionHostConformanceError(
+    "the usage history did not end within 200 pages",
+  );
+}
+
+/** When the backfilled turns of the cases ended: long before any live one. */
+const LONG_AGO = "2020-01-01T00:00:00.000Z";
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A `since` just after the turn ended, by the host's own clock: the turn is
+ * before it, and a turn the host ends later is after it.
+ */
+async function sinceAfter(
+  api: ExecutionHostApi,
+  turnId: string,
+): Promise<string> {
+  const { records } = await readHistory(api, {}, 500);
+  const record = records.find((entry) => entry.turnId === turnId);
+  check(record !== undefined, `the usage history does not list ${turnId}`);
+  return new Date(Date.parse(record.endedAt) + 1).toISOString();
+}
+
+/**
+ * Which of `turnIds` a read since `since` lists, and in which order, by the
+ * whole history: those that ended at or after it, in the order recorded.
+ */
+async function endedSince(
+  api: ExecutionHostApi,
+  turnIds: string[],
+  since: string,
+): Promise<string[]> {
+  const { records } = await readHistory(api, {}, 500);
+  placesOf(records, turnIds, "the usage history");
+  return records
+    .filter(
+      (record) =>
+        turnIds.includes(record.turnId) &&
+        Date.parse(record.endedAt) >= Date.parse(since),
+    )
+    .map((record) => record.turnId);
+}
+
+/**
+ * That a read since `since` lists no turn that ended before it, and of
+ * `turnIds`, exactly `expected`, in order.
+ */
+function checkSince(
+  records: ExecutionTurnUsageRecord[],
+  since: string,
+  turnIds: string[],
+  expected: string[],
+  what: string,
+): void {
+  const early = records.find(
+    (record) => Date.parse(record.endedAt) < Date.parse(since),
+  );
+  check(
+    early === undefined,
+    `${what} lists turn ${early?.turnId}, which ended at ${early?.endedAt}, before it`,
+  );
+  const got = records
+    .map((record) => record.turnId)
+    .filter((turnId) => turnIds.includes(turnId));
+  check(
+    got.join(",") === expected.join(","),
+    `${what} lists ${got.join(",")}, not ${expected.join(",")}`,
+  );
+}
+
+/** Where each of `turnIds` sits in `records`, checking it is there once. */
+function placesOf(
+  records: ExecutionTurnUsageRecord[],
+  turnIds: string[],
+  what: string,
+): number[] {
+  return turnIds.map((turnId) => {
+    const count = records.filter((record) => record.turnId === turnId).length;
+    check(count === 1, `${what} holds turn ${turnId} ${count} times, not once`);
+    return records.findIndex((record) => record.turnId === turnId);
+  });
 }
 
 /**
@@ -732,6 +999,236 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
           "downloading an unknown attachment",
         );
         checkNotFound(error, "downloading an unknown attachment");
+      },
+    },
+    {
+      name: "refuses a turn usage query the protocol would refuse",
+      async run({ api }) {
+        const refused: Array<
+          [
+            ExecutionTurnUsageQuery,
+            string,
+            typeof TypeError | typeof RangeError,
+          ]
+        > = [
+          [
+            { since: "2026-10-30T00:00:00.000Z", cursor: "c" },
+            "since with a cursor",
+            TypeError,
+          ],
+          [{ since: "yesterday" }, "a since that is no timestamp", TypeError],
+          [{ limit: 0 }, "a limit of 0", RangeError],
+          [{ limit: 501 }, "a limit of 501", RangeError],
+        ];
+        for (const [query, what, kind] of refused) {
+          const error = await rejection(api.listTurnUsage(query), what);
+          check(
+            error instanceof kind,
+            `${what} failed with ${describe(error)}, not a ${kind.name}`,
+          );
+        }
+      },
+    },
+    {
+      name: "hands a turn's usage to its followers and its snapshot",
+      async run(host, { waitMs }) {
+        const endTurn = await usageRecorder(host);
+        if (endTurn === null) return;
+        const sessionId = await started(host);
+        const usage = usageFor(host.providerId, 1);
+        const turnId = await endTurn(sessionId, usage);
+        check(
+          typeof turnId === "string" && turnId.length > 0,
+          `endTurnWithUsage said turn ${String(turnId)}`,
+        );
+        const carriesUsage = (envelope: ExecutionHostEventEnvelope) =>
+          envelope.event.kind === "delta" &&
+          envelope.event.delta.kind === "turn.patch" &&
+          envelope.event.delta.turnId === turnId &&
+          envelope.event.delta.patch.usage !== undefined;
+        const following = follow(host.api, sessionId, 0, (kept) =>
+          kept.some(carriesUsage),
+        );
+        try {
+          await within(following.reached, waitMs, "the turn's usage");
+          const envelope = following.kept.find(carriesUsage)!;
+          if (
+            envelope.event.kind === "delta" &&
+            envelope.event.delta.kind === "turn.patch"
+          ) {
+            checkUsage(
+              envelope.event.delta.patch.usage,
+              usage,
+              "the turn's turn.patch",
+            );
+          }
+        } finally {
+          await following.follow.stop();
+        }
+        const snapshot = await host.api.snapshot(sessionId);
+        check(snapshot !== null, "snapshot() of a started session is null");
+        const turn = snapshot.turns.find((entry) => entry.id === turnId);
+        check(turn !== undefined, `the snapshot has no turn ${turnId}`);
+        checkUsage(turn.usage, usage, `the snapshot's turn ${turnId}`);
+      },
+    },
+    {
+      name: "lists turn usage in the order recorded, each once, and catches up from its last cursor",
+      async run(host) {
+        const endTurn = await usageRecorder(host);
+        if (endTurn === null) return;
+        const first = await started(host);
+        const second = await started(host);
+        const ended: Array<[string, string, ExecutionTurnUsage]> = [];
+        for (const [sessionId, n] of [
+          [first, 1],
+          [second, 2],
+          [first, 3],
+        ] as const) {
+          const usage = usageFor(host.providerId, n);
+          ended.push([sessionId, await endTurn(sessionId, usage), usage]);
+        }
+        const read = await readHistory(host.api, {}, 1);
+        const places = placesOf(
+          read.records,
+          ended.map(([, turnId]) => turnId),
+          "the usage history",
+        );
+        check(
+          places.every(
+            (place, index) => index === 0 || place > places[index - 1]!,
+          ),
+          `the usage history lists the turns at ${places.join(",")}, not in the order they ended`,
+        );
+        ended.forEach(([sessionId, turnId, usage], index) => {
+          const record = read.records[places[index]!]!;
+          check(
+            record.sessionId === sessionId,
+            `turn ${turnId}'s record names session ${String(record.sessionId)}, not ${sessionId}`,
+          );
+          check(
+            record.source === "live",
+            `turn ${turnId}'s record is ${record.source}, not live`,
+          );
+          check(
+            isTimestamp(record.endedAt),
+            `turn ${turnId}'s record ended at ${String(record.endedAt)}`,
+          );
+          checkUsage(record, usage, `turn ${turnId}'s record`);
+        });
+        check(
+          read.cursor !== undefined,
+          "the usage history gave no cursor to catch up from",
+        );
+
+        const usage = usageFor(host.providerId, 4);
+        const later = await endTurn(second, usage);
+        const caughtUp = await readHistory(host.api, {}, 2, read.cursor);
+        placesOf(caughtUp.records, [later], "catching up");
+        check(
+          !caughtUp.records.some((record) =>
+            ended.some(([, turnId]) => turnId === record.turnId),
+          ),
+          "catching up from the last cursor listed turns read before it",
+        );
+      },
+    },
+    {
+      name: "lists only the turn usage of turns that ended since a given time",
+      async run(host) {
+        const endTurn = await usageRecorder(host);
+        if (endTurn === null) return;
+        const sessionId = await started(host);
+        const before = new Date(Date.now() - 60_000).toISOString();
+        const turnId = await endTurn(sessionId, usageFor(host.providerId, 5));
+        const since = await readHistory(host.api, { since: before }, 2);
+        placesOf(since.records, [turnId], `the usage history since ${before}`);
+        check(
+          since.records.every(
+            (record) => Date.parse(record.endedAt) >= Date.parse(before),
+          ),
+          `the usage history since ${before} lists a turn that ended before it`,
+        );
+        const tomorrow = new Date(Date.now() + 86_400_000).toISOString();
+        const none = await readHistory(host.api, { since: tomorrow }, 2);
+        check(
+          none.records.length === 0,
+          `the usage history since ${tomorrow} lists ${none.records.length} turns`,
+        );
+      },
+    },
+    {
+      name: "pages turn usage since a given time, keeping since on every cursor",
+      async run(host) {
+        const endTurn = await usageRecorder(host);
+        if (endTurn === null) return;
+        const backfill = host.backfillTurnUsage?.bind(host);
+        const sessionId = await started(host);
+        // One live turn before `since`, and backfilled turns between those
+        // after it: a cursor that lost `since` lists one of them.
+        const early = await endTurn(sessionId, usageFor(host.providerId, 10));
+        const since = await sinceAfter(host.api, early);
+        await pause(5);
+        const turnIds = [early];
+        for (let n = 0; n < 3; n += 1) {
+          if (backfill) {
+            turnIds.push(
+              await backfill(usageFor(host.providerId, 20 + n), LONG_AGO),
+            );
+          }
+          turnIds.push(
+            await endTurn(sessionId, usageFor(host.providerId, 11 + n)),
+          );
+        }
+        const expected = await endedSince(host.api, turnIds, since);
+        check(
+          !expected.includes(early),
+          `turn ${early} ended after ${since}, a moment after it ended`,
+        );
+        const read = await readHistory(host.api, { since }, 1);
+        checkSince(
+          read.records,
+          since,
+          turnIds,
+          expected,
+          `the usage history since ${since}, a page at a time`,
+        );
+      },
+    },
+    {
+      name: "catches up from a read since a given time with only what ended since",
+      async run(host) {
+        const endTurn = await usageRecorder(host);
+        if (endTurn === null) return;
+        const backfill = host.backfillTurnUsage?.bind(host);
+        const sessionId = await started(host);
+        const early = await endTurn(sessionId, usageFor(host.providerId, 30));
+        const since = await sinceAfter(host.api, early);
+        await pause(5);
+        await endTurn(sessionId, usageFor(host.providerId, 31));
+        if (backfill) await backfill(usageFor(host.providerId, 32), LONG_AGO);
+        const read = await readHistory(host.api, { since }, 1);
+        check(
+          read.cursor !== undefined,
+          `the usage history since ${since} gave no cursor to catch up from`,
+        );
+        const later: string[] = [];
+        if (backfill) {
+          later.push(await backfill(usageFor(host.providerId, 33), LONG_AGO));
+        }
+        later.push(await endTurn(sessionId, usageFor(host.providerId, 34)));
+        if (backfill) {
+          later.push(await backfill(usageFor(host.providerId, 35), LONG_AGO));
+        }
+        const expected = await endedSince(host.api, later, since);
+        const caughtUp = await readHistory(host.api, {}, 1, read.cursor);
+        checkSince(
+          caughtUp.records,
+          since,
+          later,
+          expected,
+          `catching up from the usage history since ${since}`,
+        );
       },
     },
     {
