@@ -54,6 +54,18 @@ export interface ExecutionHostConformanceHost {
     sessionId: string,
     usage: ExecutionTurnUsage,
   ): string | Promise<string>;
+  /**
+   * Records a turn's usage as the host's backfill reads it back from its
+   * history: a `backfill` record of a turn that ended at `endedAt`, long
+   * before the case runs, recorded now, after everything before it. Says its
+   * `turnId`. A record listed out of the order turns ended is what shows a
+   * cursor that lost its `since`, so a host that backfills gives the suite
+   * this. Leave it out for one that does not: the cases use live turns alone.
+   */
+  backfillTurnUsage?(
+    usage: ExecutionTurnUsage,
+    endedAt: string,
+  ): string | Promise<string>;
   /** Runs after the case, whatever its outcome. */
   close?(): void | Promise<void>;
 }
@@ -491,6 +503,74 @@ async function readHistory(
   }
   throw new ExecutionHostConformanceError(
     "the usage history did not end within 200 pages",
+  );
+}
+
+/** When the backfilled turns of the cases ended: long before any live one. */
+const LONG_AGO = "2020-01-01T00:00:00.000Z";
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A `since` just after the turn ended, by the host's own clock: the turn is
+ * before it, and a turn the host ends later is after it.
+ */
+async function sinceAfter(
+  api: ExecutionHostApi,
+  turnId: string,
+): Promise<string> {
+  const { records } = await readHistory(api, {}, 500);
+  const record = records.find((entry) => entry.turnId === turnId);
+  check(record !== undefined, `the usage history does not list ${turnId}`);
+  return new Date(Date.parse(record.endedAt) + 1).toISOString();
+}
+
+/**
+ * Which of `turnIds` a read since `since` lists, and in which order, by the
+ * whole history: those that ended at or after it, in the order recorded.
+ */
+async function endedSince(
+  api: ExecutionHostApi,
+  turnIds: string[],
+  since: string,
+): Promise<string[]> {
+  const { records } = await readHistory(api, {}, 500);
+  placesOf(records, turnIds, "the usage history");
+  return records
+    .filter(
+      (record) =>
+        turnIds.includes(record.turnId) &&
+        Date.parse(record.endedAt) >= Date.parse(since),
+    )
+    .map((record) => record.turnId);
+}
+
+/**
+ * That a read since `since` lists no turn that ended before it, and of
+ * `turnIds`, exactly `expected`, in order.
+ */
+function checkSince(
+  records: ExecutionTurnUsageRecord[],
+  since: string,
+  turnIds: string[],
+  expected: string[],
+  what: string,
+): void {
+  const early = records.find(
+    (record) => Date.parse(record.endedAt) < Date.parse(since),
+  );
+  check(
+    early === undefined,
+    `${what} lists turn ${early?.turnId}, which ended at ${early?.endedAt}, before it`,
+  );
+  const got = records
+    .map((record) => record.turnId)
+    .filter((turnId) => turnIds.includes(turnId));
+  check(
+    got.join(",") === expected.join(","),
+    `${what} lists ${got.join(",")}, not ${expected.join(",")}`,
   );
 }
 
@@ -1074,6 +1154,80 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
         check(
           none.records.length === 0,
           `the usage history since ${tomorrow} lists ${none.records.length} turns`,
+        );
+      },
+    },
+    {
+      name: "pages turn usage since a given time, keeping since on every cursor",
+      async run(host) {
+        const endTurn = await usageRecorder(host);
+        if (endTurn === null) return;
+        const backfill = host.backfillTurnUsage?.bind(host);
+        const sessionId = await started(host);
+        // One live turn before `since`, and backfilled turns between those
+        // after it: a cursor that lost `since` lists one of them.
+        const early = await endTurn(sessionId, usageFor(host.providerId, 10));
+        const since = await sinceAfter(host.api, early);
+        await pause(5);
+        const turnIds = [early];
+        for (let n = 0; n < 3; n += 1) {
+          if (backfill) {
+            turnIds.push(
+              await backfill(usageFor(host.providerId, 20 + n), LONG_AGO),
+            );
+          }
+          turnIds.push(
+            await endTurn(sessionId, usageFor(host.providerId, 11 + n)),
+          );
+        }
+        const expected = await endedSince(host.api, turnIds, since);
+        check(
+          !expected.includes(early),
+          `turn ${early} ended after ${since}, a moment after it ended`,
+        );
+        const read = await readHistory(host.api, { since }, 1);
+        checkSince(
+          read.records,
+          since,
+          turnIds,
+          expected,
+          `the usage history since ${since}, a page at a time`,
+        );
+      },
+    },
+    {
+      name: "catches up from a read since a given time with only what ended since",
+      async run(host) {
+        const endTurn = await usageRecorder(host);
+        if (endTurn === null) return;
+        const backfill = host.backfillTurnUsage?.bind(host);
+        const sessionId = await started(host);
+        const early = await endTurn(sessionId, usageFor(host.providerId, 30));
+        const since = await sinceAfter(host.api, early);
+        await pause(5);
+        await endTurn(sessionId, usageFor(host.providerId, 31));
+        if (backfill) await backfill(usageFor(host.providerId, 32), LONG_AGO);
+        const read = await readHistory(host.api, { since }, 1);
+        check(
+          read.cursor !== undefined,
+          `the usage history since ${since} gave no cursor to catch up from`,
+        );
+        const later: string[] = [];
+        if (backfill) {
+          later.push(await backfill(usageFor(host.providerId, 33), LONG_AGO));
+        }
+        later.push(await endTurn(sessionId, usageFor(host.providerId, 34)));
+        if (backfill) {
+          later.push(await backfill(usageFor(host.providerId, 35), LONG_AGO));
+        }
+        const expected = await endedSince(host.api, later, since);
+        const caughtUp = await readHistory(host.api, {}, 1, read.cursor);
+        checkSince(
+          caughtUp.records,
+          since,
+          later,
+          expected,
+          `catching up from the usage history since ${since}`,
         );
       },
     },

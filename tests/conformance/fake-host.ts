@@ -47,6 +47,8 @@ export interface FakeHostOptions {
    * a host predating it: no hook, and the history is a 404.
    */
   recordsUsage?: boolean;
+  /** Whether it backfills, and so gives the suite `backfillTurnUsage`. */
+  backfillsUsage?: boolean;
 }
 
 export class FakeHostModel {
@@ -54,6 +56,7 @@ export class FakeHostModel {
   /** Every turn's usage, in the order it was recorded. */
   readonly usage: ExecutionTurnUsageRecord[] = [];
   readonly recordsUsage: boolean;
+  readonly backfillsUsage: boolean;
   /** Told of each envelope logged, and of a session going (`null`). */
   readonly watchers = new Set<
     (sessionId: string, envelope: ExecutionHostEventEnvelope | null) => void
@@ -63,6 +66,7 @@ export class FakeHostModel {
 
   constructor(options: FakeHostOptions = {}) {
     this.recordsUsage = options.recordsUsage ?? true;
+    this.backfillsUsage = this.recordsUsage && (options.backfillsUsage ?? true);
   }
 
   start(sessionId: string, providerId: string): "started" | "exists" {
@@ -154,6 +158,20 @@ export class FakeHostModel {
       sessionId,
       endedAt,
       source: "live",
+      ...usage,
+    });
+    return turnId;
+  }
+
+  /** Records a turn read back from history, as a host's backfill does. */
+  backfillTurnUsage(usage: ExecutionTurnUsage, endedAt: string): string {
+    this.turnsEnded += 1;
+    const turnId = `backfill-${this.turnsEnded}`;
+    this.usage.push({
+      turnId,
+      sessionId: null,
+      endedAt,
+      source: "backfill",
       ...usage,
     });
     return turnId;
@@ -600,6 +618,12 @@ export function modelHooks(
       ? {
           endTurnWithUsage: (sessionId: string, usage: ExecutionTurnUsage) =>
             model.endTurnWithUsage(sessionId, usage),
+        }
+      : {}),
+    ...(model.backfillsUsage
+      ? {
+          backfillTurnUsage: (usage: ExecutionTurnUsage, endedAt: string) =>
+            model.backfillTurnUsage(usage, endedAt),
         }
       : {}),
   };

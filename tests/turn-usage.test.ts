@@ -235,6 +235,97 @@ describe("a turn's usage", () => {
   );
 });
 
+describe("a model split that does not add up (review of #66)", () => {
+  const tokens = (input: number, more: Record<string, number> = {}) => ({
+    input,
+    cacheWrite5m: 0,
+    cacheWrite1h: 0,
+    cacheRead: 0,
+    output: 10,
+    ...more,
+  });
+  const turn = (
+    total: Record<string, number>,
+    models: Array<Record<string, number>>,
+  ) => ({
+    providerId: "claude",
+    model: "a",
+    accountId: null,
+    tokens: total,
+    costUsdReported: 0.5,
+    costBasis: "list",
+    models: models.map((part, index) => ({
+      model: ["a", "b", "c"][index],
+      tokens: part,
+      costUsdReported: 0.25,
+    })),
+  });
+
+  it.each([
+    [
+      "counts the turn's input twice",
+      turn(tokens(100, { output: 20 }), [tokens(100), tokens(100)]),
+    ],
+    [
+      "comes short of the turn's output",
+      turn(tokens(100, { output: 30 }), [tokens(50), tokens(50)]),
+    ],
+    [
+      "puts the turn's cache reads under another kind",
+      turn(tokens(100, { cacheRead: 40, output: 20 }), [
+        tokens(50, { cacheWrite5m: 40 }),
+        tokens(50),
+      ]),
+    ],
+    [
+      "says reasoning the turn does not",
+      turn(tokens(100, { output: 20 }), [
+        tokens(50, { reasoning: 4 }),
+        tokens(50),
+      ]),
+    ],
+    [
+      "leaves a model's reasoning out of a turn that says it",
+      turn(tokens(100, { output: 20, reasoning: 4 }), [
+        tokens(50, { reasoning: 4 }),
+        tokens(50),
+      ]),
+    ],
+    [
+      "adds its reasoning up to another number",
+      turn(tokens(100, { output: 20, reasoning: 4 }), [
+        tokens(50, { reasoning: 4 }),
+        tokens(50, { reasoning: 4 }),
+      ]),
+    ],
+  ])("drops a split that %s, and keeps the totals and their cost", (_, raw) => {
+    const result = read(raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.models).toBeUndefined();
+    expect(result.value.tokens).toEqual(raw.tokens);
+    expect(result.value.costUsdReported).toBe(0.5);
+    expect(result.value.costBasis).toBe("list");
+    // The split's costs are not read, so nothing but the split is named.
+    expect(warningsOf(result)).toEqual([
+      { reason: "dropped-invalid-field", path: "models" },
+    ]);
+  });
+
+  it("keeps a split that adds up, kind by kind, reasoning included", () => {
+    const raw = turn(tokens(100, { output: 20, reasoning: 6, cacheRead: 7 }), [
+      tokens(60, { reasoning: 6, cacheRead: 7 }),
+      tokens(40, { reasoning: 0 }),
+    ]);
+    expect(read(raw)).toEqual({ ok: true, value: raw });
+  });
+
+  it("keeps one model that is the whole turn", () => {
+    const raw = turn(tokens(100), [tokens(100)]);
+    expect(read(raw)).toEqual({ ok: true, value: raw });
+  });
+});
+
 describe("a turn's usage on the wire", () => {
   const envelope = (patch: unknown) => ({
     protocolVersion: 1,
@@ -419,6 +510,32 @@ describe("the usage history", () => {
       ok: true,
       value: { records: [], nextCursor: null, hasMore: false, warnings: [] },
     });
+  });
+
+  it("reads an empty page with more after it, which says where to go on", () => {
+    expect(
+      decodeExecutionTurnUsagePage(
+        page([], { hasMore: true, nextCursor: "c3" }),
+      ),
+    ).toEqual({
+      ok: true,
+      value: { records: [], nextCursor: "c3", hasMore: true, warnings: [] },
+    });
+  });
+
+  // Review of #66: a page a reader cannot resume after would have the
+  // documented loop ask for it again for ever.
+  it.each([
+    ["empty, with more after it", [], true],
+    ["with records and more after them", [LIVE], true],
+    ["with records and nothing more", [LIVE], false],
+    ["with records this build cannot read", [{ turnId: "x" }], false],
+  ])("refuses a page %s but no cursor", (_, records, hasMore) => {
+    expect(
+      decodeExecutionTurnUsagePage(
+        page(records, { hasMore, nextCursor: null }),
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
   });
 
   it.each([

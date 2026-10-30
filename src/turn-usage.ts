@@ -68,8 +68,9 @@ export interface ExecutionTurnUsage {
   /**
    * The turn's tokens model by model, when it ran on more than one (Claude's
    * `modelUsage`: a subagent, a Haiku helper), each model once. A reader that
-   * prices by model prices these and not `tokens`, which are their sum.
-   * Absent when the turn ran on `model` alone, or the host could not tell.
+   * prices by model prices these and not `tokens`, which are their sum, kind
+   * by kind: a split that does not add up is dropped on read. Absent when
+   * the turn ran on `model` alone, or the host could not tell.
    */
   models?: ExecutionTurnModelUsage[];
 }
@@ -175,8 +176,9 @@ export interface ExecutionTurnUsageQuery {
  * `nextCursor` is where the page ends. Passed back as `cursor`, it reads what
  * comes after: the rest at once while `hasMore`, and later, whatever the host
  * has recorded since — so a reader that keeps its last cursor catches up
- * from it. Null only when the host has nothing to resume after (an empty
- * history): keep the cursor you had.
+ * from it. Null only on an empty page with nothing more (an empty history,
+ * or nothing new since the cursor given): keep the cursor you had. A page
+ * with records, or with `hasMore`, always has one; one without is unreadable.
  */
 export interface ExecutionTurnUsagePage {
   records: ExecutionTurnUsageRecord[];
@@ -250,8 +252,8 @@ export function encodeExecutionTurnUsageQuery(
  * count, a model and an account that are an id or null — and an account id
  * that looks like an email is refused, never shown. A cost without a basis
  * this build knows is dropped, every cost with it, and so is a `models` list
- * that cannot be read whole; each is named in `warnings`, and the turn's
- * totals stay.
+ * that cannot be read whole or whose tokens do not add up to the turn's; each
+ * is named in `warnings`, and the turn's totals stay.
  */
 export function decodeExecutionTurnUsage(
   raw: unknown,
@@ -284,9 +286,10 @@ export function decodeExecutionTurnUsageRecord(
 
 /**
  * Reads a page of usage history. The frame is required — protocol version, a
- * `records` list, `hasMore`, and a `nextCursor` that is one or null. A record
- * this build cannot read is dropped and named in `warnings`, so a short page
- * is never silently short.
+ * `records` list, `hasMore`, and a `nextCursor` that is one or null — and the
+ * page must be one a reader can resume after: a null `nextCursor` only on an
+ * empty page with nothing more. A record this build cannot read is dropped
+ * and named in `warnings`, so a short page is never silently short.
  */
 export function decodeExecutionTurnUsagePage(
   raw: unknown,
@@ -303,6 +306,12 @@ export function decodeExecutionTurnUsagePage(
       isBoundedString(raw.nextCursor, EXECUTION_TURN_USAGE_CURSOR_MAX_LENGTH)
     )
   ) {
+    return { ok: false, reason: "invalid-payload" };
+  }
+  // A page that cannot be resumed: one with more after it, or with records
+  // (whether this build can read them or not), says where it ends. Without
+  // that, a reader would ask for the same page for ever.
+  if (raw.nextCursor === null && (raw.hasMore || raw.records.length > 0)) {
     return { ok: false, reason: "invalid-payload" };
   }
   const warnings: ExecutionDecodeWarning[] = [];
@@ -403,7 +412,7 @@ function readUsage(
   const costUsdReported = cost(raw.costUsdReported, "costUsdReported");
   let models: ExecutionTurnModelUsage[] | undefined;
   if (raw.models !== undefined) {
-    models = readModels(raw.models, cost) ?? undefined;
+    models = readModels(raw.models, tokens, cost) ?? undefined;
     if (models === undefined) drop("models");
   }
   const anyCost =
@@ -430,11 +439,14 @@ function readUsage(
 
 /**
  * Null when it is not a list of 1 to `EXECUTION_TURN_USAGE_MODELS_MAX_COUNT`
- * entries, an entry cannot be read, or a model comes twice: a part of the
- * split is no split. A model's unreadable cost is left out on its own.
+ * entries, an entry cannot be read, a model comes twice, or the models'
+ * tokens do not add up to the turn's (`addsUp`): a part of the split, or a
+ * split that counts some tokens twice, is no split. Its costs are read only
+ * once it stands, and a model's unreadable cost is left out on its own.
  */
 function readModels(
   raw: unknown,
+  total: ExecutionTurnTokens,
   cost: (value: unknown, path: string) => number | undefined,
 ): ExecutionTurnModelUsage[] | null {
   if (
@@ -444,28 +456,62 @@ function readModels(
   ) {
     return null;
   }
-  const models: ExecutionTurnModelUsage[] = [];
-  for (const [index, entry] of raw.entries()) {
+  const split: Array<{ model: string; tokens: ExecutionTurnTokens }> = [];
+  for (const entry of raw) {
     if (
       !isRecord(entry) ||
       !isBoundedString(entry.model, EXECUTION_TURN_USAGE_ID_MAX_LENGTH) ||
-      models.some((kept) => kept.model === entry.model)
+      split.some((kept) => kept.model === entry.model)
     ) {
       return null;
     }
     const tokens = readTokens(entry.tokens);
     if (tokens === null) return null;
+    split.push({ model: entry.model, tokens });
+  }
+  if (
+    !addsUp(
+      split.map((entry) => entry.tokens),
+      total,
+    )
+  ) {
+    return null;
+  }
+  return split.map((entry, index) => {
     const costUsdReported = cost(
-      entry.costUsdReported,
+      (raw[index] as Record<string, unknown>).costUsdReported,
       `models.${index}.costUsdReported`,
     );
-    models.push({
-      model: entry.model,
-      tokens,
+    return {
+      ...entry,
       ...(costUsdReported === undefined ? {} : { costUsdReported }),
-    });
+    };
+  });
+}
+
+/**
+ * Whether the models' tokens are the turn's, kind by kind: each count the sum
+ * of the models'. `reasoning` too: a turn that says none has no model saying
+ * any, and one that says it has every model saying its part. Costs are not
+ * checked: they are amounts in floating point, and a reader that prices by
+ * model prices the tokens.
+ */
+function addsUp(
+  parts: ExecutionTurnTokens[],
+  total: ExecutionTurnTokens,
+): boolean {
+  const sum = (count: (tokens: ExecutionTurnTokens) => number) =>
+    parts.reduce((running, part) => running + count(part), 0);
+  if (!TOKEN_KINDS.every((kind) => sum((part) => part[kind]) === total[kind])) {
+    return false;
   }
-  return models;
+  if (total.reasoning === undefined) {
+    return parts.every((part) => part.reasoning === undefined);
+  }
+  return (
+    parts.every((part) => part.reasoning !== undefined) &&
+    sum((part) => part.reasoning!) === total.reasoning
+  );
 }
 
 const TOKEN_KINDS = [

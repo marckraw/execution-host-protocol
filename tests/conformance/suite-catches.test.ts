@@ -271,6 +271,79 @@ describe("the conformance suite", () => {
       expect(String(error)).toMatch(/since/);
     });
 
+    const SINCE_PAGES_CASE =
+      "pages turn usage since a given time, keeping since on every cursor";
+    const SINCE_CATCH_UP_CASE =
+      "catches up from a read since a given time with only what ended since";
+
+    it("passes a fake host that records live usage but does not backfill", async () => {
+      for (const entry of executionHostConformanceCases) {
+        expect(
+          await runCase(
+            entry.name,
+            (api) => api,
+            new FakeHostModel({ backfillsUsage: false }),
+          ),
+          entry.name,
+        ).toBeNull();
+      }
+    });
+
+    // Review of #66: a carrier that loses `since` from every cursor passed
+    // every usage case there was. The fake's cursor is `position|since`.
+    const dropsSince = (api: ExecutionHostApi): ExecutionHostApi => ({
+      ...api,
+      listTurnUsage: (query, options) =>
+        api.listTurnUsage(
+          query?.cursor === undefined
+            ? query
+            : { ...query, cursor: query.cursor.replace(/\|.*$/, "|") },
+          options,
+        ),
+    });
+
+    it.each([SINCE_PAGES_CASE, SINCE_CATCH_UP_CASE])(
+      "fails a carrier that drops since from its cursors: %s",
+      async (name) => {
+        const error = await runCase(name, dropsSince);
+        expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+        expect(String(error)).toMatch(/before it/);
+      },
+    );
+
+    it("fails a cursor that counts in the filtered list but reads without since, with no backfill", async () => {
+      const model = new FakeHostModel({ backfillsUsage: false });
+      const error = await runCase(
+        SINCE_PAGES_CASE,
+        (api) => ({
+          ...api,
+          listTurnUsage: async (query = {}) => {
+            const limit = query.limit ?? 2;
+            const offset =
+              query.cursor === undefined ? 0 : Number(query.cursor);
+            const since = query.since;
+            const pool =
+              since === undefined
+                ? model.usage
+                : model.usage.filter(
+                    (record) => Date.parse(record.endedAt) >= Date.parse(since),
+                  );
+            const records = pool.slice(offset, offset + limit);
+            const next = offset + records.length;
+            return {
+              records,
+              nextCursor: String(next),
+              hasMore: next < pool.length,
+              warnings: [],
+            };
+          },
+        }),
+        model,
+      );
+      expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+      expect(String(error)).toMatch(/a page at a time lists .*, not /);
+    });
+
     it("fails a host that answers the history but cannot record usage", async () => {
       const model = new FakeHostModel({ recordsUsage: false });
       const error = await runCase(

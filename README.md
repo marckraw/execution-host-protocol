@@ -1864,8 +1864,9 @@ otherwise, and the host turns their words into these:
 
 **Models.** `model` is the one the turn ran on. `models` splits a turn that
 ran on several (a subagent, a Haiku helper), each model once, and the turn's
-`tokens` are their sum: a reader pricing by model prices `models` and not
-`tokens`, and without `models` prices the whole turn as `model`.
+`tokens` are their sum, kind by kind — `reasoning` too, where the turn says
+it, every model saying its part. A reader pricing by model prices `models` and
+not `tokens`, and without `models` prices the whole turn as `model`.
 
 **Cost.** `costUsdReported` is what the provider said, in US dollars, and
 `costBasis` what that is: `list`, its list price for the tokens — what they
@@ -1882,8 +1883,10 @@ an account that are each an id or null, and every count (a whole number from 0
 to 2^53) are required, and an account id with an `@` in it is refused, never
 shown. A cost without a basis this build knows is dropped, every cost with it,
 and a `models` split that cannot be read whole (empty, past 32 models, a model
-twice, an entry without its tokens) is dropped too, the totals kept; each is
-named in `warnings`. On a turn or a `turn.patch`, a usage that cannot be read
+twice, an entry without its tokens), or whose tokens do not add up to the
+turn's, is dropped too, the totals kept, so a split never counts a token
+twice; each is named in `warnings`. Costs are not summed: they are amounts in
+floating point. On a turn or a `turn.patch`, a usage that cannot be read
 at all is dropped and named, and never costs the turn: its end and status
 still arrive.
 
@@ -1952,15 +1955,20 @@ saved.cursor = cursor; // next time, what was recorded since
   starts a read with the turns that ended at or after it; `cursor` carries one
   on, with its `since`, so a query names one or the other. `nextCursor` is
   where a page ends: pass it back for the rest at once while `hasMore`, or
-  later for what the host has recorded since. It is null only when there is
-  nothing to resume after (an empty history): keep the cursor you had.
+  later for what the host has recorded since. It is null only on an empty page
+  with nothing more (an empty history, or nothing new since the cursor given):
+  keep the cursor you had. A page with records, or with `hasMore`, always has
+  one.
 - **Checked first.** A query naming both `since` and `cursor`, a `since` that
   is not a timestamp, or a `limit` out of bounds is a `TypeError` or
   `RangeError` before anything is sent; `encodeExecutionTurnUsageQuery` is the
   check, for a host in the same process too.
 - **Read tolerantly.** `decodeExecutionTurnUsagePage` requires the frame —
   `protocolVersion`, `records`, `hasMore` and a `nextCursor` that is one or
-  null — and drops a record it cannot read, naming it in `warnings`.
+  null — and refuses a page a reader could not resume after (`hasMore`, or
+  records, with no `nextCursor`) as unreadable, `malformed` from the client,
+  rather than have it ask for the same page for ever. It drops a record it
+  cannot read, naming it in `warnings`.
 - **Gated.** `listTurnUsage` does not read `/health` first: gate on
   `hostRecordsTurnUsage(health)`. A host without `turns.usage.v1` answers 404,
   an `ExecutionHostError` of kind `not-found`, and every carrier refuses it
@@ -2093,7 +2101,11 @@ that ends having cost `usage` and says its id, for the turn-usage cases: its
 `turn.patch` and snapshot carry the usage, and `listTurnUsage` lists it,
 `live`, in order, paged, and from its last cursor. A host that records no
 usage leaves it out, and is held instead to refusing `listTurnUsage` as
-`not-found`. `executionHostConformanceCases` are the same cases
+`not-found`. `backfillTurnUsage(usage, endedAt)` records a `backfill` turn
+that ended long ago, now: a record listed out of the order turns ended is
+what shows a cursor that lost its `since`, so a host that backfills gives the
+suite this; one that does not leaves it out, and the `since` cases use live
+turns alone. `executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind
 the HTTP client with a fake `fetch`.

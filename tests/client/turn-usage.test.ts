@@ -155,6 +155,21 @@ describe("listing turn usage", () => {
     });
   });
 
+  it("is malformed when the page cannot be resumed", async () => {
+    const { client } = clientAnswering(() =>
+      json({
+        protocolVersion: 1,
+        records: [],
+        nextCursor: null,
+        hasMore: true,
+      }),
+    );
+    await expect(client.listTurnUsage()).rejects.toMatchObject({
+      kind: "malformed",
+      operation: "list turn usage",
+    });
+  });
+
   it("is gated by turns.usage.v1", () => {
     expect(hostRecordsTurnUsage({ capabilities: ["turns.usage.v1"] })).toBe(
       true,
