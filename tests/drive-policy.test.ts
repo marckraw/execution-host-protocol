@@ -165,6 +165,16 @@ describe("drivePolicyRefusalOf: each flag on and off", () => {
       ask({ actor: actor("line"), afterChain: true }),
       "after-chain",
     ],
+    [
+      "afterChains",
+      ask({ actor: actor("line"), afterChain: true, waitForRoom: true }),
+      "after-chain",
+    ],
+    [
+      "afterChains",
+      ask({ afterChain: true, waitForRoom: true }),
+      "after-chain",
+    ],
     ["anyHost", ask({ anyHost: true }), "any-host"],
     ["others", ask({ actor: actor("app", { id: "usr_piotr" }) }), "not-owner"],
     [
@@ -192,16 +202,39 @@ describe("drivePolicyRefusalOf: each flag on and off", () => {
     ).toBeNull();
   });
 
-  it("asks only the chain's switch of an after chain the line fires", () => {
-    const fired = ask({ actor: actor("line"), afterChain: true });
+  // MAR-5633: a chain needs allowAfterChains, and never allowWaitForRoom too.
+  const chains: Array<[string, ExecutionDriveAsk]> = [
+    ["the line fires", ask({ actor: actor("line"), afterChain: true })],
+    [
+      "the line fires, waiting for room",
+      ask({ actor: actor("line"), afterChain: true, waitForRoom: true }),
+    ],
+    [
+      "the owner asks for, waiting for room",
+      ask({ afterChain: true, waitForRoom: true }),
+    ],
+  ];
 
-    expect(
-      drivePolicyRefusalOf(
-        policy({ allow: { waitForRoom: false, afterChains: true } }),
-        fired,
-      ),
-    ).toBeNull();
-  });
+  it.each(chains)(
+    "asks only the chain's switch of an after chain %s",
+    (_case, chain) => {
+      expect(
+        drivePolicyRefusalOf(
+          policy({ allow: { waitForRoom: false, afterChains: true } }),
+          chain,
+        ),
+      ).toBeNull();
+      expect(
+        drivePolicyRefusalOf(
+          policy({ allow: { waitForRoom: false, afterChains: false } }),
+          chain,
+        ),
+      ).toMatchObject({
+        reason: "after-chain",
+        flag: "antigravity.allowAfterChains",
+      });
+    },
+  );
 
   it("asks the policy's switches of someone else, once others are allowed", () => {
     expect(

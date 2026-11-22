@@ -2811,6 +2811,15 @@ const CLAUDE_PERMISSION_FIELDS = new Set(["permissionMode"]);
 const ANTIGRAVITY_PERMISSION_FIELDS = new Set(["mode"]);
 
 /**
+ * A string this build knows, and nothing else: never coerced, so an array
+ * that prints as a known value is refused, and an object that cannot print
+ * is refused rather than thrown on.
+ */
+function isOneOf(known: ReadonlySet<string>, value: unknown): boolean {
+  return typeof value === "string" && known.has(value);
+}
+
+/**
  * A session's permission policy. `strict` is for a session patch (MAR-4052),
  * which refuses a field it does not know at any depth: a misspelt one that was
  * dropped would read as a change made.
@@ -2825,7 +2834,7 @@ function decodeOptionalPermissionConfig(
   if (
     !isRecord(raw) ||
     !known(raw, PERMISSION_CONFIG_FIELDS) ||
-    !PERMISSION_PRESETS.has(String(raw.preset))
+    !isOneOf(PERMISSION_PRESETS, raw.preset)
   )
     return failure("invalid-payload");
 
@@ -2834,15 +2843,15 @@ function decodeOptionalPermissionConfig(
     if (
       !isRecord(raw.codex) ||
       !known(raw.codex, CODEX_PERMISSION_FIELDS) ||
-      !CODEX_APPROVAL_POLICIES.has(String(raw.codex.approvalPolicy)) ||
-      !CODEX_SANDBOX_MODES.has(String(raw.codex.sandbox)) ||
+      !isOneOf(CODEX_APPROVAL_POLICIES, raw.codex.approvalPolicy) ||
+      !isOneOf(CODEX_SANDBOX_MODES, raw.codex.sandbox) ||
       !(
         raw.codex.approvalsReviewer === undefined ||
-        CODEX_APPROVALS_REVIEWERS.has(String(raw.codex.approvalsReviewer))
+        isOneOf(CODEX_APPROVALS_REVIEWERS, raw.codex.approvalsReviewer)
       ) ||
       !(
         raw.codex.collaborationMode === undefined ||
-        CODEX_COLLABORATION_MODES.has(String(raw.codex.collaborationMode))
+        isOneOf(CODEX_COLLABORATION_MODES, raw.codex.collaborationMode)
       )
     )
       return failure("invalid-payload");
@@ -2859,7 +2868,7 @@ function decodeOptionalPermissionConfig(
     if (
       !isRecord(raw.claudeCode) ||
       !known(raw.claudeCode, CLAUDE_PERMISSION_FIELDS) ||
-      !CLAUDE_PERMISSION_MODES.has(String(raw.claudeCode.permissionMode))
+      !isOneOf(CLAUDE_PERMISSION_MODES, raw.claudeCode.permissionMode)
     )
       return failure("invalid-payload");
     claudeCode = {
@@ -2872,7 +2881,7 @@ function decodeOptionalPermissionConfig(
     if (
       !isRecord(raw.antigravity) ||
       !known(raw.antigravity, ANTIGRAVITY_PERMISSION_FIELDS) ||
-      !ANTIGRAVITY_PERMISSION_MODES.has(String(raw.antigravity.mode))
+      !isOneOf(ANTIGRAVITY_PERMISSION_MODES, raw.antigravity.mode)
     )
       return failure("invalid-payload");
     antigravity = {

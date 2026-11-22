@@ -720,6 +720,9 @@ describe("the interaction request kinds", () => {
   });
 });
 
+/** An object `String()` throws on. */
+const unprintable = () => ({ toString: null });
+
 describe("Antigravity's permission part (MAR-5634)", () => {
   const modes = ["default", "accept-edits", "auto", "plan"] as const;
   const start = (permissionConfig: unknown) =>
@@ -778,11 +781,84 @@ describe("Antigravity's permission part (MAR-5634)", () => {
     ["Claude's spelling", { mode: "acceptEdits" }],
     ["no mode", {}],
     ["not an object", "plan"],
+    ["an array that prints as a mode", { mode: ["plan"] }],
   ])("refuses %s", (_case, antigravity) => {
     expect(
       decodeExecutionStartRequest(start({ preset: "custom", antigravity })),
     ).toEqual({ ok: false, reason: "invalid-payload" });
   });
+
+  // Not JSON, so a caller's object: a value that cannot print is refused,
+  // never thrown on, in every provider's part and in the preset.
+  it.each<[string, unknown]>([
+    [
+      "Antigravity's mode",
+      { preset: "custom", antigravity: { mode: unprintable() } },
+    ],
+    [
+      "Antigravity's mode as an array",
+      { preset: "custom", antigravity: { mode: ["plan"] } },
+    ],
+    ["the preset", { preset: unprintable() }],
+    ["the preset as an array", { preset: ["custom"] }],
+    [
+      "Claude Code's mode",
+      { preset: "custom", claudeCode: { permissionMode: unprintable() } },
+    ],
+    [
+      "Claude Code's mode as an array",
+      { preset: "custom", claudeCode: { permissionMode: ["plan"] } },
+    ],
+    [
+      "Codex's sandbox",
+      {
+        preset: "custom",
+        codex: { approvalPolicy: "never", sandbox: unprintable() },
+      },
+    ],
+    [
+      "Codex's policy as an array",
+      {
+        preset: "custom",
+        codex: { approvalPolicy: ["never"], sandbox: "read-only" },
+      },
+    ],
+    [
+      "Codex's reviewer",
+      {
+        preset: "custom",
+        codex: {
+          approvalPolicy: "never",
+          sandbox: "read-only",
+          approvalsReviewer: unprintable(),
+        },
+      },
+    ],
+    [
+      "Codex's collaboration mode as an array",
+      {
+        preset: "custom",
+        codex: {
+          approvalPolicy: "never",
+          sandbox: "read-only",
+          collaborationMode: ["plan"],
+        },
+      },
+    ],
+  ])(
+    "refuses %s it cannot read, without throwing",
+    (_case, permissionConfig) => {
+      expect(decodeExecutionPermissionConfig(permissionConfig)).toEqual({
+        ok: false,
+        reason: "invalid-payload",
+      });
+      expect(
+        decodeExecutionSessionPatchRequest(
+          JSON.stringify({ permissionConfig }),
+        ),
+      ).toEqual({ ok: false, reason: "invalid-payload" });
+    },
+  );
 
   it("refuses a misspelt field on a patch, and ignores it on a start", () => {
     const antigravity = { mode: "plan", approval: "never" };

@@ -237,20 +237,21 @@ for fleets of automations. A provider like that carries a `drivePolicy` in
 
 What it checks, in order, with the first refusal winning:
 
-| `reason`           | Refused when                                                                         | `flag`                             |
-| ------------------ | ------------------------------------------------------------------------------------ | ---------------------------------- |
-| `no-owner`         | `ownerId` is null: nobody is signed in                                               | none                               |
-| `no-actor`         | the ask carries no `actor`                                                           | none                               |
-| `not-owner`        | the actor is not the `person` whose `id` is `ownerId`, and `others` is off           | `<provider>.allowOthers`           |
-| `token-driven-off` | `via: "token"`, and `tokenDriven` is off                                             | `<provider>.allowTokenDriven`      |
-| `automation`       | `via: "automation"`, and `automations` is off                                        | `<provider>.allowAutomations`      |
-| `wait-for-room`    | a start that may wait in its host's line, or `via: "line"`, and `waitForRoom` is off | `<provider>.allowWaitForRoom`      |
-| `after-chain`      | a start chained `after` another session, and `afterChains` is off                    | `<provider>.allowAfterChains`      |
-| `any-host`         | a start that lets the line pick any host, and `anyHost` is off                       | `<provider>.allowAnyHost`          |
-| `at-capacity`      | the ask needs a new process, and `liveSessions` has reached `maxConcurrentSessions`  | `<provider>.maxConcurrentSessions` |
+| `reason`           | Refused when                                                                                               | `flag`                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `no-owner`         | `ownerId` is null: nobody is signed in                                                                     | none                               |
+| `no-actor`         | the ask carries no `actor`                                                                                 | none                               |
+| `not-owner`        | the actor is not the `person` whose `id` is `ownerId`, and `others` is off                                 | `<provider>.allowOthers`           |
+| `token-driven-off` | `via: "token"`, and `tokenDriven` is off                                                                   | `<provider>.allowTokenDriven`      |
+| `automation`       | `via: "automation"`, and `automations` is off                                                              | `<provider>.allowAutomations`      |
+| `wait-for-room`    | a start that may wait in its host's line, or `via: "line"`, not an `after` chain, and `waitForRoom` is off | `<provider>.allowWaitForRoom`      |
+| `after-chain`      | a start chained `after` another session, and `afterChains` is off                                          | `<provider>.allowAfterChains`      |
+| `any-host`         | a start that lets the line pick any host, and `anyHost` is off                                             | `<provider>.allowAnyHost`          |
+| `at-capacity`      | the ask needs a new process, and `liveSessions` has reached `maxConcurrentSessions`                        | `<provider>.maxConcurrentSessions` |
 
-An `after` chain the line fires (`via: "line"`) answers to `afterChains`
-alone. `via: "app"` needs no switch.
+An `after` chain answers to `afterChains` alone: never to `waitForRoom` too,
+whether the line fires it (`via: "line"`) or it may also wait for room.
+`via: "app"` needs no switch.
 
 - **Enforced where it says so.** A host advertising `providers.drivePolicy.v1`
   enforces the policy it reports on every start and every command. A host
@@ -259,7 +260,8 @@ alone. `via: "app"` needs no switch.
   in the client).
 - **Unknown is not open.** A policy the listing cannot read is left out of the
   provider, named in `warnings` (`providers.N.drivePolicy`), and never costs
-  the catalogue. A client treats an absent policy as unknown, never as
+  the catalogue. The client's `providers()` passes those warnings to its
+  `onWarnings`, as `{ operation: "providers", sessionId: null, warnings }`. A client treats an absent policy as unknown, never as
   "anyone may". `decodeExecutionDrivePolicy` reads one on its own, and
   `decodeExecutionDrivePolicyRefusal` reads a host's refusal.
 

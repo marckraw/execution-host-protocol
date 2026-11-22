@@ -165,9 +165,9 @@ const VIA_WORDS: Record<ExecutionActorVia, string> = {
  *    (`wait-for-room`), unless what it fires is an `after` chain, which is
  *    the chain's switch alone. `app` needs no switch.
  * 5. `wait-for-room`: a start that may wait for a free turn needs
- *    `waitForRoom`.
+ *    `waitForRoom`, unless it is an `after` chain.
  * 6. `after-chain`: a start chained `after` another session needs
- *    `afterChains`, whoever sends it.
+ *    `afterChains`, whoever sends it, and no other queueing switch.
  * 7. `any-host`: a start letting the line pick its host needs `anyHost`.
  * 8. `at-capacity`: an ask that needs a new process, while `liveSessions`
  *    has reached `maxConcurrentSessions`.
@@ -207,7 +207,8 @@ export function drivePolicyRefusalOf(
       "others",
     );
   }
-  // The line fires both kinds of waiting start; a chain is the chain's switch.
+  // The line fires both kinds of waiting start; a chain is the chain's switch
+  // alone, whatever else it says of itself.
   const viaRefusal =
     actor.via === "line" && ask.afterChain
       ? undefined
@@ -219,7 +220,7 @@ export function drivePolicyRefusalOf(
       viaRefusal.allowed,
     );
   }
-  if (ask.waitForRoom && !policy.allow.waitForRoom) {
+  if (ask.waitForRoom && !ask.afterChain && !policy.allow.waitForRoom) {
     return refuse(
       "wait-for-room",
       `${provider} here does not run starts that wait in the line for a free turn.`,
