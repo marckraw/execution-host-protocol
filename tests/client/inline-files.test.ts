@@ -273,7 +273,7 @@ describe("calls without a file are as they were", () => {
       { kind: "send-message", text: "hi" },
       {
         commandId: "c1",
-        actor: { kind: "person", id: "u1", displayName: "Piotr" },
+        actor: { kind: "person", id: "u1", displayName: "Piotr", via: "app" },
       },
     );
     await connection.command(
@@ -307,7 +307,11 @@ describe("calls without a file are as they were", () => {
     });
     expect(sent).toEqual([
       "POST /v0/execution/sessions/s1/commands",
-      PUBLISHED_0_20_0_BODIES[0],
+      // 0.38.0 adds the actor's `via` (MAR-5634), and nothing else.
+      PUBLISHED_0_20_0_BODIES[0]!.replace(
+        '"displayName":"Piotr"}',
+        '"displayName":"Piotr","via":"app"}',
+      ),
       "POST /v0/execution/sessions/s1/commands",
       PUBLISHED_0_20_0_BODIES[1],
       "POST /v0/execution/sessions/s1/commands",
