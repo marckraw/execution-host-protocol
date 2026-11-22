@@ -2,6 +2,7 @@ import type {
   ExecutionFileReach,
   ExecutionHostFileReach,
 } from "./file-reach.js";
+import type { ExecutionDrivePolicy } from "./drive-policy.js";
 import type { HarnessEvidence } from "./harness-evidence.js";
 import type {
   ExecutionToolAttachment,
@@ -159,6 +160,14 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * usage, and answers that route 404.
    */
   "turns.usage.v1",
+  /**
+   * The host reports a provider's `drivePolicy` in `GET /v0/providers` and
+   * enforces the policy it reports, with `drivePolicyRefusalOf`, on every
+   * start and every command (MAR-5634). A host without it enforces none, so a
+   * client never sends a start for a provider whose policy it cannot read to
+   * a host without it.
+   */
+  "providers.drivePolicy.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -430,6 +439,23 @@ export const EXECUTION_ACTOR_KINDS = ["person", "agent"] as const;
 export type ExecutionActorKind = (typeof EXECUTION_ACTOR_KINDS)[number];
 
 /**
+ * How a command reached the host (MAR-5634), which a provider's drive policy
+ * reads:
+ *
+ * - `app`: a person in accent. (web, native, desktop, local).
+ * - `token`: their AI app, through one of their tokens.
+ * - `automation`: an Automation or a schedule, and any persona one starts.
+ * - `line`: a queued start that the line fired.
+ */
+export const EXECUTION_ACTOR_VIAS = [
+  "app",
+  "token",
+  "automation",
+  "line",
+] as const;
+export type ExecutionActorVia = (typeof EXECUTION_ACTOR_VIAS)[number];
+
+/**
  * Who sent a command (MAR-3633): a person, or an agent acting on its own.
  *
  * `id` is the sending client's own id for them — accent.'s user id, an agent's
@@ -447,7 +473,23 @@ export interface ExecutionActor {
   id: string;
   /** Non-empty, at most 256 characters. */
   displayName: string;
+  /**
+   * How it reached the host (MAR-5634). Required on a command envelope and a
+   * start request: one without it, or with a value this build does not know,
+   * is refused.
+   */
+  via: ExecutionActorVia;
 }
+
+/**
+ * Who wrote a user message, as a host echoes it (`items.author.v1`): the
+ * actor of the command that created it. `via` is absent on a message a host
+ * recorded before it read one, and on one whose `via` this build does not
+ * know.
+ */
+export type ExecutionMessageAuthor = Omit<ExecutionActor, "via"> & {
+  via?: ExecutionActorVia;
+};
 
 export type ExecutionConversationItemState = "streaming" | "complete" | "error";
 
@@ -582,7 +624,7 @@ export type ExecutionConversationItem =
        * envelope's `actor` by a host advertising `items.author.v1`. Absent on
        * assistant messages, and on any message whose sender did not say.
        */
-      author?: ExecutionActor;
+      author?: ExecutionMessageAuthor;
       /**
        * The `commandId` of the request that created this user message — a
        * `send-message` or `steer` envelope, or the start request for the
@@ -871,13 +913,17 @@ export type ExecutionCodexApprovalsReviewer = "user" | "auto_review";
 export type ExecutionCodexCollaborationMode = "default" | "plan";
 export type ExecutionClaudePermissionMode =
   "default" | "acceptEdits" | "auto" | "dontAsk" | "plan" | "bypassPermissions";
+/** Antigravity's own modes (MAR-5634). */
+export type ExecutionAntigravityPermissionMode =
+  "default" | "accept-edits" | "auto" | "plan";
 
 /**
  * Provider permission policy selected for a Session: at its start
  * (`config.permissionConfig`), or for a running one by a session patch
  * (MAR-4052).
  *
- * The `preset` decides, and a provider part (`codex`, `claudeCode`) applies
+ * The `preset` decides, and a provider part (`codex`, `claudeCode`,
+ * `antigravity`) applies
  * only under `custom`:
  *
  * - `ask`: the provider asks before what it would ask about by default
@@ -905,6 +951,9 @@ export interface ExecutionPermissionConfig {
   };
   claudeCode?: {
     permissionMode: ExecutionClaudePermissionMode;
+  };
+  antigravity?: {
+    mode: ExecutionAntigravityPermissionMode;
   };
 }
 
@@ -1348,6 +1397,15 @@ export interface ExecutionProvider {
    * build cannot read: unknown, not none.
    */
   interactions?: ExecutionProviderInteractions;
+  /**
+   * Who may drive the provider on this host, and how many of its sessions
+   * run at once (MAR-5634), on a host advertising `providers.drivePolicy.v1`,
+   * which enforces it. Configuration on the host: a client reads it to say
+   * why a start would be refused, never to change it. Absent when the host
+   * has none for the provider, or says it in a shape this build cannot read
+   * (with a warning): unknown, not "anyone may".
+   */
+  drivePolicy?: ExecutionDrivePolicy;
 }
 
 /**
@@ -1386,6 +1444,9 @@ export interface ExecutionProviderPermissions {
   };
   claudeCode?: {
     permissionModes: ExecutionClaudePermissionMode[];
+  };
+  antigravity?: {
+    modes: ExecutionAntigravityPermissionMode[];
   };
 }
 

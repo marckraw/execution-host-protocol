@@ -169,16 +169,16 @@ export interface ExecutionHostClientOptions {
   /** Mints the command id of a request sent without one. Default `crypto.randomUUID()`. */
   createCommandId?: () => string;
   /**
-   * Hears what a start echo, a snapshot or a host profile had to drop to be
-   * read, so a drop is never silent. Envelopes' own warnings reach
-   * `followSession`'s `onEnvelope`.
+   * Hears what a start echo, a snapshot, a host profile or the provider
+   * catalogue had to drop to be read, so a drop is never silent. Envelopes'
+   * own warnings reach `followSession`'s `onEnvelope`.
    */
   onWarnings?(notice: ExecutionWarningsNotice): void;
 }
 
 /**
- * What a read had to drop. A host profile belongs to no session, so its
- * notice's `sessionId` is null (MAR-3725).
+ * What a read had to drop. A host profile and the provider catalogue belong
+ * to no session, so their notices' `sessionId` is null (MAR-3725, MAR-5634).
  */
 export type ExecutionWarningsNotice =
   | {
@@ -186,7 +186,11 @@ export type ExecutionWarningsNotice =
       sessionId: string;
       warnings: ExecutionDecodeWarning[];
     }
-  | { operation: "host"; sessionId: null; warnings: ExecutionDecodeWarning[] };
+  | {
+      operation: "host" | "providers";
+      sessionId: null;
+      warnings: ExecutionDecodeWarning[];
+    };
 
 export interface ExecutionRequestOptions {
   signal?: AbortSignal;
@@ -852,6 +856,13 @@ export function createExecutionHostClient(
               `the catalogue is unreadable (${decoded.reason})`,
               { operation: "providers", status: response.status },
             );
+          }
+          if (decoded.warnings?.length) {
+            notify(options.onWarnings, {
+              operation: "providers",
+              sessionId: null,
+              warnings: decoded.warnings,
+            });
           }
           return decoded.value.providers;
         },

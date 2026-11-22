@@ -266,12 +266,14 @@ export const personActorFixture = {
   kind: "person",
   id: "usr_piotr",
   displayName: "Piotr",
+  via: "app",
 } satisfies ExecutionActor;
 
 export const agentActorFixture = {
   kind: "agent",
   id: "kuba",
   displayName: "Kuba",
+  via: "automation",
 } satisfies ExecutionActor;
 
 /**

@@ -5,6 +5,7 @@ import {
   readExecutionFileReach,
   type ExecutionFileReach,
 } from "./file-reach.js";
+import { decodeExecutionDrivePolicy } from "./drive-policy.js";
 import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
   decodeExecutionTurnUsage,
@@ -35,6 +36,7 @@ import {
 } from "./interactions.js";
 import {
   EXECUTION_ACTOR_KINDS,
+  EXECUTION_ACTOR_VIAS,
   EXECUTION_ATTENTION_STATES,
   EXECUTION_INTERACTION_REQUEST_KINDS,
   EXECUTION_PROTOCOL_VERSION,
@@ -52,6 +54,7 @@ import {
   type ExecutionActivitySignal,
   type ExecutionActor,
   type ExecutionActorKind,
+  type ExecutionActorVia,
   type ExecutionAttentionState,
   type ExecutionAutomationConfig,
   type ExecutionCallbackConfig,
@@ -77,6 +80,7 @@ import {
   type ExecutionInteractionQuestion,
   type ExecutionInteractionRequest,
   type ExecutionInteractionResponse,
+  type ExecutionMessageAuthor,
   type ExecutionMessageDelivery,
   type ExecutionMetadataAttributes,
   type ExecutionPermissionConfig,
@@ -336,7 +340,23 @@ function decodeAttribution(
   });
 }
 
+/**
+ * An envelope's or a start's actor. `via` is required (MAR-5634): a host
+ * applies a provider's drive policy to it, and an actor it cannot place could
+ * only be guessed at.
+ */
 function decodeActor(raw: unknown): ExecutionActor | null {
+  const author = decodeAuthor(raw);
+  if (author?.via === undefined) return null;
+  return { ...author, via: author.via };
+}
+
+/**
+ * A user message's author, as a host echoes it. A host recorded authors
+ * before `via` (MAR-5634), so one without it, or with one this build does not
+ * know, keeps who it was and leaves out how it came.
+ */
+function decodeAuthor(raw: unknown): ExecutionMessageAuthor | null {
   if (
     !isRecord(raw) ||
     !(EXECUTION_ACTOR_KINDS as readonly unknown[]).includes(raw.kind) ||
@@ -349,6 +369,12 @@ function decodeActor(raw: unknown): ExecutionActor | null {
     kind: raw.kind as ExecutionActorKind,
     id: raw.id,
     displayName: raw.displayName,
+    ...optionalProperty(
+      "via",
+      (EXECUTION_ACTOR_VIAS as readonly unknown[]).includes(raw.via)
+        ? (raw.via as ExecutionActorVia)
+        : undefined,
+    ),
   };
 }
 
@@ -1008,7 +1034,7 @@ function decodeConversationItemOfKind(
       const author = decodeOptionalField(
         raw.author,
         `${path}.author`,
-        decodeActor,
+        decodeAuthor,
       );
       const clientMessageId = decodeOptionalField(
         raw.clientMessageId,
@@ -1971,7 +1997,9 @@ export function decodeExecutionProjectListResponse(
  * and its text is cleaned and cut (MAR-3821), nor does its `usage`
  * (MAR-4198). Nor do its `permissions` and
  * `interactions` (MAR-4052): a shape this build cannot read is left out, and a
- * value it does not know is dropped from its list.
+ * value it does not know is dropped from its list. Nor does its `drivePolicy`
+ * (MAR-5634): one this build cannot read is left out, and named in
+ * `warnings`.
  */
 export function decodeExecutionProviderListResponse(
   raw: unknown,
@@ -1987,22 +2015,34 @@ export function decodeExecutionProviderListResponse(
   }
 
   const providers: ExecutionProvider[] = [];
-  for (const entry of raw.providers) {
-    const provider = decodeExecutionProvider(entry);
+  const warnings: ExecutionDecodeWarning[] = [];
+  for (const [index, entry] of raw.providers.entries()) {
+    const provider = decodeExecutionProvider(
+      entry,
+      `providers.${index}`,
+      warnings,
+    );
     if (!provider) return failure("invalid-payload");
     providers.push(provider);
   }
 
-  return success({
-    ...optionalProperty(
-      "protocolVersion",
-      raw.protocolVersion as typeof EXECUTION_PROTOCOL_VERSION | undefined,
-    ),
-    providers,
-  });
+  return success(
+    {
+      ...optionalProperty(
+        "protocolVersion",
+        raw.protocolVersion as typeof EXECUTION_PROTOCOL_VERSION | undefined,
+      ),
+      providers,
+    },
+    warnings,
+  );
 }
 
-function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
+function decodeExecutionProvider(
+  raw: unknown,
+  path: string,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionProvider | null {
   if (
     !isRecord(raw) ||
     !isNonEmptyString(raw.id) ||
@@ -2075,7 +2115,28 @@ function decodeExecutionProvider(raw: unknown): ExecutionProvider | null {
         isRecord(raw.features) ? raw.features.interactions : undefined,
       ),
     ),
+    ...optionalProperty(
+      "drivePolicy",
+      readDrivePolicy(raw.drivePolicy, `${path}.drivePolicy`, warnings),
+    ),
   };
+}
+
+/**
+ * A provider's drive policy (MAR-5634), which never costs the catalogue: one
+ * this build cannot read is left out, with a warning, so a client treats it
+ * as unknown rather than reading a half of it as allowed.
+ */
+function readDrivePolicy(
+  raw: unknown,
+  path: string,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionProvider["drivePolicy"] {
+  if (raw === undefined) return undefined;
+  const policy = decodeExecutionDrivePolicy(raw);
+  if (policy.ok) return policy.value;
+  warnings.push({ reason: "dropped-invalid-field", path });
+  return undefined;
 }
 
 /**
@@ -2133,10 +2194,24 @@ function decodeExecutionProviderPermissions(
     }
   }
 
+  let antigravity: ExecutionProviderPermissions["antigravity"] = undefined;
+  if (isRecord(raw.antigravity)) {
+    const modes = knownValues(
+      raw.antigravity.modes,
+      ANTIGRAVITY_PERMISSION_MODES,
+    );
+    if (modes) {
+      antigravity = {
+        modes,
+      } as ExecutionProviderPermissions["antigravity"];
+    }
+  }
+
   return {
     presets: presets as ExecutionProviderPermissions["presets"],
     ...optionalProperty("codex", codex),
     ...optionalProperty("claudeCode", claudeCode),
+    ...optionalProperty("antigravity", antigravity),
   };
 }
 
@@ -2713,8 +2788,19 @@ const CLAUDE_PERMISSION_MODES = new Set([
   "plan",
   "bypassPermissions",
 ]);
+const ANTIGRAVITY_PERMISSION_MODES = new Set([
+  "default",
+  "accept-edits",
+  "auto",
+  "plan",
+]);
 
-const PERMISSION_CONFIG_FIELDS = new Set(["preset", "codex", "claudeCode"]);
+const PERMISSION_CONFIG_FIELDS = new Set([
+  "preset",
+  "codex",
+  "claudeCode",
+  "antigravity",
+]);
 const CODEX_PERMISSION_FIELDS = new Set([
   "approvalPolicy",
   "sandbox",
@@ -2722,6 +2808,16 @@ const CODEX_PERMISSION_FIELDS = new Set([
   "collaborationMode",
 ]);
 const CLAUDE_PERMISSION_FIELDS = new Set(["permissionMode"]);
+const ANTIGRAVITY_PERMISSION_FIELDS = new Set(["mode"]);
+
+/**
+ * A string this build knows, and nothing else: never coerced, so an array
+ * that prints as a known value is refused, and an object that cannot print
+ * is refused rather than thrown on.
+ */
+function isOneOf(known: ReadonlySet<string>, value: unknown): boolean {
+  return typeof value === "string" && known.has(value);
+}
 
 /**
  * A session's permission policy. `strict` is for a session patch (MAR-4052),
@@ -2738,7 +2834,7 @@ function decodeOptionalPermissionConfig(
   if (
     !isRecord(raw) ||
     !known(raw, PERMISSION_CONFIG_FIELDS) ||
-    !PERMISSION_PRESETS.has(String(raw.preset))
+    !isOneOf(PERMISSION_PRESETS, raw.preset)
   )
     return failure("invalid-payload");
 
@@ -2747,15 +2843,15 @@ function decodeOptionalPermissionConfig(
     if (
       !isRecord(raw.codex) ||
       !known(raw.codex, CODEX_PERMISSION_FIELDS) ||
-      !CODEX_APPROVAL_POLICIES.has(String(raw.codex.approvalPolicy)) ||
-      !CODEX_SANDBOX_MODES.has(String(raw.codex.sandbox)) ||
+      !isOneOf(CODEX_APPROVAL_POLICIES, raw.codex.approvalPolicy) ||
+      !isOneOf(CODEX_SANDBOX_MODES, raw.codex.sandbox) ||
       !(
         raw.codex.approvalsReviewer === undefined ||
-        CODEX_APPROVALS_REVIEWERS.has(String(raw.codex.approvalsReviewer))
+        isOneOf(CODEX_APPROVALS_REVIEWERS, raw.codex.approvalsReviewer)
       ) ||
       !(
         raw.codex.collaborationMode === undefined ||
-        CODEX_COLLABORATION_MODES.has(String(raw.codex.collaborationMode))
+        isOneOf(CODEX_COLLABORATION_MODES, raw.codex.collaborationMode)
       )
     )
       return failure("invalid-payload");
@@ -2772,7 +2868,7 @@ function decodeOptionalPermissionConfig(
     if (
       !isRecord(raw.claudeCode) ||
       !known(raw.claudeCode, CLAUDE_PERMISSION_FIELDS) ||
-      !CLAUDE_PERMISSION_MODES.has(String(raw.claudeCode.permissionMode))
+      !isOneOf(CLAUDE_PERMISSION_MODES, raw.claudeCode.permissionMode)
     )
       return failure("invalid-payload");
     claudeCode = {
@@ -2780,10 +2876,24 @@ function decodeOptionalPermissionConfig(
     } as ExecutionPermissionConfig["claudeCode"];
   }
 
+  let antigravity: ExecutionPermissionConfig["antigravity"] = undefined;
+  if (raw.antigravity !== undefined) {
+    if (
+      !isRecord(raw.antigravity) ||
+      !known(raw.antigravity, ANTIGRAVITY_PERMISSION_FIELDS) ||
+      !isOneOf(ANTIGRAVITY_PERMISSION_MODES, raw.antigravity.mode)
+    )
+      return failure("invalid-payload");
+    antigravity = {
+      mode: raw.antigravity.mode,
+    } as ExecutionPermissionConfig["antigravity"];
+  }
+
   return success({
     preset: raw.preset as "ask" | "yolo" | "custom",
     ...optionalProperty("codex", codex),
     ...optionalProperty("claudeCode", claudeCode),
+    ...optionalProperty("antigravity", antigravity),
   });
 }
 

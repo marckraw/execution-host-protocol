@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  EXECUTION_ACTOR_VIAS,
   EXECUTION_PROTOCOL_CAPABILITY_IDS,
   EXECUTION_PROTOCOL_VERSION,
   decodeExecutionCommandEnvelope,
@@ -28,12 +29,17 @@ const UNREADABLE_ACTORS: Array<[string, unknown]> = [
   ["an empty id", { ...personActorFixture, id: "" }],
   ["a numeric id", { ...personActorFixture, id: 42 }],
   ["an id over 256 characters", { ...personActorFixture, id: "x".repeat(257) }],
-  ["no display name", { kind: "person", id: "usr_piotr" }],
+  ["no display name", { kind: "person", id: "usr_piotr", via: "app" }],
   ["an empty display name", { ...personActorFixture, displayName: "" }],
   [
     "a display name over 256 characters",
     { ...personActorFixture, displayName: "P".repeat(257) },
   ],
+  // MAR-5634: how it came is required, and only in words this build knows.
+  ["without a via", { kind: "person", id: "usr_piotr", displayName: "Piotr" }],
+  ["an unknown via", { ...personActorFixture, via: "carrier-pigeon" }],
+  ["a null via", { ...personActorFixture, via: null }],
+  ["a via in other case", { ...personActorFixture, via: "App" }],
 ];
 
 const UNREADABLE_COMMAND_IDS: Array<[string, unknown]> = [
@@ -140,6 +146,17 @@ describe("who sent a command (MAR-3633)", () => {
     expect(decoded.ok && decoded.value.actor).toEqual(personActorFixture);
   });
 
+  it.each(EXECUTION_ACTOR_VIAS)("carries an actor that came by %s", (via) => {
+    const envelope = {
+      ...commandFixtures["send-message"],
+      commandId: "command-via",
+      actor: { ...personActorFixture, via },
+    };
+    expect(
+      decodeExecutionCommandEnvelope(encodeExecutionCommandEnvelope(envelope)),
+    ).toEqual({ ok: true, value: envelope });
+  });
+
   it("advertises attribution and its echo as capabilities", () => {
     expect(EXECUTION_PROTOCOL_CAPABILITY_IDS).toEqual(
       expect.arrayContaining([
@@ -229,6 +246,47 @@ describe("the author echo on a user message (MAR-3633)", () => {
     expect(decoded.warnings).toEqual([
       { reason: "dropped-invalid-field", path: "event.delta.item.author" },
     ]);
+  });
+
+  it("keeps an author a host recorded before via, without one (MAR-5634)", () => {
+    const { via, ...before } = personActorFixture;
+    void via;
+    const decoded = decodeExecutionEventEnvelope(
+      messageAdd({ ...attributedUserMessageFixture.value, author: before }),
+    );
+    if (!decoded.ok) throw new Error(decoded.reason);
+
+    expect(decoded.value.event).toMatchObject({
+      delta: { item: { author: before } },
+    });
+    expect(
+      decoded.value.event.kind === "delta" &&
+        decoded.value.event.delta.kind === "conversation.item.add" &&
+        decoded.value.event.delta.item.kind === "message"
+        ? decoded.value.event.delta.item.author
+        : null,
+    ).toEqual(before);
+    expect(decoded.warnings).toBeUndefined();
+  });
+
+  it("keeps an author whose via it does not know, without the via", () => {
+    const { via, ...person } = personActorFixture;
+    void via;
+    const decoded = decodeExecutionEventEnvelope(
+      messageAdd({
+        ...attributedUserMessageFixture.value,
+        author: { ...person, via: "carrier-pigeon" },
+      }),
+    );
+    if (!decoded.ok) throw new Error(decoded.reason);
+
+    expect(
+      decoded.value.event.kind === "delta" &&
+        decoded.value.event.delta.kind === "conversation.item.add" &&
+        decoded.value.event.delta.item.kind === "message"
+        ? decoded.value.event.delta.item.author
+        : null,
+    ).toEqual(person);
   });
 
   it("drops an unreadable client message id without losing the message", () => {

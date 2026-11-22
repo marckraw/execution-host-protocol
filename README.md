@@ -123,16 +123,22 @@ Rules a client must follow:
 
 Several people may drive one session through one client, so a command says who
 sent it. Every command envelope, and the start request, may carry an `actor` —
-a person or an agent, by the sending client's own id for them and the name it
-showed — and a `commandId`, the client's own id for that command: unique within
-the session, reused when the same command is retried.
+a person or an agent, by the sending client's own id for them, the name it
+showed, and how it reached the host — and a `commandId`, the client's own id
+for that command: unique within the session, reused when the same command is
+retried.
 
 ```json
 {
   "protocolVersion": 1,
   "sessionId": "accent_8f2c",
   "commandId": "4b7e1a52-6f0e-4d0b-9a57-0c3f5d2e8a11",
-  "actor": { "kind": "person", "id": "usr_piotr", "displayName": "Piotr" },
+  "actor": {
+    "kind": "person",
+    "id": "usr_piotr",
+    "displayName": "Piotr",
+    "via": "app"
+  },
   "command": { "kind": "send-message", "text": "Ship the staging banner" }
 }
 ```
@@ -149,12 +155,27 @@ Beside the fields every item carries, it reads:
   "actor": "user",
   "text": "Ship the staging banner",
   "delivery": "queued",
-  "author": { "kind": "person", "id": "usr_piotr", "displayName": "Piotr" },
+  "author": {
+    "kind": "person",
+    "id": "usr_piotr",
+    "displayName": "Piotr",
+    "via": "app"
+  },
   "clientMessageId": "4b7e1a52-6f0e-4d0b-9a57-0c3f5d2e8a11"
 }
 ```
 
 (The item's `actor` stays what it was, the role. The person is the `author`.)
+
+An actor's `via` (MAR-5634) is how the command reached the host, which is what
+a provider's [drive policy](#who-may-drive-a-provider-the-drive-policy) reads:
+
+| `via`        | What sent it                                                       |
+| ------------ | ------------------------------------------------------------------ |
+| `app`        | a person in accent.: the web app, the native app, desktop or local |
+| `token`      | their own AI app, through one of their tokens                      |
+| `automation` | an Automation or a schedule, and any persona one starts            |
+| `line`       | a queued start that the line fired                                 |
 
 - **Optional, everywhere.** An envelope without either decodes exactly as
   before, and a host predating them (0.14 and older) ignores both, so sending
@@ -163,14 +184,86 @@ Beside the fields every item carries, it reads:
 - **Strict coming in, tolerant going out.** A host refuses, as
   `invalid-payload`, a command or start request whose `actor` or `commandId` is
   present but unreadable — an unknown actor kind, `null`, an empty id or name,
-  or one over 256 characters — because dropping either would look like success.
-  A reader drops an unreadable `author` or `clientMessageId` from an item with a
-  `dropped-invalid-field` warning and keeps the message.
+  one over 256 characters, or, since 0.38.0, an actor without a `via` or with
+  one this build does not know — because dropping either would look like
+  success. A reader drops an unreadable `author` or `clientMessageId` from an
+  item with a `dropped-invalid-field` warning and keeps the message. An
+  `author` a host recorded before `via`, or with a `via` this build does not
+  know, keeps who it was and leaves `via` out (`ExecutionMessageAuthor`).
 - **Fixed at creation.** A patch never carries `author` or `clientMessageId`,
   and a reader ignores them if one does.
 - **The host records; the client vouches.** `actor` is the sending client's
   word. A host has no users of its own, so authorizing who may act stays with
-  the client that knows them.
+  the client that knows them. The one exception is a provider's drive policy,
+  which the host applies to the actor as given.
+
+## Who may drive a provider: the drive policy
+
+Some providers may only be driven in certain ways: Antigravity runs on one
+person's consumer sign-in, which Google allows for a person driving it, not
+for fleets of automations. A provider like that carries a `drivePolicy` in
+`GET /v0/providers` (`ExecutionDrivePolicy`, MAR-5634):
+
+```json
+{
+  "ownerId": "usr_marcin",
+  "allow": {
+    "tokenDriven": true,
+    "automations": false,
+    "waitForRoom": true,
+    "afterChains": false,
+    "anyHost": false,
+    "others": false
+  },
+  "maxConcurrentSessions": 2,
+  "liveSessions": 1
+}
+```
+
+- **It is configuration on the host.** The operator sets it (an instance's
+  `.env`, a local install's settings), and the host reports what it enforces.
+  A client reads it to explain a refusal before it sends anything, and to show
+  the owner their switches. It never changes it. Loosening a guardrail is a
+  config change, not a code change.
+- **One rule, everywhere.** `drivePolicyRefusalOf(policy, ask)` is the one
+  implementation. The daemon, the in-app runtime, accent.'s server and its UI
+  all call it, so they agree on every answer. It returns null, or an
+  `ExecutionDrivePolicyRefusal`:
+  `{ code: "drive-policy-refused", reason, flag?, message }`. The `flag` is
+  the host's switch that would allow it, named `<providerId>.<flag>`.
+- **Control is never refused.** An interrupt, a stop, a stop-task or a
+  cancel-queued (`act: "control"`) always goes through, so a person or a settle
+  can always stop a session.
+
+What it checks, in order, with the first refusal winning:
+
+| `reason`           | Refused when                                                                                               | `flag`                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `no-owner`         | `ownerId` is null: nobody is signed in                                                                     | none                               |
+| `no-actor`         | the ask carries no `actor`                                                                                 | none                               |
+| `not-owner`        | the actor is not the `person` whose `id` is `ownerId`, and `others` is off                                 | `<provider>.allowOthers`           |
+| `token-driven-off` | `via: "token"`, and `tokenDriven` is off                                                                   | `<provider>.allowTokenDriven`      |
+| `automation`       | `via: "automation"`, and `automations` is off                                                              | `<provider>.allowAutomations`      |
+| `wait-for-room`    | a start that may wait in its host's line, or `via: "line"`, not an `after` chain, and `waitForRoom` is off | `<provider>.allowWaitForRoom`      |
+| `after-chain`      | a start chained `after` another session, and `afterChains` is off                                          | `<provider>.allowAfterChains`      |
+| `any-host`         | a start that lets the line pick any host, and `anyHost` is off                                             | `<provider>.allowAnyHost`          |
+| `at-capacity`      | the ask needs a new process, and `liveSessions` has reached `maxConcurrentSessions`                        | `<provider>.maxConcurrentSessions` |
+
+An `after` chain answers to `afterChains` alone: never to `waitForRoom` too,
+whether the line fires it (`via: "line"`) or it may also wait for room.
+`via: "app"` needs no switch.
+
+- **Enforced where it says so.** A host advertising `providers.drivePolicy.v1`
+  enforces the policy it reports on every start and every command. A host
+  without it enforces none. So a client never sends a start for a provider
+  whose policy it cannot read to a host without it (`hostEnforcesDrivePolicy`,
+  in the client).
+- **Unknown is not open.** A policy the listing cannot read is left out of the
+  provider, named in `warnings` (`providers.N.drivePolicy`), and never costs
+  the catalogue. The client's `providers()` passes those warnings to its
+  `onWarnings`, as `{ operation: "providers", sessionId: null, warnings }`. A client treats an absent policy as unknown, never as
+  "anyone may". `decodeExecutionDrivePolicy` reads one on its own, and
+  `decodeExecutionDrivePolicyRefusal` reads a host's refusal.
 
 ## Images in tool results
 
@@ -328,7 +421,8 @@ The host answers with the selection the next turn will run on:
 
 A session's permission policy is its `permissionConfig`
 (`ExecutionPermissionConfig`): a `preset`, and each provider's own settings in
-its own words. Claude Code's part is a `permissionMode`. Codex's is an
+its own words. Claude Code's part is a `permissionMode`. Antigravity's is a
+`mode`: `default`, `accept-edits`, `auto` or `plan` (MAR-5634). Codex's is an
 `approvalPolicy` and a `sandbox`, and two more it may name:
 
 - **`approvalsReviewer`**: who answers Codex's approval requests, `user` (the
@@ -1491,7 +1585,14 @@ await host.start(startRequest); // { status: "started" | "exists", sessionId, co
 await host.command(
   sessionId,
   { kind: "send-message", text: "Ship it" },
-  { actor: { kind: "person", id: "usr_piotr", displayName: "Piotr" } },
+  {
+    actor: {
+      kind: "person",
+      id: "usr_piotr",
+      displayName: "Piotr",
+      via: "app",
+    },
+  },
 ); // { status: "accepted" | "no-session", commandId }
 await host.patchSession(sessionId, {
   model: "claude-opus-5-5",
@@ -1731,12 +1832,16 @@ a `resetsAt` still limits), and only when it has no `modelFamily` or the model
 is of it — its `slug` or `label` is the family, ignoring case, or names a
 one-word family (`opus`) as a whole word (`claude-opus-5-5`, `Opus 5.5`). How
 much of a window that limits is used is the caller's to judge.
-A provider's `permissions` are what its sessions can ask for in
+A provider's `drivePolicy` is who may drive it there, and how many of its
+sessions run at once (see
+[the drive policy](#who-may-drive-a-provider-the-drive-policy)): absent, and
+named in `warnings` by `decodeExecutionProviderListResponse`, when it cannot
+be read. A provider's `permissions` are what its sessions can ask for in
 `permissionConfig` (`features.permissions`): the `presets`, and its own part —
 `codex` with its `approvalPolicies` and `sandboxModes`, and the
 `approvalsReviewers` and `collaborationModes` a host offers a choice of
-(absent when it offers none), or `claudeCode` with its `permissionModes`.
-Codex's `effectiveSandboxModes` maps each sandbox a session may ask for to the
+(absent when it offers none), `claudeCode` with its `permissionModes`, or
+`antigravity` with its `modes`. Codex's `effectiveSandboxModes` maps each sandbox a session may ask for to the
 one that really runs on this host (`{ "workspace-write": "danger-full-access",
 "read-only": null }`), where null is one the host does not offer. A sandbox
 left out, or a map absent, is one the host does not speak for: unknown, not

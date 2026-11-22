@@ -12,4 +12,6 @@ operational questions belong in the canonical [agent ecosystem FAQ](https://gith
 - Package semver and wire `protocolVersion` are independent.
 - Wire changes are additive unless an explicitly coordinated protocol-version change is approved.
 - Every behavior change needs focused contract tests and a Changeset.
+- An actor's `via` says how a command reached the host: `app` (a person in accent.), `token` (their AI app, through one of their tokens), `automation` (an Automation or a schedule, and any persona one starts), or `line` (a queued start the line fired). It is required on command envelopes and start requests since 0.38.0, a coordinated break (MAR-5634); a message's echoed `author` stays tolerant of its absence.
+- A provider's drive policy is configuration on the host, which reports it and enforces it. `drivePolicyRefusalOf` in `src/drive-policy.ts` is the one implementation of the rule; change it there, never in a copy, and keep its decision table in `tests/drive-policy.test.ts` complete.
 - Planning lives in Linear project `emergence` (team `marckraw`).

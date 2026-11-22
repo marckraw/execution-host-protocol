@@ -48,6 +48,18 @@ for (const loaded of [commonJs, esModule]) {
   // Shared guards are internal to the contract.
   assert.equal(loaded.isRecord, undefined);
   assert.equal(typeof loaded.decodeHarnessEvidence, "function");
+  // Who drove it (MAR-5634): the one rule, and its readers.
+  assert.equal(typeof loaded.drivePolicyRefusalOf, "function");
+  assert.equal(typeof loaded.decodeExecutionDrivePolicy, "function");
+  assert.equal(typeof loaded.decodeExecutionDrivePolicyRefusal, "function");
+  assert.equal(loaded.EXECUTION_DRIVE_POLICY_REFUSED, "drive-policy-refused");
+  assert.deepEqual(loaded.EXECUTION_ACTOR_VIAS, [
+    "app",
+    "token",
+    "automation",
+    "line",
+  ]);
+  assert.equal(loaded.hostEnforcesDrivePolicy, undefined);
   // The root is the contract: the client is reachable only by its subpath.
   assert.equal(loaded.createExecutionHostClient, undefined);
   assert.equal(loaded.readAttachmentBytes, undefined);
@@ -68,6 +80,7 @@ for (const loaded of [commonJsClient, esModuleClient]) {
   assert.equal(typeof loaded.hostTakesStructuredInteractions, "function");
   assert.equal(typeof loaded.ExecutionSessionPatchError, "function");
   assert.equal(typeof loaded.hostTakesPermissionModes, "function");
+  assert.equal(typeof loaded.hostEnforcesDrivePolicy, "function");
   assert.equal(typeof loaded.decodeExecutionSessionSnapshot, "function");
   const client = loaded.createExecutionHostClient({
     baseUrl: "http://127.0.0.1:1",
