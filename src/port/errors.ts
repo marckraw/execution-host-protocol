@@ -35,6 +35,10 @@ import {
   ExecutionTaskOutputError,
   type ExecutionTaskOutputErrorCode,
 } from "../client/task-output.js";
+import {
+  ExecutionStartWorksInError,
+  type ExecutionStartWorksInErrorCode,
+} from "../client/works-in.js";
 import { isRecord } from "../guards.js";
 
 /**
@@ -63,6 +67,7 @@ const FIELDS = [
   "sessionDeleted",
   "taskId",
   "index",
+  "workingThere",
 ] as const;
 
 /** The longest message a reason may carry across, as the HTTP client bounds a host's. */
@@ -193,6 +198,13 @@ export function fromPortError(
         code as ExecutionStartSelectionErrorCode,
         reason,
         status(),
+      );
+    case "ExecutionStartWorksInError":
+      if (code === null) break;
+      return new ExecutionStartWorksInError(
+        code as ExecutionStartWorksInErrorCode,
+        reason,
+        { status: status(), workingThere: strings("workingThere") ?? [] },
       );
     case "ExecutionInlineAttachmentsError":
       if (code === null) break;

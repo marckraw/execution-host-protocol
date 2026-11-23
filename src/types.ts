@@ -10,6 +10,7 @@ import type {
   ExecutionToolAttachmentOmissions,
 } from "./tool-attachments.js";
 import type { ExecutionTurnUsage } from "./turn-usage.js";
+import type { ExecutionWorksIn, ExecutionWorksInPlace } from "./works-in.js";
 
 export const EXECUTION_PROTOCOL_VERSION = 1 as const;
 
@@ -177,6 +178,24 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * refuses those routes 403 coded `unavailable-on-host`.
    */
   "mcp.connections.v1",
+  /**
+   * The host takes a start's `config.worksIn` (MAR-5673): a start in a
+   * person's own checkout works in it, or in a worktree of its own, as it
+   * says (`ExecutionWorksIn`), and its 201 says where (`worksIn`,
+   * `ExecutionWorksInEcho`). It never puts two sessions to work in one
+   * checkout: a `checkout` start while another works there is a 409 coded
+   * `checkout-taken`. Its snapshots and list say which sessions are settled
+   * (`settled`). A host without it decides by itself, so the shared client
+   * sends it no `checkout` or `worktree` there.
+   */
+  "start.worksIn.v1",
+  /**
+   * The host takes a patch's `settled` (MAR-5673): a session the person
+   * settled works in no checkout, so the next start in it may take it. A
+   * host without it refuses the field as any unknown one, so the shared
+   * client sends it none.
+   */
+  "sessions.settled.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -1062,6 +1081,14 @@ export interface ExecutionStartConfig {
   skills?: string[];
   sessionId: string;
   workingDirectory?: string;
+  /**
+   * Where a start in a person's own checkout works (MAR-5673): in it while
+   * nobody else works there (else refused, `checkout-taken`), in a worktree
+   * of its own, or `auto`, as absent. Requires `start.worksIn.v1` for
+   * `checkout` and `worktree`; ignored by a host for a start that isn't in a
+   * checkout.
+   */
+  worksIn?: ExecutionWorksIn;
   initialMessage: string;
   model: string | null;
   effort: string | null;
@@ -1202,6 +1229,17 @@ export interface ExecutionSessionPatchRequest {
   effort?: string | null;
   /** The session's permission policy from the next turn, whole (MAR-4052). */
   permissionConfig?: ExecutionPermissionConfig;
+  /**
+   * The person settled the session (true), or took that back (false), on a
+   * host advertising `sessions.settled.v1` (MAR-5673). A settled session
+   * works in no checkout, whatever it still runs, until a turn of its starts
+   * again. Taking it back for a session with work running or queued, while
+   * another session works in its checkout, is refused with a 409 coded
+   * `checkout-taken`, changing nothing. It changes nothing else: the session still takes messages. Idempotent:
+   * settling a settled session, or taking back a settle that isn't there,
+   * changes nothing and answers the same.
+   */
+  settled?: boolean;
 }
 
 /**
@@ -1221,6 +1259,8 @@ export interface ExecutionSessionPatchResponse {
   model?: string | null;
   effort?: string | null;
   permissionConfig?: ExecutionPermissionConfig;
+  /** Whether the session is settled now, when the patch named it (MAR-5673). */
+  settled?: boolean;
   /**
    * When the patch's changes take effect (MAR-4052). Absent when the host does
    * not say, or says it in words this build does not know: unknown.
@@ -1255,11 +1295,16 @@ export type ExecutionSessionPatchAppliesFrom =
  *   what the policy asks of it: a preset, mode, policy, sandbox, reviewer or
  *   collaboration mode its listing's `permissions` leave out. Only the part
  *   for the session's own provider is checked.
+ * - `checkout-taken` (409, MAR-5673): taking back the settle (`settled:
+ *   false`) of a session with work running or queued would put it beside
+ *   another session working in its checkout. Nothing changed; it may be sent
+ *   again once that work is done.
  */
 export const EXECUTION_SESSION_PATCH_REFUSAL_CODES = [
   "turn-running",
   "unsupported-on-host",
   "unsupported-for-provider",
+  "checkout-taken",
 ] as const;
 export type ExecutionSessionPatchRefusalCode =
   (typeof EXECUTION_SESSION_PATCH_REFUSAL_CODES)[number];
@@ -1269,6 +1314,7 @@ export const EXECUTION_SESSION_PATCH_REFUSAL_STATUS = {
   "turn-running": 409,
   "unsupported-on-host": 400,
   "unsupported-for-provider": 400,
+  "checkout-taken": 409,
 } as const satisfies Record<ExecutionSessionPatchRefusalCode, number>;
 
 /**
@@ -1316,6 +1362,12 @@ export type ExecutionSessionWorkspace =
       branchName: string | null;
       requestedBranchName?: string | null;
       environment: string | null;
+      /**
+       * Where it works in the project's checkout (MAR-5673): in it, or in a
+       * worktree of its own, on a host advertising `start.worksIn.v1`.
+       * Absent where the host didn't say, as from every host before it.
+       */
+      place?: ExecutionWorksInPlace;
     };
 
 /** One Environment a Project may be started with, and whether it is ready. */

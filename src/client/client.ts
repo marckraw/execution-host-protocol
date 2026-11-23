@@ -75,8 +75,22 @@ import {
 import {
   ExecutionSessionPatchError,
   hostTakesPermissionModes,
+  hostTakesSettled,
   permissionModesRefusal,
+  settledRefusal,
 } from "./session-patch.js";
+import {
+  ExecutionStartWorksInError,
+  hostTakesWorksIn,
+  worksInRefusal,
+} from "./works-in.js";
+import {
+  type ExecutionWorksInEcho,
+  EXECUTION_CHECKOUT_TAKEN,
+  isExecutionWorksIn,
+  readExecutionCheckoutTakenRefusal,
+  readExecutionWorksInEcho,
+} from "../works-in.js";
 import {
   followExecutionSession,
   type ExecutionFollowOptions,
@@ -253,7 +267,8 @@ export interface ExecutionCommandOptions extends ExecutionRequestOptions {
 /**
  * `fileReach` is present for a start that carried one (MAR-4352): what the
  * host echoed it holds the session to, already checked against what was
- * asked, with the ABI it fences with.
+ * asked, with the ABI it fences with. `worksIn` is present where the host
+ * said where a start in a checkout works (`start.worksIn.v1`, MAR-5673).
  */
 export type ExecutionStartResult =
   | {
@@ -262,6 +277,7 @@ export type ExecutionStartResult =
       commandId: string;
       workspace: ExecutionSessionWorkspace | null;
       fileReach?: NonNullable<ExecutionFileReachEcho["fileReach"]>;
+      worksIn?: ExecutionWorksInEcho;
     }
   | {
       status: "exists";
@@ -293,6 +309,8 @@ export type ExecutionSessionPatchResult =
       effort?: string | null;
       permissionConfig?: ExecutionPermissionConfig;
       appliesFrom?: ExecutionSessionPatchAppliesFrom;
+      /** Whether it is settled now, when the patch named it (MAR-5673). */
+      settled?: boolean;
     }
   | { status: "no-session"; sessionId: string };
 
@@ -365,6 +383,13 @@ export interface ExecutionHostClient extends ExecutionHostApi {
    * error, with its distinct code and status 400. See providers().sessionInstructions.
    * Instructions are fixed at the first successful start. A 409 / exists
    * neither updates nor confirms them; use a fresh id to establish a frame.
+   * `config.worksIn` of `checkout` or `worktree` reads the same `/health`,
+   * and is refused here, unsent, with an `ExecutionStartWorksInError` coded
+   * `works-in-unsupported` when the host does not advertise
+   * `start.worksIn.v1` (MAR-5673); `auto` goes to any host, as absent. A
+   * `worksIn` outside `EXECUTION_WORKS_IN` is a `TypeError`, unsent. A
+   * `checkout` the host refused, another session working there, is the same
+   * error coded `checkout-taken`, with `workingThere` and status 409.
    */
   start(
     request: ExecutionStartRequest,
@@ -951,6 +976,14 @@ export function createExecutionHostClient(
         );
       }
       const reach = fileReach as ExecutionFileReach | undefined;
+      const worksIn: unknown = startRequest.config.worksIn;
+      if (worksIn !== undefined && !isExecutionWorksIn(worksIn)) {
+        throw new TypeError(
+          'config.worksIn must be "auto", "checkout" or "worktree"',
+        );
+      }
+      // A host predating it drops it and decides by itself (MAR-5673).
+      const placed = worksIn === "checkout" || worksIn === "worktree";
       const instructions: unknown = startRequest.config.instructions;
       if (
         instructions !== undefined &&
@@ -974,7 +1007,8 @@ export function createExecutionHostClient(
         withFiles ||
         reach ||
         instructions !== undefined ||
-        selected
+        selected ||
+        placed
       ) {
         const probed = await health({
           signal: requestOptions.signal,
@@ -990,6 +1024,9 @@ export function createExecutionHostClient(
               ? "the host does not advertise start.instructions.v1; nothing was sent"
               : "the host's protocol descriptor is unreadable; nothing was sent",
           );
+        }
+        if (placed && !hostTakesWorksIn(probed)) {
+          throw worksInRefusal(probed);
         }
         if (selected && !hostTakesSelections(probed)) {
           throw new ExecutionStartSelectionError(
@@ -1043,13 +1080,37 @@ export function createExecutionHostClient(
             }
         > => {
           if (response.status === 409) {
-            if (requires.length === 0 && !reach) {
+            const checkoutAsked = worksIn === "checkout";
+            if (requires.length === 0 && !reach && !checkoutAsked) {
               await response.body?.cancel().catch(() => {});
               return { status: "exists", sessionId, commandId };
             }
-            // The session is older than this request: what it was checked
-            // against is the host's echo on the 409, or nothing (MAR-3725).
+            // Read once (MAR-5673's review): a `checkout` refused, or the
+            // session that exists and what it was checked against, the
+            // host's echo on the 409, or nothing (MAR-3725).
             const existing = parseOrNull(await refusalText(response));
+            // A `checkout` another session's work refused: nothing started,
+            // so it is no session that exists. The code with fields that
+            // don't read is no refusal this client can trust: malformed.
+            if (
+              checkoutAsked &&
+              isRecord(existing) &&
+              existing.code === EXECUTION_CHECKOUT_TAKEN
+            ) {
+              const taken = readExecutionCheckoutTakenRefusal(existing);
+              if (taken === null) {
+                throw new ExecutionHostError(
+                  "malformed",
+                  "the host refused the checkout as taken, in a refusal that does not read (its error or workingThere)",
+                  { operation: "start", status: 409 },
+                );
+              }
+              throw new ExecutionStartWorksInError(
+                "checkout-taken",
+                boundedReason(taken.error, connection.scrub),
+                { status: 409, workingThere: taken.workingThere },
+              );
+            }
             if (
               requires.length > 0 &&
               !confirmsExecutionStartRequirements(existing, requires)
@@ -1242,12 +1303,27 @@ export function createExecutionHostClient(
               });
             }
           }
+          // Where it works, as the host says it; one it can't read is not
+          // said, out loud: the session runs either way (MAR-5673).
+          const rawWorksIn = isRecord(echo) ? echo.worksIn : undefined;
+          const worksInEcho =
+            rawWorksIn === undefined
+              ? null
+              : readExecutionWorksInEcho(rawWorksIn);
+          if (rawWorksIn !== undefined && worksInEcho === null) {
+            notify(options.onWarnings, {
+              operation: "start",
+              sessionId,
+              warnings: [{ reason: "dropped-invalid-field", path: "worksIn" }],
+            });
+          }
           return {
             status: "started",
             sessionId,
             commandId,
             workspace,
             ...(reach ? { fileReach: echoedFileReach(echo) } : {}),
+            ...(worksInEcho ? { worksIn: worksInEcho } : {}),
           };
         },
       ).catch(told);
@@ -1351,12 +1427,13 @@ export function createExecutionHostClient(
       // Checked here, where the mistake is, rather than refused by the host.
       if (!decodeExecutionSessionPatchRequest(body).ok) {
         throw new TypeError(
-          "A session patch names at least one of title, model, effort and permissionConfig, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string, permissionConfig a permission policy with no field it does not know",
+          "A session patch names at least one of title, model, effort, permissionConfig and settled, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string, permissionConfig a permission policy with no field it does not know, settled a boolean",
         );
       }
-      // A host that predates live modes refuses the field as an unknown one,
-      // in words about something else; the capability says it before then.
-      if (patch.permissionConfig !== undefined) {
+      // A host that predates live modes, or settling (MAR-5673), refuses the
+      // field as an unknown one, in words about something else; the
+      // capability says it before then.
+      if (patch.permissionConfig !== undefined || patch.settled !== undefined) {
         const probed = await health({
           signal: requestOptions.signal,
           timeoutMs: Math.min(
@@ -1364,8 +1441,14 @@ export function createExecutionHostClient(
             requestOptions.timeoutMs ?? healthTimeoutMs,
           ),
         });
-        if (!hostTakesPermissionModes(probed)) {
+        if (
+          patch.permissionConfig !== undefined &&
+          !hostTakesPermissionModes(probed)
+        ) {
           throw permissionModesRefusal(sessionId, probed);
+        }
+        if (patch.settled !== undefined && !hostTakesSettled(probed)) {
+          throw settledRefusal(sessionId, probed);
         }
       }
       return request(

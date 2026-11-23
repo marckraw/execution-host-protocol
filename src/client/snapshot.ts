@@ -81,6 +81,12 @@ export interface ExecutionSessionSnapshot {
   workspace: ExecutionSessionWorkspace | null;
   prUrl: string | null;
   roomId: string | null;
+  /**
+   * The person settled it, and no turn of its has begun since (MAR-5673,
+   * `start.worksIn.v1`): it works in no checkout. Absent: not settled, or a
+   * host that doesn't say.
+   */
+  settled?: true;
 }
 
 /**
@@ -232,6 +238,7 @@ export function decodeExecutionSessionSnapshot(
           ? { ok: true, value: value as string | null }
           : { ok: false },
       ),
+      ...(raw.settled === true ? { settled: true as const } : {}),
     },
     ...(warnings.length > 0 ? { warnings } : {}),
   };

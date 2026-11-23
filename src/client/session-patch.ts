@@ -66,3 +66,27 @@ export function permissionModesRefusal(
     { sessionId },
   );
 }
+
+/**
+ * Whether the host takes a patch's `settled` (`sessions.settled.v1`,
+ * MAR-5673). A host that does not refuses it as an unknown field, so
+ * `patchSession()` will not send it there.
+ */
+export function hostTakesSettled(
+  health: Pick<ExecutionHostHealth, "capabilities">,
+): boolean {
+  return health.capabilities.includes("sessions.settled.v1");
+}
+
+export function settledRefusal(
+  sessionId: string,
+  health: Pick<ExecutionHostHealth, "executionProtocolValid">,
+): ExecutionSessionPatchError {
+  return new ExecutionSessionPatchError(
+    "unsupported-on-host",
+    health.executionProtocolValid
+      ? "the host does not advertise sessions.settled.v1, so it cannot hear that a session was settled; nothing was sent"
+      : "the host's protocol descriptor is unreadable, so it cannot be trusted to hear that a session was settled; nothing was sent",
+    { sessionId },
+  );
+}

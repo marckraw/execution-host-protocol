@@ -10,6 +10,7 @@ export {
   executionHostConformanceCases,
   ExecutionHostConformanceError,
   type ExecutionHostConformanceCase,
+  type ExecutionHostConformanceCheckouts,
   type ExecutionHostConformanceHost,
   type ExecutionHostConformanceMcp,
   type ExecutionHostConformanceOptions,

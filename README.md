@@ -1067,6 +1067,74 @@ A confirmed start returns the echo as `fileReach` on its `started` or
 `hostEnforcesFileReach(health)` asks the question ahead of time. A start
 without `fileReach` is unchanged: one request, no probe.
 
+## Where a start in a checkout works, and settling
+
+A start that names a `workingDirectory` in a person's own git checkout, and
+no `workspace` to clone, can say where it works (MAR-5673), on a host
+advertising `start.worksIn.v1`, in `config.worksIn` (`EXECUTION_WORKS_IN`):
+
+- `auto`, the default and the same as leaving it out: the checkout when no
+  session is working in it, else a worktree of its own from the checkout's
+  HEAD.
+- `checkout`: the checkout, only while nobody else is working in it. A host
+  never puts two sessions to work in one checkout: while another works there
+  it refuses the start with a 409 coded `checkout-taken`, naming who
+  (`ExecutionCheckoutTakenRefusal`, `workingThere`), and starts nothing. It
+  judges and claims the checkout at once, so of two such starts at once one
+  is refused. The same start with `auto` or `worktree` gets a worktree.
+- `worktree`: a worktree of its own, always.
+
+A session is **working in** a checkout while a turn of its runs, a task of
+its runs, or something is queued for it, and nobody settled it since its last
+turn began. One that finished, failed or was settled leaves the checkout to
+the next start. Its snapshot and the list say `settled: true` while it is
+settled, in the host's own word: a new turn ends that, whatever the person's
+own mark of it says.
+
+The host's 201 says where it works, as `worksIn`
+(`ExecutionWorksInEcho`): `place` (`checkout` or `worktree`), the checkout's
+top as `checkoutRoot`, and `workingThere`, the ids of the sessions working in
+it as it started (at most 32): with a worktree `auto` chose, those that made
+it take one. In the checkout, there are none. A host says
+nothing for a start that isn't in a checkout.
+
+```json
+{
+  "sessionId": "session-1",
+  "worksIn": {
+    "place": "worktree",
+    "checkoutRoot": "/Users/person/code/shop",
+    "workingThere": ["session-0"]
+  }
+}
+```
+
+Where each project session works stays on its workspace echo, in snapshots
+and lists alike: `workspace.place` is `checkout` or `worktree` on such a host,
+and absent from every other (a place this build doesn't know is left out).
+
+A value outside the three is refused as `invalid-payload`, never dropped. A
+host without the capability drops the field and decides by itself, so the
+client sends `checkout` or `worktree` only after `/health` advertises it and
+otherwise refuses the start unsent, with an `ExecutionStartWorksInError`
+coded `works-in-unsupported` (`hostTakesWorksIn`). `auto` goes to any host,
+unprobed. An echo the client can't read is left out of the result and named
+in `warnings` (`worksIn`): the session runs either way.
+
+**Settling.** A person's settle reaches the host as a patch,
+`{ "settled": true }`, and taking it back as `{ "settled": false }`, on a host
+advertising `sessions.settled.v1`. A settled session works in no checkout,
+whatever it still runs, until a turn of its starts again; nothing else
+changes, and it still takes messages. The answer echoes `settled`. It is
+idempotent: settling a settled session, or taking back a settle that isn't
+there, changes nothing and answers the same. Taking back the settle of a session with
+work running or queued, while another session works in its checkout, is
+refused with a 409 coded `checkout-taken` (`ExecutionSessionPatchError`),
+changing nothing: it would put two agents in one checkout. A host
+without the capability refuses the field as an unknown one, so the client
+refuses the patch unsent there, with an `ExecutionSessionPatchError` coded
+`unsupported-on-host` (`hostTakesSettled`).
+
 ## A host's MCP servers and skills
 
 Authenticated `GET /v0/host` lists what the host has for a session to use
@@ -2266,6 +2334,7 @@ describeExecutionHostConformance(
     return {
       api,
       providerId: "claude",
+      capabilities: runtime.capabilities,
       emit: (sessionId, events) => runtime.log(sessionId, events),
       attach: (sessionId, bytes) => runtime.attach(sessionId, bytes),
       remove: (sessionId) => runtime.remove(sessionId),
@@ -2278,7 +2347,9 @@ describeExecutionHostConformance(
 );
 ```
 
-Each case sets up a fresh host. `emit`, `attach` and `remove` are what a case
+Each case sets up a fresh host. `capabilities` is what the host advertises,
+as its `/health` says it: the suite holds the host to the hooks they need.
+`emit`, `attach` and `remove` are what a case
 needs the host to do that no caller can make it do: log events, hold an
 attachment, lose a session. `endTurnWithUsage(sessionId, usage)` runs a turn
 that ends having cost `usage` and says its id, for the turn-usage cases: its
@@ -2299,7 +2370,19 @@ signs out. A callback that is not the sign-in's must be refused `rejected`,
 without quoting it, and leave the sign-in pending for the real one. A host that manages none leaves it out, and is held to refusing
 every MCP call `unavailable-on-host` (or `unsupported`). Every host carries
 `mcp.needs-sign-in` to a follower as it was sent, and refuses a bad MCP call
-as a `TypeError`. `executionHostConformanceCases` are the same cases
+as a `TypeError`. `checkouts` is for a host that places starts in a person's
+checkout (`start.worksIn.v1`, MAR-5673): a checkout's `workingDirectory`
+nobody works in, and `holdTurns()`, which keeps the turns of the sessions it
+starts running until the release it gives back. The suite starts in the free
+checkout and in a worktree, and reads their echoes; is refused the checkout
+beside a session at work (`checkout-taken`, naming it) while `auto` gets a
+worktree; and settles a session twice, reads `settled` in its snapshot and
+the list, starts in the checkout it freed, is refused taking the settle back
+beside that start (`checkout-taken`), and takes it back twice once their work
+is done. A
+host that advertises `start.worksIn.v1` must give it, and fails those cases
+without it; only a host that places none leaves it out, and skips them.
+`executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind
 the HTTP client with a fake `fetch`; and a shared host and an older one over a
