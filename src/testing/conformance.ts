@@ -28,6 +28,7 @@ import {
   EXECUTION_PROTOCOL_VERSION,
   type ExecutionHostEvent,
   type ExecutionHostEventEnvelope,
+  type ExecutionProtocolCapability,
   type ExecutionStartRequest,
 } from "../types.js";
 import type { ExecutionWorksIn } from "../works-in.js";
@@ -41,6 +42,13 @@ export interface ExecutionHostConformanceHost {
   api: ExecutionHostApi;
   /** A provider the host lists, and starts a session on when asked. */
   providerId: string;
+  /**
+   * What the host advertises, as its `/health` says it
+   * (`executionProtocol.capabilities`). The suite holds a host to the hooks
+   * what it advertises needs: one advertising `start.worksIn.v1` must give
+   * it `checkouts` (MAR-5673).
+   */
+  capabilities: readonly ExecutionProtocolCapability[];
   /**
    * Appends `events` to the session's log as its runtime would: the next
    * `seq`s, in order, to every follower. The session was started through
@@ -89,8 +97,9 @@ export interface ExecutionHostConformanceHost {
   mcp?: ExecutionHostConformanceMcp;
   /**
    * Starts in a person's own checkout, on a host that places them
-   * (`start.worksIn.v1`, MAR-5673). Leave it out for a host that places
-   * none: the suite then skips the checkout cases.
+   * (`start.worksIn.v1`, MAR-5673). Required of a host that advertises it,
+   * which fails every checkout case without it. Leave it out only for a
+   * host that places none: the suite then skips those cases.
    */
   checkouts?: ExecutionHostConformanceCheckouts;
   /** Runs after the case, whatever its outcome. */
@@ -250,6 +259,23 @@ async function started(host: ExecutionHostConformanceHost): Promise<string> {
     `start answered ${result.status}, not started`,
   );
   return sessionId;
+}
+
+/**
+ * The host's checkout hooks, or null for a host that places no starts in
+ * checkouts and so skips those cases. One that advertises `start.worksIn.v1`
+ * without them fails: a host that skipped the cases by leaving the hook out
+ * would never be held to what it advertises.
+ */
+function checkoutsOf(
+  host: ExecutionHostConformanceHost,
+): ExecutionHostConformanceCheckouts | null {
+  if (host.checkouts) return host.checkouts;
+  check(
+    !host.capabilities.includes("start.worksIn.v1"),
+    "the host advertises start.worksIn.v1, but gives the suite no checkouts to hold it to",
+  );
+  return null;
 }
 
 /** A start in the checkout cases' folder, asking for `worksIn`. */
@@ -1737,7 +1763,7 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
     {
       name: "works a start in a free checkout there, and says so, or in a worktree of its own when asked",
       async run(host) {
-        const checkouts = host.checkouts;
+        const checkouts = checkoutsOf(host);
         if (!checkouts) return;
         const release = checkouts.holdTurns();
         try {
@@ -1763,7 +1789,7 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
     {
       name: "refuses a checkout another session works in, naming it, and gives auto a worktree",
       async run(host) {
-        const checkouts = host.checkouts;
+        const checkouts = checkoutsOf(host);
         if (!checkouts) return;
         const release = checkouts.holdTurns();
         try {
@@ -1798,7 +1824,7 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
     {
       name: "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
       async run(host) {
-        const checkouts = host.checkouts;
+        const checkouts = checkoutsOf(host);
         if (!checkouts) return;
         const release = checkouts.holdTurns();
         try {

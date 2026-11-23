@@ -2331,6 +2331,7 @@ describeExecutionHostConformance(
     return {
       api,
       providerId: "claude",
+      capabilities: runtime.capabilities,
       emit: (sessionId, events) => runtime.log(sessionId, events),
       attach: (sessionId, bytes) => runtime.attach(sessionId, bytes),
       remove: (sessionId) => runtime.remove(sessionId),
@@ -2343,7 +2344,9 @@ describeExecutionHostConformance(
 );
 ```
 
-Each case sets up a fresh host. `emit`, `attach` and `remove` are what a case
+Each case sets up a fresh host. `capabilities` is what the host advertises,
+as its `/health` says it: the suite holds the host to the hooks they need.
+`emit`, `attach` and `remove` are what a case
 needs the host to do that no caller can make it do: log events, hold an
 attachment, lose a session. `endTurnWithUsage(sessionId, usage)` runs a turn
 that ends having cost `usage` and says its id, for the turn-usage cases: its
@@ -2372,7 +2375,8 @@ checkout and in a worktree, and reads their echoes; is refused the checkout
 beside a session at work (`checkout-taken`, naming it) while `auto` gets a
 worktree; and settles a session twice, reads `settled` in its snapshot and
 the list, starts in the checkout it freed, and takes the settle back twice. A
-host that places none leaves it out, and skips those cases.
+host that advertises `start.worksIn.v1` must give it, and fails those cases
+without it; only a host that places none leaves it out, and skips them.
 `executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind

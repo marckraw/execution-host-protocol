@@ -683,9 +683,7 @@ export function fakeFetch(
         apiVersion: "v0",
         executionProtocol: {
           version: EXECUTION_PROTOCOL_VERSION,
-          capabilities: model.checkouts
-            ? ["start.worksIn.v1", "sessions.settled.v1"]
-            : [],
+          capabilities: fakeCapabilities(model),
         },
       });
     }
@@ -924,12 +922,18 @@ function mcpRoute(
   }
 }
 
+/** What the model advertises, as its `/health` says it. */
+export function fakeCapabilities(model: FakeHostModel): string[] {
+  return model.checkouts ? ["start.worksIn.v1", "sessions.settled.v1"] : [];
+}
+
 /** The hooks a conformance case needs of the model, whatever face it wears. */
 export function modelHooks(
   model: FakeHostModel,
 ): Omit<ExecutionHostConformanceHost, "api"> {
   return {
     providerId: "claude",
+    capabilities: fakeCapabilities(model),
     emit: (sessionId, events) => model.emit(sessionId, events),
     attach: (sessionId, bytes) => model.attach(sessionId, bytes),
     remove: (sessionId) => model.remove(sessionId),

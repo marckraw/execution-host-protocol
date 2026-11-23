@@ -114,6 +114,36 @@ describe("the conformance suite", () => {
     expect(error).toBeInstanceOf(ExecutionHostConformanceError);
   });
 
+  it("fails every checkout case of a host that advertises start.worksIn.v1 but gives no checkouts, its placement broken or not (r3)", async () => {
+    const model = new FakeHostModel();
+    const cases = executionHostConformanceCases.filter((entry) =>
+      /checkout|settles a session/.test(entry.name),
+    );
+    expect(cases).toHaveLength(3);
+    for (const entry of cases) {
+      // Its placement broken too: a checkout start beside anyone, started.
+      const host: ExecutionHostConformanceHost = {
+        ...modelHooks(model),
+        api: {
+          ...fakeApi(model),
+          start: async (request) => ({
+            status: "started",
+            sessionId: request.config.sessionId,
+            commandId: request.commandId ?? "minted",
+            workspace: null,
+          }),
+        },
+        checkouts: undefined,
+      };
+      const error = await entry.run(host, { waitMs: 500 }).then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+      expect(error, entry.name).toBeInstanceOf(ExecutionHostConformanceError);
+      expect(String(error)).toContain("advertises start.worksIn.v1");
+    }
+  });
+
   it("passes a host that places no starts in checkouts, skipping those cases", async () => {
     for (const entry of executionHostConformanceCases) {
       expect(
