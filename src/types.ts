@@ -9,6 +9,7 @@ import type {
   ExecutionToolAttachmentOmissions,
 } from "./tool-attachments.js";
 import type { ExecutionTurnUsage } from "./turn-usage.js";
+import type { ExecutionWorksIn } from "./works-in.js";
 
 export const EXECUTION_PROTOCOL_VERSION = 1 as const;
 
@@ -168,6 +169,21 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * a host without it.
    */
   "providers.drivePolicy.v1",
+  /**
+   * The host takes a start's `config.worksIn` (MAR-5673): a start in a
+   * person's own checkout works in it, or in a worktree of its own, as it
+   * says (`ExecutionWorksIn`), and its 201 says where (`worksIn`,
+   * `ExecutionWorksInEcho`). A host without it decides by itself, so the
+   * shared client sends it no `checkout` or `worktree` there.
+   */
+  "start.worksIn.v1",
+  /**
+   * The host takes a patch's `settled` (MAR-5673): a session the person
+   * settled works in no checkout, so the next start in it may take it. A
+   * host without it refuses the field as any unknown one, so the shared
+   * client sends it none.
+   */
+  "sessions.settled.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -1041,6 +1057,13 @@ export interface ExecutionStartConfig {
   skills?: string[];
   sessionId: string;
   workingDirectory?: string;
+  /**
+   * Where a start in a person's own checkout works (MAR-5673): in it, in a
+   * worktree of its own, or `auto`, as absent. Requires `start.worksIn.v1`
+   * for `checkout` and `worktree`; ignored by a host for a start that isn't
+   * in a checkout.
+   */
+  worksIn?: ExecutionWorksIn;
   initialMessage: string;
   model: string | null;
   effort: string | null;
@@ -1181,6 +1204,13 @@ export interface ExecutionSessionPatchRequest {
   effort?: string | null;
   /** The session's permission policy from the next turn, whole (MAR-4052). */
   permissionConfig?: ExecutionPermissionConfig;
+  /**
+   * The person settled the session (true), or took that back (false), on a
+   * host advertising `sessions.settled.v1` (MAR-5673). A settled session
+   * works in no checkout, whatever it still runs, until a turn of its starts
+   * again. It changes nothing else: the session still takes messages.
+   */
+  settled?: boolean;
 }
 
 /**
@@ -1200,6 +1230,8 @@ export interface ExecutionSessionPatchResponse {
   model?: string | null;
   effort?: string | null;
   permissionConfig?: ExecutionPermissionConfig;
+  /** Whether the session is settled now, when the patch named it (MAR-5673). */
+  settled?: boolean;
   /**
    * When the patch's changes take effect (MAR-4052). Absent when the host does
    * not say, or says it in words this build does not know: unknown.

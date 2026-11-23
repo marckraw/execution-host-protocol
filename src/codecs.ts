@@ -1,5 +1,6 @@
 import { isExecutionInstructions } from "./instructions.js";
 import { isExecutionSelectionNames } from "./selections.js";
+import { isExecutionWorksIn } from "./works-in.js";
 import {
   isExecutionFileReach,
   readExecutionFileReach,
@@ -189,12 +190,13 @@ const ATTRIBUTION_MAX_LENGTH = 256;
 /** The bound on a model or effort id a session patch names (MAR-3662). */
 const MODEL_SELECTION_MAX_LENGTH = 256;
 
-/** Every field a session patch may name (MAR-3662, MAR-4052). */
+/** Every field a session patch may name (MAR-3662, MAR-4052, MAR-5673). */
 const SESSION_PATCH_FIELDS: ReadonlySet<string> = new Set([
   "title",
   "model",
   "effort",
   "permissionConfig",
+  "settled",
 ]);
 
 /**
@@ -485,7 +487,8 @@ export function decodeExecutionSessionPatchRequest(
   if (
     !isOptionalNullableString(value.title) ||
     !isOptionalSelectionId(value.model) ||
-    !isOptionalSelectionId(value.effort)
+    !isOptionalSelectionId(value.effort) ||
+    (value.settled !== undefined && typeof value.settled !== "boolean")
   ) {
     return failure("invalid-payload");
   }
@@ -499,6 +502,7 @@ export function decodeExecutionSessionPatchRequest(
     ...optionalProperty("model", value.model as string | null | undefined),
     ...optionalProperty("effort", value.effort as string | null | undefined),
     ...optionalProperty("permissionConfig", permissionConfig.value),
+    ...optionalProperty("settled", value.settled as boolean | undefined),
   });
 }
 
@@ -542,6 +546,10 @@ export function decodeExecutionSessionPatchResponse(
     ...optionalProperty("model", raw.model as string | null | undefined),
     ...optionalProperty("effort", raw.effort as string | null | undefined),
     ...optionalProperty("permissionConfig", permissionConfig.value),
+    ...optionalProperty(
+      "settled",
+      typeof raw.settled === "boolean" ? raw.settled : undefined,
+    ),
     ...optionalProperty(
       "appliesFrom",
       (EXECUTION_SESSION_PATCH_APPLIES_FROM as readonly unknown[]).includes(
@@ -1737,6 +1745,11 @@ function decodeStartConfig(
     typeof raw.workingDirectory !== "string"
   )
     return failure("invalid-payload");
+  // Refused rather than dropped: a dropped `worktree` would start the
+  // session in a checkout another session works in (MAR-5673).
+  if (raw.worksIn !== undefined && !isExecutionWorksIn(raw.worksIn)) {
+    return failure("invalid-payload");
+  }
   if (raw.roomId !== undefined && !isNonEmptyString(raw.roomId)) {
     return failure("invalid-payload");
   }
@@ -1784,6 +1797,7 @@ function decodeStartConfig(
       raw.skills === undefined ? undefined : [...(raw.skills as string[])],
     ),
     ...optionalProperty("workingDirectory", raw.workingDirectory),
+    ...optionalProperty("worksIn", raw.worksIn),
     initialMessage: raw.initialMessage,
     model: raw.model,
     effort: raw.effort,

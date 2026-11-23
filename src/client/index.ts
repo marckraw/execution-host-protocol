@@ -51,8 +51,14 @@ export {
 export {
   ExecutionSessionPatchError,
   hostTakesPermissionModes,
+  hostTakesSettled,
   type ExecutionSessionPatchErrorCode,
 } from "./session-patch.js";
+export {
+  ExecutionStartWorksInError,
+  hostTakesWorksIn,
+  type ExecutionStartWorksInErrorCode,
+} from "./works-in.js";
 export {
   ExecutionInteractionResponseError,
   hostTakesStructuredInteractions,

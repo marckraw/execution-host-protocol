@@ -62,8 +62,16 @@ import {
 import {
   ExecutionSessionPatchError,
   hostTakesPermissionModes,
+  hostTakesSettled,
   permissionModesRefusal,
+  settledRefusal,
 } from "./session-patch.js";
+import { hostTakesWorksIn, worksInRefusal } from "./works-in.js";
+import {
+  type ExecutionWorksInEcho,
+  isExecutionWorksIn,
+  readExecutionWorksInEcho,
+} from "../works-in.js";
 import {
   followExecutionSession,
   type ExecutionFollowOptions,
@@ -240,7 +248,8 @@ export interface ExecutionCommandOptions extends ExecutionRequestOptions {
 /**
  * `fileReach` is present for a start that carried one (MAR-4352): what the
  * host echoed it holds the session to, already checked against what was
- * asked, with the ABI it fences with.
+ * asked, with the ABI it fences with. `worksIn` is present where the host
+ * said where a start in a checkout works (`start.worksIn.v1`, MAR-5673).
  */
 export type ExecutionStartResult =
   | {
@@ -249,6 +258,7 @@ export type ExecutionStartResult =
       commandId: string;
       workspace: ExecutionSessionWorkspace | null;
       fileReach?: NonNullable<ExecutionFileReachEcho["fileReach"]>;
+      worksIn?: ExecutionWorksInEcho;
     }
   | {
       status: "exists";
@@ -352,6 +362,11 @@ export interface ExecutionHostClient extends ExecutionHostApi {
    * error, with its distinct code and status 400. See providers().sessionInstructions.
    * Instructions are fixed at the first successful start. A 409 / exists
    * neither updates nor confirms them; use a fresh id to establish a frame.
+   * `config.worksIn` of `checkout` or `worktree` reads the same `/health`,
+   * and is refused here, unsent, with an `ExecutionStartWorksInError` coded
+   * `works-in-unsupported` when the host does not advertise
+   * `start.worksIn.v1` (MAR-5673); `auto` goes to any host, as absent. A
+   * `worksIn` outside `EXECUTION_WORKS_IN` is a `TypeError`, unsent.
    */
   start(
     request: ExecutionStartRequest,
@@ -897,6 +912,14 @@ export function createExecutionHostClient(
         );
       }
       const reach = fileReach as ExecutionFileReach | undefined;
+      const worksIn: unknown = startRequest.config.worksIn;
+      if (worksIn !== undefined && !isExecutionWorksIn(worksIn)) {
+        throw new TypeError(
+          'config.worksIn must be "auto", "checkout" or "worktree"',
+        );
+      }
+      // A host predating it drops it and decides by itself (MAR-5673).
+      const placed = worksIn === "checkout" || worksIn === "worktree";
       const instructions: unknown = startRequest.config.instructions;
       if (
         instructions !== undefined &&
@@ -920,7 +943,8 @@ export function createExecutionHostClient(
         withFiles ||
         reach ||
         instructions !== undefined ||
-        selected
+        selected ||
+        placed
       ) {
         const probed = await health({
           signal: requestOptions.signal,
@@ -936,6 +960,9 @@ export function createExecutionHostClient(
               ? "the host does not advertise start.instructions.v1; nothing was sent"
               : "the host's protocol descriptor is unreadable; nothing was sent",
           );
+        }
+        if (placed && !hostTakesWorksIn(probed)) {
+          throw worksInRefusal(probed);
         }
         if (selected && !hostTakesSelections(probed)) {
           throw new ExecutionStartSelectionError(
@@ -1188,12 +1215,27 @@ export function createExecutionHostClient(
               });
             }
           }
+          // Where it works, as the host says it; one it can't read is not
+          // said, out loud: the session runs either way (MAR-5673).
+          const rawWorksIn = isRecord(echo) ? echo.worksIn : undefined;
+          const worksInEcho =
+            rawWorksIn === undefined
+              ? null
+              : readExecutionWorksInEcho(rawWorksIn);
+          if (rawWorksIn !== undefined && worksInEcho === null) {
+            notify(options.onWarnings, {
+              operation: "start",
+              sessionId,
+              warnings: [{ reason: "dropped-invalid-field", path: "worksIn" }],
+            });
+          }
           return {
             status: "started",
             sessionId,
             commandId,
             workspace,
             ...(reach ? { fileReach: echoedFileReach(echo) } : {}),
+            ...(worksInEcho ? { worksIn: worksInEcho } : {}),
           };
         },
       ).catch(told);
@@ -1297,12 +1339,13 @@ export function createExecutionHostClient(
       // Checked here, where the mistake is, rather than refused by the host.
       if (!decodeExecutionSessionPatchRequest(body).ok) {
         throw new TypeError(
-          "A session patch names at least one of title, model, effort and permissionConfig, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string, permissionConfig a permission policy with no field it does not know",
+          "A session patch names at least one of title, model, effort, permissionConfig and settled, and nothing else: model and effort are null or an id of 1 to 256 characters, title null or a string, permissionConfig a permission policy with no field it does not know, settled a boolean",
         );
       }
-      // A host that predates live modes refuses the field as an unknown one,
-      // in words about something else; the capability says it before then.
-      if (patch.permissionConfig !== undefined) {
+      // A host that predates live modes, or settling (MAR-5673), refuses the
+      // field as an unknown one, in words about something else; the
+      // capability says it before then.
+      if (patch.permissionConfig !== undefined || patch.settled !== undefined) {
         const probed = await health({
           signal: requestOptions.signal,
           timeoutMs: Math.min(
@@ -1310,8 +1353,14 @@ export function createExecutionHostClient(
             requestOptions.timeoutMs ?? healthTimeoutMs,
           ),
         });
-        if (!hostTakesPermissionModes(probed)) {
+        if (
+          patch.permissionConfig !== undefined &&
+          !hostTakesPermissionModes(probed)
+        ) {
           throw permissionModesRefusal(sessionId, probed);
+        }
+        if (patch.settled !== undefined && !hostTakesSettled(probed)) {
+          throw settledRefusal(sessionId, probed);
         }
       }
       return request(

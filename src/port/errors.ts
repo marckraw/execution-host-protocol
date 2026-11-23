@@ -34,6 +34,10 @@ import {
   ExecutionTaskOutputError,
   type ExecutionTaskOutputErrorCode,
 } from "../client/task-output.js";
+import {
+  ExecutionStartWorksInError,
+  type ExecutionStartWorksInErrorCode,
+} from "../client/works-in.js";
 import { isRecord } from "../guards.js";
 
 /**
@@ -187,6 +191,12 @@ export function fromPortError(raw: unknown, operation: string): Error {
         code as ExecutionStartSelectionErrorCode,
         reason,
         status(),
+      );
+    case "ExecutionStartWorksInError":
+      if (code === null) break;
+      return new ExecutionStartWorksInError(
+        code as ExecutionStartWorksInErrorCode,
+        reason,
       );
     case "ExecutionInlineAttachmentsError":
       if (code === null) break;

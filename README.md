@@ -1067,6 +1067,58 @@ A confirmed start returns the echo as `fileReach` on its `started` or
 `hostEnforcesFileReach(health)` asks the question ahead of time. A start
 without `fileReach` is unchanged: one request, no probe.
 
+## Where a start in a checkout works, and settling
+
+A start that names a `workingDirectory` in a person's own git checkout, and
+no `workspace` to clone, can say where it works (MAR-5673), on a host
+advertising `start.worksIn.v1`, in `config.worksIn` (`EXECUTION_WORKS_IN`):
+
+- `auto`, the default and the same as leaving it out: the checkout when no
+  session is working in it, else a worktree of its own from the checkout's
+  HEAD.
+- `checkout`: the checkout, whoever else is working in it. The host starts it
+  there all the same, and says who.
+- `worktree`: a worktree of its own, always.
+
+A session is **working in** a checkout while a turn of its runs, a task of
+its runs, or something is queued for it, and nobody settled it. One that
+finished, failed or was settled leaves the checkout to the next start.
+
+The host's 201 says where it works, as `worksIn`
+(`ExecutionWorksInEcho`): `place` (`checkout` or `worktree`), the checkout's
+top as `checkoutRoot`, and `workingThere`, the ids of the sessions working in
+it as it started (at most 32). With `checkout`, those it shares the checkout
+with; with a worktree `auto` chose, those that made it take one. A host says
+nothing for a start that isn't in a checkout.
+
+```json
+{
+  "sessionId": "session-1",
+  "worksIn": {
+    "place": "checkout",
+    "checkoutRoot": "/Users/person/code/shop",
+    "workingThere": ["session-0"]
+  }
+}
+```
+
+A value outside the three is refused as `invalid-payload`, never dropped. A
+host without the capability drops the field and decides by itself, so the
+client sends `checkout` or `worktree` only after `/health` advertises it and
+otherwise refuses the start unsent, with an `ExecutionStartWorksInError`
+coded `works-in-unsupported` (`hostTakesWorksIn`). `auto` goes to any host,
+unprobed. An echo the client can't read is left out of the result and named
+in `warnings` (`worksIn`): the session runs either way.
+
+**Settling.** A person's settle reaches the host as a patch,
+`{ "settled": true }`, and taking it back as `{ "settled": false }`, on a host
+advertising `sessions.settled.v1`. A settled session works in no checkout,
+whatever it still runs, until a turn of its starts again; nothing else
+changes, and it still takes messages. The answer echoes `settled`. A host
+without the capability refuses the field as an unknown one, so the client
+refuses the patch unsent there, with an `ExecutionSessionPatchError` coded
+`unsupported-on-host` (`hostTakesSettled`).
+
 ## A host's MCP servers and skills
 
 Authenticated `GET /v0/host` lists what the host has for a session to use

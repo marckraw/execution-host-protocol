@@ -9,6 +9,7 @@ import {
   ExecutionStartInstructionsError,
   ExecutionStartRequirementsError,
   ExecutionStartSelectionError,
+  ExecutionStartWorksInError,
   ExecutionTaskOutputError,
   type ExecutionHostApi,
   type ExecutionHostErrorKind,
@@ -118,6 +119,7 @@ describe("errors over a port", () => {
         400,
       ),
       new ExecutionStartSelectionError("unknown-skill", "skills", 400),
+      new ExecutionStartWorksInError("works-in-unsupported", "no worksIn"),
       new ExecutionInlineAttachmentsError("too-many", "five is too many", {
         operation: "start",
         index: 4,
