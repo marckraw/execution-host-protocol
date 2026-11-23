@@ -26,6 +26,7 @@ import {
   ExecutionStartSelectionError,
   type ExecutionStartSelectionErrorCode,
 } from "../client/selections.js";
+import { mcpError, type McpAsked } from "../client/mcp.js";
 import {
   ExecutionSessionPatchError,
   type ExecutionSessionPatchErrorCode,
@@ -100,7 +101,12 @@ export function toPortError(error: unknown): PortError {
  * other failure of the host is an `ExecutionHostError` of kind `http`, as an
  * HTTP host's 500 is, so a caller that handles those handles this.
  */
-export function fromPortError(raw: unknown, operation: string): Error {
+export function fromPortError(
+  raw: unknown,
+  operation: string,
+  mcp?: McpAsked,
+): Error {
+  if (mcp) return fromMcpPortError(raw, mcp);
   if (!isRecord(raw) || typeof raw.message !== "string") {
     return new ExecutionHostError(
       "malformed",
@@ -245,6 +251,49 @@ export function fromPortError(raw: unknown, operation: string): Error {
       return new RangeError(message);
   }
   return new ExecutionHostError("http", message, { operation });
+}
+
+/** What an MCP call's error says when the host's words are withheld. */
+const MCP_HOST_FAILURE = "the host failed the MCP call; its words are withheld";
+
+/**
+ * An MCP call's error (MAR-5668), made as the HTTP client makes one: an
+ * `ExecutionMcpError` through `mcpError`, its code held to its status and
+ * its reason this client's own; an `ExecutionHostError` with its kind and
+ * status but none of the host's words; a `TypeError` or `RangeError` in
+ * this client's words. Nothing the host wrote reaches the caller, since a
+ * host's sentence may quote a sign-in or callback URL.
+ */
+function fromMcpPortError(raw: unknown, asked: McpAsked): Error {
+  const fields = isRecord(raw) && isRecord(raw.fields) ? raw.fields : {};
+  const status = Number.isSafeInteger(fields.status)
+    ? (fields.status as number)
+    : null;
+  switch (isRecord(raw) ? raw.name : undefined) {
+    case "ExecutionMcpError":
+      if (status === null) break;
+      return mcpError(fields.code, status, asked, fields.reason);
+    case "ExecutionHostError": {
+      const kind = fields.kind;
+      if (!(HOST_ERROR_KINDS as unknown[]).includes(kind)) break;
+      return new ExecutionHostError(
+        kind as ExecutionHostErrorKind,
+        MCP_HOST_FAILURE,
+        { operation: asked.operation, status },
+      );
+    }
+    case "TypeError":
+      return new TypeError(
+        `The host refused ${asked.operation} as a request the protocol would refuse`,
+      );
+    case "RangeError":
+      return new RangeError(
+        `The host refused ${asked.operation} as out of range`,
+      );
+  }
+  return new ExecutionHostError("http", MCP_HOST_FAILURE, {
+    operation: asked.operation,
+  });
 }
 
 function asJson(value: unknown): string | undefined {

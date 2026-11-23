@@ -1,4 +1,9 @@
 import {
+  decodeExecutionMcpServerRequest,
+  isExecutionMcpProvider,
+  type ExecutionMcpProvider,
+} from "../../src/index.js";
+import {
   decodeExecutionCommandEnvelope,
   decodeExecutionSessionPatchRequest,
   decodeExecutionStartRequest,
@@ -15,12 +20,20 @@ import {
 } from "../../src/index.js";
 import {
   ExecutionHostError,
+  ExecutionMcpError,
   ExecutionTaskOutputError,
   type ExecutionHostApi,
   type ExecutionSessionSummary,
   type ExecutionStreamFrame,
 } from "../../src/client/index.js";
 import { followExecutionSession } from "../../src/client/follow.js";
+import {
+  checkMcpCallbackUrl,
+  mcpAsked,
+  mcpError,
+  mcpProviderAsked,
+} from "../../src/client/mcp.js";
+import { FakeMcp, FakeMcpRefusal, type FakeMcpProfile } from "./fake-mcp.js";
 import type { ExecutionHostConformanceHost } from "../../src/testing/index.js";
 import { PROVIDERS_BODY } from "../client/stub-host.js";
 
@@ -49,6 +62,8 @@ export interface FakeHostOptions {
   recordsUsage?: boolean;
   /** Whether it backfills, and so gives the suite `backfillTurnUsage`. */
   backfillsUsage?: boolean;
+  /** Which host it is for MCP connections (MAR-5668); `personal` by default. */
+  mcp?: FakeMcpProfile;
 }
 
 export class FakeHostModel {
@@ -57,6 +72,7 @@ export class FakeHostModel {
   readonly usage: ExecutionTurnUsageRecord[] = [];
   readonly recordsUsage: boolean;
   readonly backfillsUsage: boolean;
+  readonly mcp: FakeMcp;
   /** Told of each envelope logged, and of a session going (`null`). */
   readonly watchers = new Set<
     (sessionId: string, envelope: ExecutionHostEventEnvelope | null) => void
@@ -67,6 +83,7 @@ export class FakeHostModel {
   constructor(options: FakeHostOptions = {}) {
     this.recordsUsage = options.recordsUsage ?? true;
     this.backfillsUsage = this.recordsUsage && (options.backfillsUsage ?? true);
+    this.mcp = new FakeMcp(options.mcp ?? "personal");
   }
 
   start(sessionId: string, providerId: string): "started" | "exists" {
@@ -442,7 +459,87 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
       }
       return { ...model.usagePage(query), warnings: [] };
     },
+    mcpServers: (provider, options) =>
+      mcpCall(
+        model,
+        "mcp servers",
+        provider,
+        NO_SERVER,
+        options?.signal,
+        () => ({
+          servers: model.mcp.list(provider),
+          warnings: [],
+        }),
+      ),
+    mcpSignIn: (provider, server, options) =>
+      mcpCall(model, "mcp sign in", provider, server, options?.signal, () =>
+        model.mcp.signIn(provider, server),
+      ),
+    mcpSignInState: (provider, server, options) =>
+      mcpCall(
+        model,
+        "mcp sign-in state",
+        provider,
+        server,
+        options?.signal,
+        () => model.mcp.state(provider, server),
+      ),
+    mcpFinishSignIn: async (provider, server, callbackUrl, options) => {
+      // Refused as every carrier refuses it, before anything else.
+      checkMcpCallbackUrl(callbackUrl);
+      return mcpCall(
+        model,
+        "mcp finish sign in",
+        provider,
+        server,
+        options?.signal,
+        () => model.mcp.finish(provider, server, callbackUrl),
+      );
+    },
+    mcpCancelSignIn: (provider, server, options) =>
+      mcpCall(
+        model,
+        "mcp cancel sign in",
+        provider,
+        server,
+        options?.signal,
+        () => model.mcp.cancel(provider, server),
+      ),
+    mcpSignOut: (provider, server, options) =>
+      mcpCall(model, "mcp sign out", provider, server, options?.signal, () =>
+        model.mcp.signOut(provider, server),
+      ),
   };
+}
+
+/**
+ * Runs one MCP call on the model as a runtime in the same process does:
+ * refuses what the protocol would as a `TypeError` first, then answers, or
+ * throws the host's refusal as an `ExecutionMcpError`.
+ */
+/** Says an MCP call names no server: `mcpServers`. */
+const NO_SERVER = Symbol("no server");
+
+async function mcpCall<T>(
+  model: FakeHostModel,
+  operation: string,
+  provider: ExecutionMcpProvider,
+  server: unknown,
+  signal: AbortSignal | undefined,
+  run: () => T,
+): Promise<T> {
+  aborted(signal);
+  const asked =
+    server === NO_SERVER
+      ? mcpProviderAsked(operation, provider)
+      : mcpAsked(operation, provider, server);
+  if (model.mcp.profile === "absent") throw mcpError("unsupported", 404, asked);
+  try {
+    return run();
+  } catch (error) {
+    if (!(error instanceof FakeMcpRefusal)) throw error;
+    throw mcpError(error.code, error.status, asked);
+  }
 }
 
 function checkPatch(patch: ExecutionSessionPatchRequest): void {
@@ -492,6 +589,13 @@ export function fakeFetch(
           limit: limit === null ? undefined : Number(limit),
         }),
       });
+    }
+    const mcp =
+      /^\/v0\/mcp\/([^/]+)(\/servers|\/sign-in|\/sign-in\/finish|\/sign-in\/cancel|\/sign-out)$/.exec(
+        path,
+      );
+    if (mcp && model.mcp.profile !== "absent") {
+      return mcpRoute(model, method, mcp[1]!, mcp[2]!, url, init?.body);
     }
     if (path === "/v0/projects") return json({ projects: [] });
     if (path === "/v0/execution/sessions") {
@@ -605,6 +709,71 @@ export function fakeFetch(
   };
 }
 
+/** agents-daemon's MCP routes (MAR-5668), as the personal and shared profiles answer them. */
+function mcpRoute(
+  model: FakeHostModel,
+  method: string,
+  provider: string,
+  route: string,
+  url: URL,
+  body: unknown,
+): Response {
+  const json = (answer: unknown, status = 200) =>
+    new Response(JSON.stringify(answer), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  const refused = (refusal: FakeMcpRefusal) =>
+    json(
+      { error: `Refused: ${refusal.code}`, code: refusal.code },
+      refusal.status,
+    );
+  if (model.mcp.profile === "shared") {
+    return refused(new FakeMcpRefusal("unavailable-on-host"));
+  }
+  if (!isExecutionMcpProvider(provider)) {
+    return refused(new FakeMcpRefusal("rejected"));
+  }
+  try {
+    if (route === "/servers" && method === "GET") {
+      return json({ servers: model.mcp.list(provider) });
+    }
+    if (route === "/sign-in" && method === "GET") {
+      const server = url.searchParams.get("server");
+      if (server === null) return refused(new FakeMcpRefusal("rejected"));
+      return json(model.mcp.state(provider, server));
+    }
+    if (method !== "POST") return json({ error: "Route not found" }, 404);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(String(body));
+    } catch {
+      return refused(new FakeMcpRefusal("rejected"));
+    }
+    const decoded = decodeExecutionMcpServerRequest(parsed);
+    if (!decoded.ok) return refused(new FakeMcpRefusal("rejected"));
+    const { server, callbackUrl } = decoded.value;
+    switch (route) {
+      case "/sign-in":
+        return json(model.mcp.signIn(provider, server));
+      case "/sign-in/finish":
+        if (callbackUrl === undefined) {
+          return refused(new FakeMcpRefusal("rejected"));
+        }
+        return json(model.mcp.finish(provider, server, callbackUrl));
+      case "/sign-in/cancel":
+        return json(model.mcp.cancel(provider, server));
+      case "/sign-out":
+        model.mcp.signOut(provider, server);
+        return new Response(null, { status: 204 });
+    }
+    return json({ error: "Route not found" }, 404);
+  } catch (error) {
+    if (error instanceof FakeMcpRefusal) return refused(error);
+    throw error;
+  }
+}
+
 /** The hooks a conformance case needs of the model, whatever face it wears. */
 export function modelHooks(
   model: FakeHostModel,
@@ -624,6 +793,17 @@ export function modelHooks(
       ? {
           backfillTurnUsage: (usage: ExecutionTurnUsage, endedAt: string) =>
             model.backfillTurnUsage(usage, endedAt),
+        }
+      : {}),
+    ...(model.mcp.profile === "personal"
+      ? {
+          mcp: {
+            provider: "claude" as const,
+            server: "atlassian",
+            completeSignIn: () => model.mcp.complete("claude", "atlassian"),
+            callbackUrl: (signIn) => model.mcp.callbackUrl(signIn),
+            expireSignIn: () => model.mcp.expire("claude", "atlassian"),
+          },
         }
       : {}),
   };

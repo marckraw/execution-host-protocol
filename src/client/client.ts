@@ -3,6 +3,19 @@ import {
   hostTakesSelections,
 } from "./selections.js";
 import { isExecutionInstructions } from "../instructions.js";
+import { encodeExecutionMcpServerRequest } from "../mcp.js";
+import {
+  checkMcpCallbackUrl,
+  MCP_ANSWER_MAX_BYTES,
+  MCP_REFUSAL_MAX_BYTES,
+  mcpAsked,
+  mcpProviderAsked,
+  mcpRefusal,
+  readMcpServerList,
+  readMcpSignIn,
+  readMcpSignInStatus,
+  type McpAsked,
+} from "./mcp.js";
 import {
   ExecutionStartInstructionsError,
   hostTakesInstructions,
@@ -690,6 +703,47 @@ export function createExecutionHostClient(
         status: response.status,
       },
     );
+
+  /**
+   * One MCP call (MAR-5668): every refusal an `ExecutionMcpError` in this
+   * client's words, and the answer read by `read` within its cap. Neither
+   * the path nor an error ever holds a sign-in or callback URL: those travel
+   * in bodies alone.
+   */
+  const mcpRequest = <T>(
+    asked: McpAsked,
+    path: string,
+    body: string | undefined,
+    requestOptions: ExecutionRequestOptions,
+    read: (status: number, answer: string | null) => T,
+  ): Promise<T> => {
+    const { signal, timeoutMs = requestTimeoutMs } = requestOptions;
+    return request(
+      asked.operation,
+      `/v0/mcp/${asked.provider}${path}`,
+      {
+        method: body === undefined ? "GET" : "POST",
+        ...(body === undefined ? {} : { body }),
+        authenticated: true,
+        timeoutMs,
+        signal,
+      },
+      async (response, answer): Promise<T> => {
+        if (!response.ok) {
+          // An unreadable refusal still has a status; a caller's abort is
+          // still theirs.
+          const refusal = await answer
+            .atMost(MCP_REFUSAL_MAX_BYTES)
+            .catch((error: unknown) => {
+              if (signal?.aborted) throw error;
+              return null;
+            });
+          throw mcpRefusal(response.status, refusal ?? "", asked);
+        }
+        return read(response.status, await answer.atMost(MCP_ANSWER_MAX_BYTES));
+      },
+    );
+  };
 
   const health = (requestOptions: ExecutionRequestOptions = {}) =>
     request(
@@ -1545,6 +1599,79 @@ export function createExecutionHostClient(
           }
           return decoded.value;
         },
+      );
+    },
+
+    mcpServers: async (provider, requestOptions = {}) => {
+      const asked = mcpProviderAsked("mcp servers", provider);
+      return mcpRequest(
+        asked,
+        "/servers",
+        undefined,
+        requestOptions,
+        (status, answer) => readMcpServerList(status, answer, asked),
+      );
+    },
+
+    mcpSignIn: async (provider, server, requestOptions = {}) => {
+      const asked = mcpAsked("mcp sign in", provider, server);
+      return mcpRequest(
+        asked,
+        "/sign-in",
+        encodeExecutionMcpServerRequest({ server }),
+        requestOptions,
+        (status, answer) => readMcpSignIn(status, answer, asked),
+      );
+    },
+
+    mcpSignInState: async (provider, server, requestOptions = {}) => {
+      const asked = mcpAsked("mcp sign-in state", provider, server);
+      return mcpRequest(
+        asked,
+        `/sign-in?${new URLSearchParams({ server }).toString()}`,
+        undefined,
+        requestOptions,
+        (status, answer) => readMcpSignInStatus(status, answer, asked),
+      );
+    },
+
+    mcpFinishSignIn: async (
+      provider,
+      server,
+      callbackUrl,
+      requestOptions = {},
+    ) => {
+      const asked = mcpAsked("mcp finish sign in", provider, server);
+      checkMcpCallbackUrl(callbackUrl);
+      return mcpRequest(
+        asked,
+        "/sign-in/finish",
+        encodeExecutionMcpServerRequest({ server, callbackUrl }),
+        requestOptions,
+        (status, answer) => readMcpSignInStatus(status, answer, asked),
+      );
+    },
+
+    mcpCancelSignIn: async (provider, server, requestOptions = {}) => {
+      const asked = mcpAsked("mcp cancel sign in", provider, server);
+      return mcpRequest(
+        asked,
+        "/sign-in/cancel",
+        encodeExecutionMcpServerRequest({ server }),
+        requestOptions,
+        (status, answer) => readMcpSignInStatus(status, answer, asked),
+      );
+    },
+
+    mcpSignOut: async (provider, server, requestOptions = {}) => {
+      const asked = mcpAsked("mcp sign out", provider, server);
+      // A 2xx is the answer; its body, if any, says nothing more.
+      await mcpRequest(
+        asked,
+        "/sign-out",
+        encodeExecutionMcpServerRequest({ server }),
+        requestOptions,
+        () => undefined,
       );
     },
 

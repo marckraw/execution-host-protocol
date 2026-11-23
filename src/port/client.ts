@@ -6,6 +6,12 @@ import {
   type OpenEventStream,
 } from "../client/follow.js";
 import { ExecutionHostError } from "../client/http.js";
+import {
+  checkMcpCallbackUrl,
+  mcpAsked,
+  mcpProviderAsked,
+  type McpAsked,
+} from "../client/mcp.js";
 import type { ExecutionStreamFrame } from "../client/stream.js";
 import { isRecord } from "../guards.js";
 import type {
@@ -36,8 +42,13 @@ export interface ExecutionHostPortClient extends ExecutionHostApi {
   close(): void;
 }
 
+/** Says an MCP call names no server: `mcpServers`. */
+const NO_SERVER = Symbol("no server");
+
 interface PendingCall {
   operation: string;
+  /** For an MCP call, what it asked: its error is made from that alone. */
+  mcp?: McpAsked;
   resolve(value: unknown): void;
   reject(error: unknown): void;
 }
@@ -93,6 +104,7 @@ export function createPortClient(
     method: PortMethod,
     operation: string,
     args: unknown[],
+    mcp?: McpAsked,
   ): Promise<T> => {
     const index = PORT_OPTIONS_INDEX[method];
     const options = args[index] as { signal?: AbortSignal } | undefined;
@@ -110,6 +122,7 @@ export function createPortClient(
       const done = () => signal?.removeEventListener("abort", onAbort);
       calls.set(id, {
         operation,
+        ...(mcp ? { mcp } : {}),
         resolve: (value) => {
           done();
           resolve(value as T);
@@ -199,6 +212,34 @@ export function createPortClient(
     }
   }
 
+  /**
+   * One MCP call (MAR-5668): what it names checked here, by the rules the
+   * HTTP client keeps, so a request the protocol would refuse is a
+   * `TypeError` and never leaves; its error made from what it asked.
+   */
+  const mcpCall = <T>(
+    method: PortMethod,
+    operation: string,
+    provider: unknown,
+    server: unknown,
+    rest: unknown[],
+    check?: () => void,
+  ): Promise<T> => {
+    let asked: McpAsked;
+    try {
+      asked =
+        server === NO_SERVER
+          ? mcpProviderAsked(operation, provider)
+          : mcpAsked(operation, provider, server);
+      check?.();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const args =
+      server === NO_SERVER ? [provider, ...rest] : [provider, server, ...rest];
+    return call<T>(method, operation, args, asked);
+  };
+
   const shutDown = (by: "caller" | "port") => {
     if (closed) return;
     closed = true;
@@ -232,7 +273,9 @@ export function createPortClient(
           const pending = calls.get(id);
           if (!pending) return;
           calls.delete(id);
-          pending.reject(fromPortError(message.error, pending.operation));
+          pending.reject(
+            fromPortError(message.error, pending.operation, pending.mcp),
+          );
           return;
         }
         case "frames": {
@@ -331,6 +374,29 @@ export function createPortClient(
       ]),
     listTurnUsage: (query, options) =>
       call("listTurnUsage", "list turn usage", [query, options]),
+    mcpServers: (provider, options) =>
+      mcpCall("mcpServers", "mcp servers", provider, NO_SERVER, [options]),
+    mcpSignIn: (provider, server, options) =>
+      mcpCall("mcpSignIn", "mcp sign in", provider, server, [options]),
+    mcpSignInState: (provider, server, options) =>
+      mcpCall("mcpSignInState", "mcp sign-in state", provider, server, [
+        options,
+      ]),
+    mcpFinishSignIn: (provider, server, callbackUrl, options) =>
+      mcpCall(
+        "mcpFinishSignIn",
+        "mcp finish sign in",
+        provider,
+        server,
+        [callbackUrl, options],
+        () => checkMcpCallbackUrl(callbackUrl),
+      ),
+    mcpCancelSignIn: (provider, server, options) =>
+      mcpCall("mcpCancelSignIn", "mcp cancel sign in", provider, server, [
+        options,
+      ]),
+    mcpSignOut: (provider, server, options) =>
+      mcpCall("mcpSignOut", "mcp sign out", provider, server, [options]),
     followSession,
     close: () => {
       shutDown("caller");

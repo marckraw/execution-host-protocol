@@ -28,7 +28,10 @@ import {
   isRecord,
   isStringArray,
   isTimestamp,
+  readShowableText,
+  UNSHOWABLE_CHARACTERS,
 } from "./guards.js";
+import { isExecutionMcpProvider, isExecutionMcpServerName } from "./mcp.js";
 import {
   EXECUTION_INTERACTION_DESCRIPTION_MAX_LENGTH,
   EXECUTION_INTERACTION_HEADER_MAX_LENGTH,
@@ -645,6 +648,19 @@ function decodeEvent(raw: unknown): KindAwareResult<ExecutionHostEvent> {
     }
     case "heartbeat":
       return success({ kind: "heartbeat" });
+    case "mcp.needs-sign-in":
+      if (typeof raw.provider !== "string") return failure("invalid-payload");
+      // A provider a newer host reports for: skipped, as a newer kind is.
+      if (!isExecutionMcpProvider(raw.provider)) {
+        return unknownKind("event.provider", raw.provider);
+      }
+      return isExecutionMcpServerName(raw.server)
+        ? success({
+            kind: "mcp.needs-sign-in",
+            provider: raw.provider,
+            server: raw.server,
+          })
+        : failure("invalid-payload");
     default:
       return unknownKind("event.kind", raw.kind);
   }
@@ -2464,35 +2480,6 @@ function decodeExecutionProviderUsageWindow(
       isTimestamp(raw.observedAt) ? raw.observedAt : undefined,
     ),
   };
-}
-
-/**
- * C0 and C1 controls, and what reorders or breaks a line on screen: bidi
- * marks, embeddings, overrides and isolates, line and paragraph separators.
- * They let one label pass for another, or for more than one line.
- */
-const UNSHOWABLE_CHARACTERS =
-  /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
-
-/**
- * Cleaned, trimmed, then cut, rather than refused: the host cuts and cleans a
- * label too (MAR-3820), so a reader agrees with it whatever length it chose,
- * and a cut never lands inside a real email (at most 254 units). A usage
- * window's text is read the same way (MAR-4198).
- */
-function readShowableText(
-  value: unknown,
-  maxLength: number,
-): string | undefined {
-  if (typeof value !== "string") return undefined;
-  let text = value.replace(UNSHOWABLE_CHARACTERS, "").trim();
-  if (text.length > maxLength) {
-    text = text.slice(0, maxLength);
-    // Never end on half a surrogate pair.
-    if (/[\ud800-\udbff]$/.test(text)) text = text.slice(0, -1);
-    text = text.trimEnd();
-  }
-  return text.length > 0 ? text : undefined;
 }
 
 /** `YYYY-MM-DD`, and a day that month has: `2027-02-30` is not one. */
