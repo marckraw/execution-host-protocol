@@ -1102,6 +1102,10 @@ nothing for a start that isn't in a checkout.
 }
 ```
 
+Where each project session works stays on its workspace echo, in snapshots
+and lists alike: `workspace.place` is `checkout` or `worktree` on such a host,
+and absent from every other (a place this build doesn't know is left out).
+
 A value outside the three is refused as `invalid-payload`, never dropped. A
 host without the capability drops the field and decides by itself, so the
 client sends `checkout` or `worktree` only after `/health` advertises it and

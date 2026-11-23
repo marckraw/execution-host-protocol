@@ -9,7 +9,7 @@ import type {
   ExecutionToolAttachmentOmissions,
 } from "./tool-attachments.js";
 import type { ExecutionTurnUsage } from "./turn-usage.js";
-import type { ExecutionWorksIn } from "./works-in.js";
+import type { ExecutionWorksIn, ExecutionWorksInPlace } from "./works-in.js";
 
 export const EXECUTION_PROTOCOL_VERSION = 1 as const;
 
@@ -1327,6 +1327,12 @@ export type ExecutionSessionWorkspace =
       branchName: string | null;
       requestedBranchName?: string | null;
       environment: string | null;
+      /**
+       * Where it works in the project's checkout (MAR-5673): in it, or in a
+       * worktree of its own, on a host advertising `start.worksIn.v1`.
+       * Absent where the host didn't say, as from every host before it.
+       */
+      place?: ExecutionWorksInPlace;
     };
 
 /** One Environment a Project may be started with, and whether it is ready. */

@@ -1,6 +1,10 @@
 import { isExecutionInstructions } from "./instructions.js";
 import { isExecutionSelectionNames } from "./selections.js";
-import { isExecutionWorksIn } from "./works-in.js";
+import {
+  EXECUTION_WORKS_IN_PLACES,
+  type ExecutionWorksInPlace,
+  isExecutionWorksIn,
+} from "./works-in.js";
 import {
   isExecutionFileReach,
   readExecutionFileReach,
@@ -1936,6 +1940,13 @@ export function decodeExecutionSessionWorkspace(
         raw.requestedBranchName as string | null | undefined,
       ),
       environment: raw.environment,
+      // A place in words this build doesn't know is not said (MAR-5673).
+      ...optionalProperty(
+        "place",
+        (EXECUTION_WORKS_IN_PLACES as readonly unknown[]).includes(raw.place)
+          ? (raw.place as ExecutionWorksInPlace)
+          : undefined,
+      ),
     });
   }
 

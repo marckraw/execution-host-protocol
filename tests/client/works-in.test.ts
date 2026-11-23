@@ -9,6 +9,7 @@ import {
 } from "../../src/client/index.js";
 import {
   decodeExecutionSessionPatchRequest,
+  decodeExecutionSessionWorkspace,
   decodeExecutionSessionPatchResponse,
   decodeExecutionStartRequest,
   encodeExecutionStartRequest,
@@ -92,6 +93,37 @@ describe("a start's worksIn, as the protocol reads it", () => {
     ]) {
       expect(readExecutionWorksInEcho(bad)).toBeNull();
     }
+  });
+});
+
+describe("a project session's place in its checkout (MAR-5673)", () => {
+  const project = {
+    mode: "project",
+    projectId: "backpack",
+    workingDirectory: "/Users/person/code/backpack",
+    origin: null,
+    originKey: null,
+    branchName: "main",
+    environment: null,
+  };
+
+  it("reads where it works, and leaves out what it can't read", () => {
+    for (const place of ["checkout", "worktree"]) {
+      expect(decodeExecutionSessionWorkspace({ ...project, place })).toEqual({
+        ok: true,
+        value: { ...project, place },
+      });
+    }
+    for (const place of ["clone", 7, null]) {
+      expect(decodeExecutionSessionWorkspace({ ...project, place })).toEqual({
+        ok: true,
+        value: project,
+      });
+    }
+    expect(decodeExecutionSessionWorkspace(project)).toEqual({
+      ok: true,
+      value: project,
+    });
   });
 });
 
