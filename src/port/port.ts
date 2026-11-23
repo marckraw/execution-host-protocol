@@ -93,6 +93,12 @@ export const PORT_METHODS = [
   "sessionChanges",
   "downloadAttachment",
   "listTurnUsage",
+  "mcpServers",
+  "mcpSignIn",
+  "mcpSignInState",
+  "mcpFinishSignIn",
+  "mcpCancelSignIn",
+  "mcpSignOut",
 ] as const;
 
 export type PortMethod = (typeof PORT_METHODS)[number];
@@ -110,6 +116,12 @@ export const PORT_OPTIONS_INDEX: Record<PortMethod, number> = {
   sessionChanges: 1,
   downloadAttachment: 2,
   listTurnUsage: 1,
+  mcpServers: 1,
+  mcpSignIn: 2,
+  mcpSignInState: 2,
+  mcpFinishSignIn: 3,
+  mcpCancelSignIn: 2,
+  mcpSignOut: 2,
 };
 
 interface Tagged {

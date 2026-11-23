@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ExecutionHostError,
+  ExecutionMcpError,
   type ExecutionHostApi,
 } from "../../src/client/index.js";
 import {
@@ -376,6 +377,191 @@ describe("the conformance suite", () => {
         }),
       );
       expect(String(error)).toMatch(/since with a cursor resolved/);
+    });
+  });
+
+  describe("MCP connections (MAR-5668)", () => {
+    const LIST =
+      "lists MCP servers, each once and readable, or refuses every MCP call on a host that manages none";
+    const SIGN_IN =
+      "signs in to an MCP server: a URL to open, the same sign-in when asked again, then connected";
+    const CANCEL =
+      "cancels a pending MCP sign-in, and says how one that ended first ended";
+    const FINISH =
+      "finishes an MCP sign-in from its callback URL, refusing one not its own and keeping the sign-in pending";
+    const EXPIRE =
+      "fails an MCP sign-in whose time runs out, and starts a fresh one after it";
+    const TYPE_ERRORS =
+      "refuses an MCP call the protocol would refuse as a TypeError";
+
+    it("passes a shared host, and one predating MCP connections", async () => {
+      for (const mcp of ["shared", "absent"] as const) {
+        for (const entry of executionHostConformanceCases) {
+          expect(
+            await runCase(entry.name, (api) => api, new FakeHostModel({ mcp })),
+            `${mcp}: ${entry.name}`,
+          ).toBeNull();
+        }
+      }
+    });
+
+    it("fails a shared host that lists its servers all the same", async () => {
+      const personal = fakeApi(new FakeHostModel());
+      const error = await runCase(
+        LIST,
+        (api) => ({ ...api, mcpServers: personal.mcpServers }),
+        new FakeHostModel({ mcp: "shared" }),
+      );
+      expect(String(error)).toMatch(
+        /mcpServers on a host without MCP connections resolved/,
+      );
+    });
+
+    it("fails a carrier that loses the refusal's code", async () => {
+      const error = await runCase(
+        LIST,
+        (api) => ({
+          ...api,
+          mcpSignOut: (provider, server, options) =>
+            api.mcpSignOut(provider, server, options).catch((cause) => {
+              throw new ExecutionHostError("http", String(cause), {
+                operation: "mcp sign out",
+                status: 403,
+              });
+            }),
+        }),
+        new FakeHostModel({ mcp: "shared" }),
+      );
+      expect(String(error)).toMatch(/not an ExecutionMcpError/);
+    });
+
+    it("fails a sign-in URL a browser should not open", async () => {
+      const error = await runCase(SIGN_IN, (api) => ({
+        ...api,
+        mcpSignIn: async (provider, server, options) => ({
+          ...(await api.mcpSignIn(provider, server, options)),
+          signInUrl: "javascript:alert(1)",
+        }),
+      }));
+      expect(String(error)).toMatch(/not an http or https URL/);
+      expect(String(error)).not.toMatch(/javascript/);
+    });
+
+    it("fails a host that starts a second sign-in while one is pending", async () => {
+      const model = new FakeHostModel();
+      const error = await runCase(
+        SIGN_IN,
+        (api) => ({
+          ...api,
+          mcpSignIn: async (provider, server, options) => {
+            await api.mcpCancelSignIn(provider, server).catch(() => {});
+            return api.mcpSignIn(provider, server, options);
+          },
+        }),
+        model,
+      );
+      expect(String(error)).toMatch(/not the pending one/);
+    });
+
+    it("fails a cancel that says cancelled when the browser came back first", async () => {
+      const error = await runCase(CANCEL, (api) => ({
+        ...api,
+        mcpCancelSignIn: async (provider, server, options) => {
+          await api.mcpCancelSignIn(provider, server, options);
+          return { state: "cancelled" };
+        },
+      }));
+      expect(String(error)).toMatch(/answers cancelled, not connected/);
+    });
+
+    it("fails a refusal that quotes the callback URL", async () => {
+      const error = await runCase(FINISH, (api) => ({
+        ...api,
+        mcpFinishSignIn: (provider, server, callbackUrl, options) =>
+          api
+            .mcpFinishSignIn(provider, server, callbackUrl, options)
+            .catch((cause: unknown) => {
+              if (!(cause instanceof ExecutionMcpError)) throw cause;
+              throw new ExecutionMcpError(
+                cause.code,
+                `could not finish with ${callbackUrl}`,
+                { ...cause, server },
+              );
+            }),
+      }));
+      expect(String(error)).toMatch(/quotes its code/);
+      expect(String(error)).not.toMatch(/conformance-secret-code/);
+    });
+
+    it("fails a host that lets a stray callback end the sign-in", async () => {
+      for (const ending of ["failed", "cancelled"] as const) {
+        const error = await runCase(FINISH, (api) => ({
+          ...api,
+          mcpFinishSignIn: async (provider, server, callbackUrl, options) => {
+            const pending = await api.mcpSignInState(provider, server).then(
+              (status) => status.state === "pending",
+              () => false,
+            );
+            if (!pending || !callbackUrl.includes("conformance-stray")) {
+              return api.mcpFinishSignIn(
+                provider,
+                server,
+                callbackUrl,
+                options,
+              );
+            }
+            await api.mcpCancelSignIn(provider, server);
+            return { state: ending };
+          },
+        }));
+        expect(String(error), ending).toMatch(
+          /finishing with a callback that is not the sign-in's resolved/,
+        );
+      }
+    });
+
+    it("fails a host that refuses a stray callback but drops the sign-in", async () => {
+      const error = await runCase(FINISH, (api) => ({
+        ...api,
+        mcpFinishSignIn: (provider, server, callbackUrl, options) =>
+          api
+            .mcpFinishSignIn(provider, server, callbackUrl, options)
+            .catch(async (refusal: unknown) => {
+              // Refused, as it should be, but the sign-in went with it.
+              await api.mcpCancelSignIn(provider, server).catch(() => {});
+              throw refusal;
+            }),
+      }));
+      expect(String(error)).toMatch(/not its own, not pending/);
+    });
+
+    it("fails a host whose sign-ins never run out", async () => {
+      const model = new FakeHostModel();
+      const found = executionHostConformanceCases.find(
+        (entry) => entry.name === EXPIRE,
+      )!;
+      const error = await found
+        .run(
+          {
+            api: fakeApi(model),
+            ...modelHooks(model),
+            mcp: { ...modelHooks(model).mcp!, expireSignIn: () => {} },
+          },
+          { waitMs: 500 },
+        )
+        .then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(String(error)).toMatch(/ran out is pending, not failed/);
+    });
+
+    it("fails a host that takes a callback URL of another scheme", async () => {
+      const error = await runCase(TYPE_ERRORS, (api) => ({
+        ...api,
+        mcpFinishSignIn: async () => ({ state: "pending" }),
+      }));
+      expect(String(error)).toMatch(/not http or https resolved/);
     });
   });
 

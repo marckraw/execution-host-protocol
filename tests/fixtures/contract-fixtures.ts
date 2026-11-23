@@ -209,6 +209,11 @@ export const eventFixtures = {
   }),
   activity: eventEnvelope(6, { kind: "activity", activity: "thinking" }),
   heartbeat: eventEnvelope(7, { kind: "heartbeat" }),
+  "mcp.needs-sign-in": eventEnvelope(8, {
+    kind: "mcp.needs-sign-in",
+    provider: "claude",
+    server: "atlassian",
+  }),
 } satisfies Record<ExecutionHostEvent["kind"], ExecutionHostEventEnvelope>;
 
 const commandEnvelope = (

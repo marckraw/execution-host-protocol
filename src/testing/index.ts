@@ -11,6 +11,7 @@ export {
   ExecutionHostConformanceError,
   type ExecutionHostConformanceCase,
   type ExecutionHostConformanceHost,
+  type ExecutionHostConformanceMcp,
   type ExecutionHostConformanceOptions,
   type ExecutionHostConformanceRunner,
 } from "./conformance.js";

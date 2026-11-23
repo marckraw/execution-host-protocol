@@ -4,8 +4,20 @@ import type {
   ExecutionSessionFollow,
 } from "../client/follow.js";
 import { ExecutionHostError } from "../client/http.js";
+import { ExecutionMcpError } from "../client/mcp.js";
 import { ExecutionTaskOutputError } from "../client/task-output.js";
 import { isTimestamp } from "../guards.js";
+import {
+  EXECUTION_MCP_SERVER_SOURCES,
+  EXECUTION_MCP_SERVER_STATES,
+  isExecutionMcpServerName,
+  isExecutionMcpUrl,
+  type ExecutionMcpProvider,
+  type ExecutionMcpServer,
+  type ExecutionMcpSignIn,
+  type ExecutionMcpSignInState,
+  type ExecutionMcpSignInStatus,
+} from "../mcp.js";
 import type {
   ExecutionTurnUsage,
   ExecutionTurnUsageQuery,
@@ -66,8 +78,41 @@ export interface ExecutionHostConformanceHost {
     usage: ExecutionTurnUsage,
     endedAt: string,
   ): string | Promise<string>;
+  /**
+   * The MCP connections of a host that manages them (`mcp.connections.v1`,
+   * MAR-5668). Leave it out for one that manages none, as a host shared by
+   * several people does not: the suite then holds every MCP call to refusing
+   * `unavailable-on-host`, or `unsupported` as a host predating them does.
+   */
+  mcp?: ExecutionHostConformanceMcp;
   /** Runs after the case, whatever its outcome. */
   close?(): void | Promise<void>;
+}
+
+/** What the MCP cases need of a host that manages MCP connections. */
+export interface ExecutionHostConformanceMcp {
+  provider: ExecutionMcpProvider;
+  /**
+   * A server of the provider's the host lists as `needs-sign-in`, which
+   * offers a sign-in, with none pending when the case starts.
+   */
+  server: string;
+  /**
+   * Finishes the server's pending sign-in as the owner's browser coming back
+   * to the provider's own loopback callback does: the server is connected.
+   */
+  completeSignIn(): void | Promise<void>;
+  /**
+   * The URL the provider's page sends the browser to for `signIn`, which
+   * `mcpFinishSignIn` takes. Leave it out to check only its refusals.
+   */
+  callbackUrl?(signIn: ExecutionMcpSignIn): string | Promise<string>;
+  /**
+   * Makes the server's pending sign-in run out of time now, as `expiresAt`
+   * passing does: the host stops waiting, and the sign-in fails. Leave it
+   * out to skip the expiry case.
+   */
+  expireSignIn?(): void | Promise<void>;
 }
 
 /**
@@ -345,6 +390,67 @@ function checkNotFound(error: unknown, what: string): void {
     `${what} failed as ${error.kind}, not not-found`,
   );
 }
+
+/** That `work` rejects with an `ExecutionMcpError` coded one of `codes`. */
+async function checkMcpRefusal(
+  work: Promise<unknown>,
+  codes: readonly string[],
+  what: string,
+): Promise<ExecutionMcpError> {
+  const error = await rejection(work, what);
+  check(
+    error instanceof ExecutionMcpError,
+    `${what} failed with ${describe(error)}, not an ExecutionMcpError`,
+  );
+  check(
+    codes.includes(error.code),
+    `${what} failed as ${error.code}, not ${codes.join(" or ")}`,
+  );
+  return error;
+}
+
+/** Resolves once `state` answers `expected`, asking every few ms, or fails after `ms`. */
+async function signInReaches(
+  host: ExecutionHostConformanceHost & { mcp: ExecutionHostConformanceMcp },
+  expected: ExecutionMcpSignInState,
+  ms: number,
+): Promise<void> {
+  const { provider, server } = host.mcp;
+  const started = Date.now();
+  let last: string = "nothing";
+  for (;;) {
+    const status = await host.api.mcpSignInState(provider, server);
+    if (status.state === expected) return;
+    last = status.state;
+    if (Date.now() - started >= ms) {
+      throw new ExecutionHostConformanceError(
+        `${server}'s sign-in is ${last}, not ${expected}, after ${ms} ms`,
+      );
+    }
+    await pause(CONFORMANCE_POLL_MS);
+  }
+}
+
+/** The host's row for the case's server, which it must list. */
+async function mcpServerRow(
+  host: ExecutionHostConformanceHost & { mcp: ExecutionHostConformanceMcp },
+): Promise<ExecutionMcpServer> {
+  const { provider, server } = host.mcp;
+  const list = await host.api.mcpServers(provider);
+  const row = list.servers.find((entry) => entry.name === server);
+  check(row !== undefined, `mcpServers(${provider}) does not list ${server}`);
+  return row;
+}
+
+function servesMcp(
+  host: ExecutionHostConformanceHost,
+): host is ExecutionHostConformanceHost & { mcp: ExecutionHostConformanceMcp } {
+  return host.mcp !== undefined;
+}
+
+/** A callback URL no sign-in is waiting for, with a code a refusal must not quote. */
+const STRAY_CALLBACK =
+  "http://localhost:1/callback?code=conformance-secret-code&state=conformance-stray";
 
 function describe(error: unknown): string {
   return error instanceof Error
@@ -1228,6 +1334,356 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
           later,
           expected,
           `catching up from the usage history since ${since}`,
+        );
+      },
+    },
+    {
+      name: "lists MCP servers, each once and readable, or refuses every MCP call on a host that manages none",
+      async run(host) {
+        if (!servesMcp(host)) {
+          const server = "conformance-server";
+          const calls: Array<[string, () => Promise<unknown>]> = [
+            ["mcpServers", () => host.api.mcpServers("claude")],
+            ["mcpSignIn", () => host.api.mcpSignIn("claude", server)],
+            ["mcpSignInState", () => host.api.mcpSignInState("claude", server)],
+            [
+              "mcpFinishSignIn",
+              () => host.api.mcpFinishSignIn("claude", server, STRAY_CALLBACK),
+            ],
+            [
+              "mcpCancelSignIn",
+              () => host.api.mcpCancelSignIn("claude", server),
+            ],
+            ["mcpSignOut", () => host.api.mcpSignOut("claude", server)],
+          ];
+          for (const [name, call] of calls) {
+            await checkMcpRefusal(
+              call(),
+              ["unavailable-on-host", "unsupported"],
+              `${name} on a host without MCP connections`,
+            );
+          }
+          return;
+        }
+        const { provider, server } = host.mcp;
+        const list = await host.api.mcpServers(provider);
+        check(
+          Array.isArray(list.servers) && Array.isArray(list.warnings),
+          `mcpServers(${provider}) has no servers or no warnings`,
+        );
+        const names = new Set<string>();
+        for (const row of list.servers) {
+          check(
+            isExecutionMcpServerName(row.name),
+            "mcpServers lists a server by a name no call can address",
+          );
+          check(!names.has(row.name), `mcpServers lists ${row.name} twice`);
+          names.add(row.name);
+          check(
+            (EXECUTION_MCP_SERVER_SOURCES as readonly string[]).includes(
+              row.source,
+            ),
+            `${row.name}'s source is ${String(row.source)}`,
+          );
+          check(
+            (EXECUTION_MCP_SERVER_STATES as readonly string[]).includes(
+              row.state,
+            ),
+            `${row.name}'s state is ${String(row.state)}`,
+          );
+          check(
+            typeof row.transport === "string" && row.transport.length > 0,
+            `${row.name} has no transport`,
+          );
+        }
+        const row = await mcpServerRow(host);
+        check(
+          row.state === "needs-sign-in",
+          `${server} is ${row.state}, not needs-sign-in`,
+        );
+      },
+    },
+    {
+      name: "signs in to an MCP server: a URL to open, the same sign-in when asked again, then connected",
+      async run(host, { waitMs }) {
+        if (!servesMcp(host)) return;
+        const { provider, server } = host.mcp;
+        const before = Date.now();
+        const signIn = await host.api.mcpSignIn(provider, server);
+        // Never quoted: a failure message is a log line.
+        check(
+          isExecutionMcpUrl(signIn.signInUrl),
+          "the sign-in's URL is not an http or https URL",
+        );
+        check(
+          typeof signIn.callbackExpected === "boolean",
+          "the sign-in does not say whether a callback is expected",
+        );
+        check(
+          isTimestamp(signIn.expiresAt) &&
+            Date.parse(signIn.expiresAt) > before,
+          `the sign-in expires at ${String(signIn.expiresAt)}, not after it started`,
+        );
+        const status = await host.api.mcpSignInState(provider, server);
+        check(
+          status.state === "pending",
+          `a sign-in just started is ${status.state}, not pending`,
+        );
+        const again = await host.api.mcpSignIn(provider, server);
+        check(
+          again.signInUrl === signIn.signInUrl &&
+            again.expiresAt === signIn.expiresAt,
+          "a second sign-in while one is pending is not the pending one",
+        );
+        await host.mcp.completeSignIn();
+        await signInReaches(host, "connected", waitMs);
+        const row = await mcpServerRow(host);
+        check(
+          row.state === "connected",
+          `${server} is ${row.state} once signed in, not connected`,
+        );
+      },
+    },
+    {
+      name: "cancels a pending MCP sign-in, and says how one that ended first ended",
+      async run(host, { waitMs }) {
+        if (!servesMcp(host)) return;
+        const { provider, server } = host.mcp;
+        await host.api.mcpSignIn(provider, server);
+        const cancelled = await host.api.mcpCancelSignIn(provider, server);
+        check(
+          cancelled.state === "cancelled",
+          `a cancelled sign-in is ${cancelled.state}, not cancelled`,
+        );
+        await signInReaches(host, "cancelled", waitMs);
+        const row = await mcpServerRow(host);
+        check(
+          row.state === "needs-sign-in",
+          `${server} is ${row.state} after a cancelled sign-in, not needs-sign-in`,
+        );
+        await host.api.mcpSignIn(provider, server);
+        await signInReaches(host, "pending", waitMs);
+        await host.mcp.completeSignIn();
+        await signInReaches(host, "connected", waitMs);
+        const late = await host.api.mcpCancelSignIn(provider, server);
+        check(
+          late.state === "connected",
+          `cancelling a sign-in that connected first answers ${late.state}, not connected`,
+        );
+      },
+    },
+    {
+      name: "finishes an MCP sign-in from its callback URL, refusing one not its own and keeping the sign-in pending",
+      async run(host, { waitMs }) {
+        if (!servesMcp(host)) return;
+        const { provider, server } = host.mcp;
+        await checkMcpRefusal(
+          host.api.mcpFinishSignIn(provider, server, STRAY_CALLBACK),
+          ["no-sign-in"],
+          "finishing a sign-in that was never started",
+        );
+        const signIn = await host.api.mcpSignIn(provider, server);
+        // A callback that is not the sign-in's is refused, and costs the
+        // owner nothing: the sign-in they are finishing in their browser
+        // stays pending.
+        const stray = await checkMcpRefusal(
+          host.api.mcpFinishSignIn(provider, server, STRAY_CALLBACK),
+          ["rejected"],
+          "finishing with a callback that is not the sign-in's",
+        );
+        check(
+          !`${stray.message} ${stray.reason}`.includes(
+            "conformance-secret-code",
+          ),
+          "the refusal of a callback URL quotes its code",
+        );
+        const after = await host.api.mcpSignInState(provider, server);
+        check(
+          after.state === "pending",
+          `a sign-in is ${after.state} after a callback not its own, not pending`,
+        );
+        const again = await host.api.mcpSignIn(provider, server);
+        check(
+          again.signInUrl === signIn.signInUrl,
+          "a stray callback replaced the pending sign-in",
+        );
+        if (host.mcp.callbackUrl === undefined) return;
+        const finished = await host.api.mcpFinishSignIn(
+          provider,
+          server,
+          await host.mcp.callbackUrl(signIn),
+        );
+        check(
+          finished.state === "pending" || finished.state === "connected",
+          `a finished sign-in is ${finished.state}`,
+        );
+        await signInReaches(host, "connected", waitMs);
+        const row = await mcpServerRow(host);
+        check(
+          row.state === "connected",
+          `${server} is ${row.state} once its sign-in was finished, not connected`,
+        );
+      },
+    },
+    {
+      name: "fails an MCP sign-in whose time runs out, and starts a fresh one after it",
+      async run(host) {
+        if (!servesMcp(host) || host.mcp.expireSignIn === undefined) return;
+        const { provider, server } = host.mcp;
+        const first = await host.api.mcpSignIn(provider, server);
+        await host.mcp.expireSignIn();
+        const expired = await host.api.mcpSignInState(provider, server);
+        check(
+          expired.state === "failed",
+          `a sign-in whose time ran out is ${expired.state}, not failed`,
+        );
+        const cancelled = await host.api.mcpCancelSignIn(provider, server);
+        check(
+          cancelled.state === "failed",
+          `cancelling a sign-in whose time ran out answers ${cancelled.state}, not failed`,
+        );
+        if (host.mcp.callbackUrl !== undefined) {
+          const late = await host.api
+            .mcpFinishSignIn(
+              provider,
+              server,
+              await host.mcp.callbackUrl(first),
+            )
+            .catch((error: unknown) => error);
+          check(
+            late instanceof ExecutionMcpError ||
+              (late as ExecutionMcpSignInStatus).state === "failed",
+            "finishing a sign-in whose time ran out did not leave it failed",
+          );
+        }
+        const row = await mcpServerRow(host);
+        check(
+          row.state === "needs-sign-in",
+          `${server} is ${row.state} after its sign-in ran out, not needs-sign-in`,
+        );
+        const fresh = await host.api.mcpSignIn(provider, server);
+        check(
+          fresh.signInUrl !== first.signInUrl,
+          "signing in after one ran out answered the old sign-in",
+        );
+        const status = await host.api.mcpSignInState(provider, server);
+        check(
+          status.state === "pending",
+          `a fresh sign-in is ${status.state}, not pending`,
+        );
+      },
+    },
+    {
+      name: "signs out of an MCP server, which then needs a sign-in again",
+      async run(host, { waitMs }) {
+        if (!servesMcp(host)) return;
+        const { provider, server } = host.mcp;
+        await host.api.mcpSignIn(provider, server);
+        await host.mcp.completeSignIn();
+        await signInReaches(host, "connected", waitMs);
+        await host.api.mcpSignOut(provider, server);
+        const row = await mcpServerRow(host);
+        check(
+          row.state === "needs-sign-in",
+          `${server} is ${row.state} once signed out, not needs-sign-in`,
+        );
+        await checkMcpRefusal(
+          host.api.mcpSignInState(provider, server),
+          ["no-sign-in"],
+          "the state of a sign-in signed out since",
+        );
+        await host.api.mcpSignOut(provider, server);
+      },
+    },
+    {
+      name: "refuses an MCP server the provider does not have, and a sign-in that is not there",
+      async run(host) {
+        if (!servesMcp(host)) return;
+        const { provider, server } = host.mcp;
+        const unknown = `conformance-no-such-server-${Math.random().toString(36).slice(2, 10)}`;
+        await checkMcpRefusal(
+          host.api.mcpSignIn(provider, unknown),
+          ["unknown-server"],
+          "signing in to a server the provider does not have",
+        );
+        await checkMcpRefusal(
+          host.api.mcpSignOut(provider, unknown),
+          ["unknown-server"],
+          "signing out of a server the provider does not have",
+        );
+        await checkMcpRefusal(
+          host.api.mcpSignInState(provider, server),
+          ["no-sign-in"],
+          "the state of a sign-in never started",
+        );
+        await checkMcpRefusal(
+          host.api.mcpCancelSignIn(provider, server),
+          ["no-sign-in"],
+          "cancelling a sign-in never started",
+        );
+      },
+    },
+    {
+      name: "refuses an MCP call the protocol would refuse as a TypeError",
+      async run(host) {
+        const provider = host.mcp?.provider ?? "claude";
+        const server = host.mcp?.server ?? "conformance-server";
+        const calls: Array<[string, () => Promise<unknown>]> = [
+          [
+            "a provider it does not know",
+            () => host.api.mcpServers("gemini" as ExecutionMcpProvider),
+          ],
+          ["an empty server name", () => host.api.mcpSignIn(provider, "")],
+          [
+            "no server at all",
+            () => host.api.mcpSignOut(provider, null as unknown as string),
+          ],
+          [
+            "a server name with a bidi override",
+            () => host.api.mcpSignOut(provider, "linear\u202e"),
+          ],
+          [
+            "a callback URL that is not http or https",
+            () =>
+              host.api.mcpFinishSignIn(provider, server, "javascript:alert(1)"),
+          ],
+        ];
+        for (const [what, call] of calls) {
+          const error = await rejection(call(), what);
+          check(
+            error instanceof TypeError,
+            `an MCP call with ${what} failed with ${describe(error)}, not a TypeError`,
+          );
+        }
+      },
+    },
+    {
+      name: "hands a follower mcp.needs-sign-in as it was sent",
+      async run(host, { waitMs }) {
+        const sessionId = await started(host);
+        const mark = marked(sessionId, 1);
+        await host.emit(sessionId, [
+          { kind: "mcp.needs-sign-in", provider: "codex", server: "linear" },
+          ...mark,
+        ]);
+        const following = follow(host.api, sessionId, 0, hasAll(sessionId, 1));
+        try {
+          await within(following.reached, waitMs, "the follow");
+        } finally {
+          await following.follow.stop();
+        }
+        const event = following.kept.find(
+          (envelope) => envelope.event.kind === "mcp.needs-sign-in",
+        )?.event;
+        check(
+          event !== undefined,
+          "the follow was not handed mcp.needs-sign-in",
+        );
+        check(
+          event.kind === "mcp.needs-sign-in" &&
+            event.provider === "codex" &&
+            event.server === "linear",
+          "mcp.needs-sign-in arrived about another provider or server",
         );
       },
     },
