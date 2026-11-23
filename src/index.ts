@@ -7,6 +7,7 @@ export * from "./harness-evidence.js";
 export * from "./host-profile.js";
 export * from "./interactions.js";
 export * from "./instructions.js";
+export * from "./mcp.js";
 export * from "./oneshot.js";
 export * from "./origin-key.js";
 export * from "./provider-usage.js";

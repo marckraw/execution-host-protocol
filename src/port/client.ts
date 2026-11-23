@@ -331,6 +331,27 @@ export function createPortClient(
       ]),
     listTurnUsage: (query, options) =>
       call("listTurnUsage", "list turn usage", [query, options]),
+    mcpServers: (provider, options) =>
+      call("mcpServers", "mcp servers", [provider, options]),
+    mcpSignIn: (provider, server, options) =>
+      call("mcpSignIn", "mcp sign in", [provider, server, options]),
+    mcpSignInState: (provider, server, options) =>
+      call("mcpSignInState", "mcp sign-in state", [provider, server, options]),
+    mcpFinishSignIn: (provider, server, callbackUrl, options) =>
+      call("mcpFinishSignIn", "mcp finish sign in", [
+        provider,
+        server,
+        callbackUrl,
+        options,
+      ]),
+    mcpCancelSignIn: (provider, server, options) =>
+      call("mcpCancelSignIn", "mcp cancel sign in", [
+        provider,
+        server,
+        options,
+      ]),
+    mcpSignOut: (provider, server, options) =>
+      call("mcpSignOut", "mcp sign out", [provider, server, options]),
     followSession,
     close: () => {
       shutDown("caller");

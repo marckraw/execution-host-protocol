@@ -27,6 +27,11 @@ import {
   type ExecutionStartSelectionErrorCode,
 } from "../client/selections.js";
 import {
+  ExecutionMcpError,
+  type ExecutionMcpErrorCode,
+} from "../client/mcp.js";
+import { isExecutionMcpProvider } from "../mcp.js";
+import {
   ExecutionSessionPatchError,
   type ExecutionSessionPatchErrorCode,
 } from "../client/session-patch.js";
@@ -62,6 +67,8 @@ const FIELDS = [
   "sessionDeleted",
   "taskId",
   "index",
+  "provider",
+  "server",
 ] as const;
 
 /** The longest message a reason may carry across, as the HTTP client bounds a host's. */
@@ -228,6 +235,23 @@ export function fromPortError(raw: unknown, operation: string): Error {
         reason,
         { status: answered, sessionId, taskId },
       );
+    }
+    case "ExecutionMcpError": {
+      const provider = text("provider");
+      const answered = status();
+      if (
+        code === null ||
+        !isExecutionMcpProvider(provider) ||
+        answered === null
+      ) {
+        break;
+      }
+      return new ExecutionMcpError(code as ExecutionMcpErrorCode, reason, {
+        operation: text("operation") ?? operation,
+        status: answered,
+        provider,
+        server: text("server"),
+      });
     }
     case "TypeError":
       return new TypeError(message);

@@ -1,7 +1,7 @@
 /**
- * Shape checks shared by `codecs.ts`, `host-profile.ts` and `task-output.ts`
- * (MAR-3725). Other decoders keep their own. Internal: the package root does
- * not export them.
+ * Shape checks shared by `codecs.ts`, `host-profile.ts`, `task-output.ts` and
+ * `mcp.ts` (MAR-3725). Other decoders keep their own. Internal: the package
+ * root does not export them.
  */
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -58,4 +58,33 @@ export function isTimestamp(value: unknown): value is string {
     offsetHour! <= 23 &&
     offsetMinute! <= 59
   );
+}
+
+/**
+ * C0 and C1 controls, and what reorders or breaks a line on screen: bidi
+ * marks, embeddings, overrides and isolates, line and paragraph separators.
+ * They let one label pass for another, or for more than one line.
+ */
+export const UNSHOWABLE_CHARACTERS =
+  /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+
+/**
+ * Cleaned, trimmed, then cut, rather than refused: the host cuts and cleans a
+ * label too (MAR-3820), so a reader agrees with it whatever length it chose,
+ * and a cut never lands inside a real email (at most 254 units). A usage
+ * window's text is read the same way (MAR-4198).
+ */
+export function readShowableText(
+  value: unknown,
+  maxLength: number,
+): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let text = value.replace(UNSHOWABLE_CHARACTERS, "").trim();
+  if (text.length > maxLength) {
+    text = text.slice(0, maxLength);
+    // Never end on half a surrogate pair.
+    if (/[\ud800-\udbff]$/.test(text)) text = text.slice(0, -1);
+    text = text.trimEnd();
+  }
+  return text.length > 0 ? text : undefined;
 }

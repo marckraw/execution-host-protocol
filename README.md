@@ -1107,6 +1107,80 @@ whole, named at `inventory`. A list is read to its 1024th entry. Each drop
 under-claims, so a caller treats a name the warnings explain as unknown, not
 as missing.
 
+## MCP connections: signing in to a host's MCP servers
+
+On a host that runs as one person on their own machine (agents-daemon's
+`personal` profile), the MCP servers its Claude Code and Codex use are that
+person's, and so are their sign-ins. `mcp.connections.v1` (MAR-5668) lets a
+client show them and sign in to them, so nobody has to open a terminal for
+`/mcp`. The tokens stay where the provider keeps them: nothing passes through
+the client but a URL to open.
+
+Six calls on `ExecutionHostApi`, each for one provider, `claude` or `codex`
+(`EXECUTION_MCP_PROVIDERS`):
+
+| Call                                             | Route                                             | Answer                                       |
+| ------------------------------------------------ | ------------------------------------------------- | -------------------------------------------- |
+| `mcpServers(provider)`                           | `GET /v0/mcp/:provider/servers`                   | `{ servers, warnings }`                      |
+| `mcpSignIn(provider, server)`                    | `POST /v0/mcp/:provider/sign-in` `{ server }`     | `{ signInUrl, callbackExpected, expiresAt }` |
+| `mcpSignInState(provider, server)`               | `GET /v0/mcp/:provider/sign-in?server=`           | `{ state, reason? }`                         |
+| `mcpFinishSignIn(provider, server, callbackUrl)` | `POST …/sign-in/finish` `{ server, callbackUrl }` | `{ state, reason? }`                         |
+| `mcpCancelSignIn(provider, server)`              | `POST …/sign-in/cancel` `{ server }`              | `{ state, reason? }`                         |
+| `mcpSignOut(provider, server)`                   | `POST …/sign-out` `{ server }`                    | 204                                          |
+
+**A server** has its `name` (what a call names), a `source` (`user`,
+`project`, `plugin` or `claude.ai`), the provider's `transport` word, a
+`state` (`connected`, `needs-sign-in`, `failed`, or `connecting` when it was
+still connecting as the host stopped waiting), a `reason` for a person where
+the host has one, and a remote server's `urlHost` — its host name, never its
+path or query. A server that can't be read, or a second by the same name, is
+dropped and named in `warnings`; an unreadable `reason` or `urlHost` is
+dropped alone. A claude.ai connector is listed but managed on claude.ai: it
+offers no sign-in here.
+
+**Signing in.** `mcpSignIn` answers the provider's page to open in the
+owner's browser. Claude Code listens for the browser's return on the host's
+own loopback (`callbackExpected: true`) and keeps the token itself, so the
+client opens the page and watches `mcpSignInState`: `pending`, then
+`connected`, `failed` (expiry included, at `expiresAt`) or `cancelled`.
+Asking again while one is pending answers the same sign-in. When the browser
+cannot reach the host's loopback, `mcpFinishSignIn` hands the host the URL
+the page sent it to. `mcpCancelSignIn` answers the state after it: `connected`
+if the browser won. `mcpSignOut` makes the server need a sign-in again and
+forgets its last one; signing out of a server not signed in is no error.
+
+**Secrets.** `signInUrl` and `callbackUrl` are secrets: one finishes the
+sign-in as its owner, the other carries the authorization code. Open the one
+and pass the other; never log, record or store either. A server travels in
+a body or the query and a callback URL in a body only, never a path, and no
+error the client throws quotes either: its reasons are its own words, never
+the host's. A sign-in URL is `https:` or `http:` and nothing else, so a client
+can open it as it is.
+
+**Refusals** are an `ExecutionMcpError` (`/client`) with a `code`, honoured
+only with its status (`EXECUTION_MCP_REFUSAL_STATUSES`):
+
+- `unavailable-on-host` (403): the host manages no MCP connections, as a
+  host shared by several people does not. It doesn't advertise
+  `mcp.connections.v1`.
+- `unsupported`: a 404 with no code, from a host predating the routes.
+- `unknown-server` (404), `no-sign-in` (404: none to report, finish or
+  cancel), `not-offered` (409: the server needs no sign-in or is managed
+  elsewhere), `provider-unavailable` (503: the CLI is missing, would not
+  start, or did not answer), `rejected` (400 or anything else; `status` says
+  which), and `malformed` for a 2xx the client can't read.
+
+A provider or server name the protocol refuses, or a callback URL that is
+not `http:` or `https:`, is a `TypeError` before anything is sent, on every
+carrier. No call reads `/health` first: gate on
+`hostManagesMcpConnections(health)`.
+
+**In a session.** When a session's agent reports that a server needs a
+sign-in, the host sends `{ kind: "mcp.needs-sign-in", provider, server }`
+once each time the server comes to need one: a client offers the sign-in
+there. A reader that predates it skips it; one that meets a provider it
+doesn't know skips it too, at `event.provider`.
+
 ## One-shots: one answer, no tools
 
 On a host advertising `oneshot.v1`, authenticated `POST /v0/oneshot` answers
@@ -2084,8 +2158,9 @@ saved.cursor = cursor; // next time, what was recorded since
 `ExecutionHostApi` (`/client`, MAR-4862) is what a host does, whatever carries
 it: `providers`, `projects`, `start`, `command`, `listSessions`, `snapshot`,
 `patchSession`, `followSession`, `taskOutput`, `sessionChanges`,
-`downloadAttachment` and `listTurnUsage` ([the usage
-history](#the-usage-history)). The HTTP client is one, and adds what only a host on the
+`downloadAttachment`, `listTurnUsage` ([the usage
+history](#the-usage-history)) and the six [MCP
+connection](#mcp-connections-signing-in-to-a-hosts-mcp-servers) calls. The HTTP client is one, and adds what only a host on the
 network has: health, the handshake, its profile, teardown, one-shots and the
 raw event stream. A caller written against `ExecutionHostApi` runs unchanged on
 the HTTP client, on a port, or on a runtime in the same process.
@@ -2210,10 +2285,19 @@ usage leaves it out, and is held instead to refusing `listTurnUsage` as
 that ended long ago, now: a record listed out of the order turns ended is
 what shows a cursor that lost its `since`, so a host that backfills gives the
 suite this; one that does not leaves it out, and the `since` cases use live
-turns alone. `executionHostConformanceCases` are the same cases
+turns alone. `mcp` is for a host that manages MCP connections: a
+`provider`, a `server` it lists as `needs-sign-in`, `completeSignIn()`, which
+does what the owner's browser coming back does, and optionally
+`callbackUrl(signIn)`, the URL that browser lands on. The suite signs in,
+asks again, cancels, finishes, signs out, and checks that no refusal quotes a
+callback URL. A host that manages none leaves it out, and is held to refusing
+every MCP call `unavailable-on-host` (or `unsupported`). Every host carries
+`mcp.needs-sign-in` to a follower as it was sent, and refuses a bad MCP call
+as a `TypeError`. `executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind
-the HTTP client with a fake `fetch`.
+the HTTP client with a fake `fetch`; and a shared host and an older one over a
+port and over HTTP.
 
 ## The work address and environments
 

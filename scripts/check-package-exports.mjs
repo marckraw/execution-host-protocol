@@ -251,6 +251,67 @@ for (const loaded of [commonJsPort, esModulePort]) {
   server.close();
 }
 
+// MCP connections (MAR-5668): the contract and its readers at the root; the
+// calls, their error and the capability check on the client; and the calls
+// over a port, their error keeping its code.
+for (const loaded of [commonJs, esModule]) {
+  assert.ok(
+    loaded.EXECUTION_PROTOCOL_CAPABILITY_IDS.includes("mcp.connections.v1"),
+  );
+  assert.deepEqual(loaded.EXECUTION_MCP_PROVIDERS, ["claude", "codex"]);
+  assert.equal(typeof loaded.decodeExecutionMcpServerList, "function");
+  assert.equal(typeof loaded.decodeExecutionMcpSignIn, "function");
+  assert.equal(typeof loaded.decodeExecutionMcpSignInStatus, "function");
+  assert.equal(typeof loaded.decodeExecutionMcpServerRequest, "function");
+  assert.equal(typeof loaded.encodeExecutionMcpServerRequest, "function");
+  assert.equal(
+    loaded.EXECUTION_MCP_REFUSAL_STATUSES["unavailable-on-host"],
+    403,
+  );
+  assert.equal(loaded.ExecutionMcpError, undefined);
+  assert.equal(loaded.readShowableText, undefined);
+}
+for (const loaded of [commonJsClient, esModuleClient]) {
+  assert.equal(typeof loaded.hostManagesMcpConnections, "function");
+  const client = loaded.createExecutionHostClient({
+    baseUrl: "http://127.0.0.1:1",
+    token: "check",
+    fetch: async () =>
+      new Response(JSON.stringify({ code: "unavailable-on-host" }), {
+        status: 403,
+      }),
+  });
+  const refused = await client.mcpServers("claude").catch((error) => error);
+  assert.ok(refused instanceof loaded.ExecutionMcpError);
+  assert.equal(refused.code, "unavailable-on-host");
+}
+for (const [loaded, client] of [
+  [commonJsPort, commonJsClient],
+  [esModulePort, esModuleClient],
+]) {
+  const { port1, port2 } = new MessageChannel();
+  const server = loaded.servePort(port2, {
+    mcpSignInState: async () => ({ state: "pending" }),
+    mcpSignIn: async () => {
+      throw new client.ExecutionMcpError("not-offered", "stdio", {
+        operation: "mcp sign in",
+        status: 409,
+        provider: "claude",
+        server: "filesystem",
+      });
+    },
+  });
+  const api = loaded.createPortClient(port1);
+  assert.deepEqual(await api.mcpSignInState("claude", "linear"), {
+    state: "pending",
+  });
+  const refused = await api.mcpSignIn("claude", "filesystem").catch((e) => e);
+  assert.ok(refused instanceof client.ExecutionMcpError);
+  assert.equal(refused.code, "not-offered");
+  api.close();
+  server.close();
+}
+
 const commonJsTesting = require(`${packageName}/testing`);
 const esModuleTesting = await import(`${packageName}/testing`);
 for (const loaded of [commonJsTesting, esModuleTesting]) {

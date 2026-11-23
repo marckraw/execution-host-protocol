@@ -3,6 +3,7 @@ import type {
   ExecutionHostFileReach,
 } from "./file-reach.js";
 import type { ExecutionDrivePolicy } from "./drive-policy.js";
+import type { ExecutionMcpProvider } from "./mcp.js";
 import type { HarnessEvidence } from "./harness-evidence.js";
 import type {
   ExecutionToolAttachment,
@@ -168,6 +169,14 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * a host without it.
    */
   "providers.drivePolicy.v1",
+  /**
+   * The host reports the MCP servers its own Claude Code and Codex can use,
+   * and signs in to them and out of them, at `/v0/mcp/:provider/…`
+   * (`mcp.ts`, MAR-5668): for a host that runs as one person on their own
+   * machine. A host shared by several people does not advertise it, and
+   * refuses those routes 403 coded `unavailable-on-host`.
+   */
+  "mcp.connections.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -846,7 +855,19 @@ export type ExecutionHostEvent =
   | { kind: "continuation-token"; token: string }
   | { kind: "context-window"; contextWindow: ExecutionContextWindow }
   | { kind: "activity"; activity: ExecutionActivitySignal }
-  | { kind: "heartbeat" };
+  | { kind: "heartbeat" }
+  | {
+      /**
+       * The session's agent reported that one of its MCP servers needs a
+       * sign-in (MAR-5668): a client offers it, on a host advertising
+       * `mcp.connections.v1`, with `mcpSignIn(provider, server)`. Sent once
+       * each time the server comes to need one, not on every report.
+       */
+      kind: "mcp.needs-sign-in";
+      provider: ExecutionMcpProvider;
+      /** As `ExecutionMcpServer.name`. */
+      server: string;
+    };
 
 export interface ExecutionHostEventEnvelope {
   protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
@@ -1673,7 +1694,7 @@ export interface ExecutionSkippedEnvelope {
   sessionId: string;
   seq: number;
   /**
-   * The discriminant that was not recognised: `event.kind`,
+   * The discriminant that was not recognised: `event.kind`, `event.provider`,
    * `event.delta.kind`, or `event.delta.item.kind`.
    */
   path: string;

@@ -126,6 +126,12 @@ export {
 export { hostRecordsTurnUsage } from "./turn-usage.js";
 
 export {
+  ExecutionMcpError,
+  hostManagesMcpConnections,
+  type ExecutionMcpErrorCode,
+} from "./mcp.js";
+
+export {
   ExecutionStartSelectionError,
   hostTakesSelections,
   type ExecutionStartSelectionErrorCode,
