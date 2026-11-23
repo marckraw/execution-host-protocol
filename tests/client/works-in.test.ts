@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createExecutionHostClient,
+  decodeExecutionSessionList,
+  decodeExecutionSessionSnapshot,
   type ExecutionWarningsNotice,
   ExecutionSessionPatchError,
   ExecutionStartWorksInError,
@@ -15,6 +17,7 @@ import {
   encodeExecutionStartRequest,
   type ExecutionStartRequest,
   type ExecutionWorksIn,
+  readExecutionCheckoutTakenRefusal,
   readExecutionWorksInEcho,
 } from "../../src/index.js";
 import { startRequestWithEnvironmentFixture } from "../fixtures/contract-fixtures.js";
@@ -213,6 +216,57 @@ describe("starting with worksIn (MAR-5673)", () => {
     ]);
   });
 
+  it("refuses a checkout another session works in, never starting it there", async () => {
+    advertising("start.worksIn.v1");
+    host.startStatus = 409;
+    host.startRefusal = {
+      error:
+        "session-2 is working in /srv/projects/new-blok: this one can't share its checkout",
+      code: "checkout-taken",
+      workingThere: ["session-2"],
+    };
+    const refusal = await client()
+      .start(placed("checkout"))
+      .catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ExecutionStartWorksInError);
+    expect(refusal).toMatchObject({
+      code: "checkout-taken",
+      status: 409,
+      workingThere: ["session-2"],
+      reason: expect.stringContaining("can't share its checkout"),
+    });
+  });
+
+  it("reads a 409 of a checkout start that says nothing of it as the session it has", async () => {
+    advertising("start.worksIn.v1");
+    host.startStatus = 409;
+    host.startRefusal = { error: "Session already exists" };
+    expect(await client().start(placed("checkout"))).toEqual({
+      status: "exists",
+      sessionId,
+      commandId: expect.any(String),
+    });
+  });
+
+  it("reads a checkout-taken refusal, and nothing that isn't one", () => {
+    const refusal = {
+      error: "taken",
+      code: "checkout-taken",
+      workingThere: ["session-2"],
+    };
+    expect(readExecutionCheckoutTakenRefusal(refusal)).toEqual(refusal);
+    for (const bad of [
+      null,
+      { ...refusal, code: "turn-running" },
+      { ...refusal, error: 7 },
+      { ...refusal, workingThere: [] },
+      { ...refusal, workingThere: [""] },
+      { ...refusal, workingThere: "session-2" },
+    ]) {
+      expect(readExecutionCheckoutTakenRefusal(bad)).toBeNull();
+    }
+  });
+
   it("is told by the capability", () => {
     expect(hostTakesWorksIn({ capabilities: ["start.worksIn.v1"] })).toBe(true);
     expect(hostTakesWorksIn({ capabilities: ["sessions.settled.v1"] })).toBe(
@@ -222,6 +276,36 @@ describe("starting with worksIn (MAR-5673)", () => {
 });
 
 describe("settling a session (MAR-5673)", () => {
+  it("reads which sessions the host says are settled, in a snapshot and the list", () => {
+    const snapshot = {
+      protocolVersion: 1,
+      sessionId: "session-1",
+      providerId: "claude",
+      lastSeq: 3,
+      conversation: [],
+    };
+    const read = (raw: object) => {
+      const decoded = decodeExecutionSessionSnapshot(raw);
+      return decoded.ok ? decoded.value.settled : "unread";
+    };
+    expect(read({ ...snapshot, settled: true })).toBe(true);
+    expect(read(snapshot)).toBeUndefined();
+    expect(read({ ...snapshot, settled: "yes" })).toBeUndefined();
+
+    const list = decodeExecutionSessionList({
+      protocolVersion: 1,
+      nextCursor: null,
+      sessions: [
+        { ...snapshot, settled: true },
+        { ...snapshot, sessionId: "session-2" },
+      ],
+    });
+    expect(list.ok && list.value.sessions.map((one) => one.settled)).toEqual([
+      true,
+      undefined,
+    ]);
+  });
+
   it("reads settled in a patch, and refuses one that isn't a boolean", () => {
     for (const settled of [true, false]) {
       expect(

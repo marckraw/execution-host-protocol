@@ -9,14 +9,18 @@ import { isBoundedString, isRecord } from "./guards.js";
  *
  * - `auto` (the default, as when absent): the checkout when no session is
  *   working in it, else a worktree of its own.
- * - `checkout`: the checkout, whoever else is working in it. The host starts
- *   it there all the same, and its 201 says who (`ExecutionWorksInEcho`).
+ * - `checkout`: the checkout, only while nobody else is working in it. A host
+ *   never puts two sessions to work in one checkout: while another works
+ *   there it refuses the start, with a 409 coded `checkout-taken` that names
+ *   who (`ExecutionCheckoutTakenRefusal`), and starts nothing. Judged and
+ *   claimed at once, so of two such starts at once one is refused.
  * - `worktree`: a worktree of its own, from the checkout's HEAD, always.
  *
  * A session is working in a checkout while its turn runs, a task of its runs,
  * or something is queued for it, and nobody has settled it
- * (`ExecutionSessionPatchRequest.settled`). One that finished, failed or was
- * settled leaves the checkout to the next.
+ * (`ExecutionSessionPatchRequest.settled`) since its last turn began. One that
+ * finished, failed or was settled leaves the checkout to the next. A snapshot
+ * and the list say which are settled now (`settled`), in the host's own word.
  */
 export const EXECUTION_WORKS_IN = ["auto", "checkout", "worktree"] as const;
 export type ExecutionWorksIn = (typeof EXECUTION_WORKS_IN)[number];
@@ -40,8 +44,8 @@ const PATH_MAX_LENGTH = 4096;
  * Where a start in a checkout landed, as a `start.worksIn.v1` host's 201 says
  * it (`worksIn`): `checkout` or `worktree`, the checkout's top, and the
  * sessions that were working in it as it started, by id, at most
- * `EXECUTION_WORKS_IN_MAX_NAMED`. With `checkout`, those it shares the
- * checkout with; with `worktree` by `auto`, those that made it take one.
+ * `EXECUTION_WORKS_IN_MAX_NAMED`: with `worktree` by `auto`, those that made
+ * it take one. In the checkout, there are none.
  */
 export interface ExecutionWorksInEcho {
   place: ExecutionWorksInPlace;
@@ -73,6 +77,43 @@ export function readExecutionWorksInEcho(
   return {
     place: raw.place as ExecutionWorksInPlace,
     checkoutRoot: raw.checkoutRoot,
+    workingThere: [...(working as string[])],
+  };
+}
+
+/** The code of a `checkout` start refused because another session works there. */
+export const EXECUTION_CHECKOUT_TAKEN = "checkout-taken";
+
+/**
+ * Why a host refused a start's `checkout` (MAR-5673), with a 409: another
+ * session works in the checkout, `workingThere` by id (at most
+ * `EXECUTION_WORKS_IN_MAX_NAMED`, never empty). Nothing was started; the same
+ * start with `auto` or `worktree` works in a worktree of its own.
+ */
+export interface ExecutionCheckoutTakenRefusal {
+  error: string;
+  code: typeof EXECUTION_CHECKOUT_TAKEN;
+  workingThere: string[];
+}
+
+/** Reads a 409's body as a `checkout-taken` refusal, or null where it is none. */
+export function readExecutionCheckoutTakenRefusal(
+  raw: unknown,
+): ExecutionCheckoutTakenRefusal | null {
+  if (!isRecord(raw) || raw.code !== EXECUTION_CHECKOUT_TAKEN) return null;
+  if (typeof raw.error !== "string") return null;
+  const working = raw.workingThere;
+  if (
+    !Array.isArray(working) ||
+    working.length === 0 ||
+    working.length > EXECUTION_WORKS_IN_MAX_NAMED ||
+    !working.every((id) => isBoundedString(id, SESSION_ID_MAX_LENGTH))
+  ) {
+    return null;
+  }
+  return {
+    error: raw.error,
+    code: EXECUTION_CHECKOUT_TAKEN,
     workingThere: [...(working as string[])],
   };
 }

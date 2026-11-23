@@ -66,6 +66,7 @@ const FIELDS = [
   "sessionDeleted",
   "taskId",
   "index",
+  "workingThere",
 ] as const;
 
 /** The longest message a reason may carry across, as the HTTP client bounds a host's. */
@@ -197,6 +198,7 @@ export function fromPortError(raw: unknown, operation: string): Error {
       return new ExecutionStartWorksInError(
         code as ExecutionStartWorksInErrorCode,
         reason,
+        { status: status(), workingThere: strings("workingThere") ?? [] },
       );
     case "ExecutionInlineAttachmentsError":
       if (code === null) break;

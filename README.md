@@ -1076,26 +1076,33 @@ advertising `start.worksIn.v1`, in `config.worksIn` (`EXECUTION_WORKS_IN`):
 - `auto`, the default and the same as leaving it out: the checkout when no
   session is working in it, else a worktree of its own from the checkout's
   HEAD.
-- `checkout`: the checkout, whoever else is working in it. The host starts it
-  there all the same, and says who.
+- `checkout`: the checkout, only while nobody else is working in it. A host
+  never puts two sessions to work in one checkout: while another works there
+  it refuses the start with a 409 coded `checkout-taken`, naming who
+  (`ExecutionCheckoutTakenRefusal`, `workingThere`), and starts nothing. It
+  judges and claims the checkout at once, so of two such starts at once one
+  is refused. The same start with `auto` or `worktree` gets a worktree.
 - `worktree`: a worktree of its own, always.
 
 A session is **working in** a checkout while a turn of its runs, a task of
-its runs, or something is queued for it, and nobody settled it. One that
-finished, failed or was settled leaves the checkout to the next start.
+its runs, or something is queued for it, and nobody settled it since its last
+turn began. One that finished, failed or was settled leaves the checkout to
+the next start. Its snapshot and the list say `settled: true` while it is
+settled, in the host's own word: a new turn ends that, whatever the person's
+own mark of it says.
 
 The host's 201 says where it works, as `worksIn`
 (`ExecutionWorksInEcho`): `place` (`checkout` or `worktree`), the checkout's
 top as `checkoutRoot`, and `workingThere`, the ids of the sessions working in
-it as it started (at most 32). With `checkout`, those it shares the checkout
-with; with a worktree `auto` chose, those that made it take one. A host says
+it as it started (at most 32): with a worktree `auto` chose, those that made
+it take one. In the checkout, there are none. A host says
 nothing for a start that isn't in a checkout.
 
 ```json
 {
   "sessionId": "session-1",
   "worksIn": {
-    "place": "checkout",
+    "place": "worktree",
     "checkoutRoot": "/Users/person/code/shop",
     "workingThere": ["session-0"]
   }

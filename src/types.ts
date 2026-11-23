@@ -173,8 +173,11 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * The host takes a start's `config.worksIn` (MAR-5673): a start in a
    * person's own checkout works in it, or in a worktree of its own, as it
    * says (`ExecutionWorksIn`), and its 201 says where (`worksIn`,
-   * `ExecutionWorksInEcho`). A host without it decides by itself, so the
-   * shared client sends it no `checkout` or `worktree` there.
+   * `ExecutionWorksInEcho`). It never puts two sessions to work in one
+   * checkout: a `checkout` start while another works there is a 409 coded
+   * `checkout-taken`. Its snapshots and list say which sessions are settled
+   * (`settled`). A host without it decides by itself, so the shared client
+   * sends it no `checkout` or `worktree` there.
    */
   "start.worksIn.v1",
   /**
@@ -1058,10 +1061,11 @@ export interface ExecutionStartConfig {
   sessionId: string;
   workingDirectory?: string;
   /**
-   * Where a start in a person's own checkout works (MAR-5673): in it, in a
-   * worktree of its own, or `auto`, as absent. Requires `start.worksIn.v1`
-   * for `checkout` and `worktree`; ignored by a host for a start that isn't
-   * in a checkout.
+   * Where a start in a person's own checkout works (MAR-5673): in it while
+   * nobody else works there (else refused, `checkout-taken`), in a worktree
+   * of its own, or `auto`, as absent. Requires `start.worksIn.v1` for
+   * `checkout` and `worktree`; ignored by a host for a start that isn't in a
+   * checkout.
    */
   worksIn?: ExecutionWorksIn;
   initialMessage: string;
