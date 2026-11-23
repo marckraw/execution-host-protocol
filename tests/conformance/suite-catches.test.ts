@@ -388,7 +388,9 @@ describe("the conformance suite", () => {
     const CANCEL =
       "cancels a pending MCP sign-in, and says how one that ended first ended";
     const FINISH =
-      "finishes an MCP sign-in from its callback URL, and never quotes one it refuses";
+      "finishes an MCP sign-in from its callback URL, refusing one not its own and keeping the sign-in pending";
+    const EXPIRE =
+      "fails an MCP sign-in whose time runs out, and starts a fresh one after it";
     const TYPE_ERRORS =
       "refuses an MCP call the protocol would refuse as a TypeError";
 
@@ -489,6 +491,69 @@ describe("the conformance suite", () => {
       }));
       expect(String(error)).toMatch(/quotes its code/);
       expect(String(error)).not.toMatch(/conformance-secret-code/);
+    });
+
+    it("fails a host that lets a stray callback end the sign-in", async () => {
+      for (const ending of ["failed", "cancelled"] as const) {
+        const error = await runCase(FINISH, (api) => ({
+          ...api,
+          mcpFinishSignIn: async (provider, server, callbackUrl, options) => {
+            const pending = await api.mcpSignInState(provider, server).then(
+              (status) => status.state === "pending",
+              () => false,
+            );
+            if (!pending || !callbackUrl.includes("conformance-stray")) {
+              return api.mcpFinishSignIn(
+                provider,
+                server,
+                callbackUrl,
+                options,
+              );
+            }
+            await api.mcpCancelSignIn(provider, server);
+            return { state: ending };
+          },
+        }));
+        expect(String(error), ending).toMatch(
+          /finishing with a callback that is not the sign-in's resolved/,
+        );
+      }
+    });
+
+    it("fails a host that refuses a stray callback but drops the sign-in", async () => {
+      const error = await runCase(FINISH, (api) => ({
+        ...api,
+        mcpFinishSignIn: (provider, server, callbackUrl, options) =>
+          api
+            .mcpFinishSignIn(provider, server, callbackUrl, options)
+            .catch(async (refusal: unknown) => {
+              // Refused, as it should be, but the sign-in went with it.
+              await api.mcpCancelSignIn(provider, server).catch(() => {});
+              throw refusal;
+            }),
+      }));
+      expect(String(error)).toMatch(/not its own, not pending/);
+    });
+
+    it("fails a host whose sign-ins never run out", async () => {
+      const model = new FakeHostModel();
+      const found = executionHostConformanceCases.find(
+        (entry) => entry.name === EXPIRE,
+      )!;
+      const error = await found
+        .run(
+          {
+            api: fakeApi(model),
+            ...modelHooks(model),
+            mcp: { ...modelHooks(model).mcp!, expireSignIn: () => {} },
+          },
+          { waitMs: 500 },
+        )
+        .then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(String(error)).toMatch(/ran out is pending, not failed/);
     });
 
     it("fails a host that takes a callback URL of another scheme", async () => {

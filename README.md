@@ -1154,8 +1154,12 @@ sign-in as its owner, the other carries the authorization code. Open the one
 and pass the other; never log, record or store either. A server travels in
 a body or the query and a callback URL in a body only, never a path, and no
 error the client throws quotes either: its reasons are its own words, never
-the host's. A sign-in URL is `https:` or `http:` and nothing else, so a client
-can open it as it is.
+the host's. Over a port too: an MCP call's error is made there exactly as the
+HTTP client makes it — its code held to its status, its operation, provider
+and server what the caller asked — and a host's `TypeError`, failure or
+`ExecutionHostError` arrives with its class and kind but none of its words.
+Both carriers check what a call names before sending anything. A sign-in URL
+is `https:` or `http:` and nothing else, so a client can open it as it is.
 
 **Refusals** are an `ExecutionMcpError` (`/client`) with a `code`, honoured
 only with its status (`EXECUTION_MCP_REFUSAL_STATUSES`):
@@ -2288,9 +2292,11 @@ suite this; one that does not leaves it out, and the `since` cases use live
 turns alone. `mcp` is for a host that manages MCP connections: a
 `provider`, a `server` it lists as `needs-sign-in`, `completeSignIn()`, which
 does what the owner's browser coming back does, and optionally
-`callbackUrl(signIn)`, the URL that browser lands on. The suite signs in,
-asks again, cancels, finishes, signs out, and checks that no refusal quotes a
-callback URL. A host that manages none leaves it out, and is held to refusing
+`callbackUrl(signIn)`, the URL that browser lands on, and `expireSignIn()`,
+which runs the pending sign-in out of time now. The suite signs in, asks
+again, cancels, finishes, lets a sign-in expire and starts a fresh one, and
+signs out. A callback that is not the sign-in's must be refused `rejected`,
+without quoting it, and leave the sign-in pending for the real one. A host that manages none leaves it out, and is held to refusing
 every MCP call `unavailable-on-host` (or `unsupported`). Every host carries
 `mcp.needs-sign-in` to a follower as it was sent, and refuses a bad MCP call
 as a `TypeError`. `executionHostConformanceCases` are the same cases

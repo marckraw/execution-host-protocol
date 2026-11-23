@@ -3,15 +3,13 @@ import {
   hostTakesSelections,
 } from "./selections.js";
 import { isExecutionInstructions } from "../instructions.js";
+import { encodeExecutionMcpServerRequest } from "../mcp.js";
 import {
-  checkExecutionMcpServerName,
-  encodeExecutionMcpServerRequest,
-  type ExecutionMcpProvider,
-} from "../mcp.js";
-import {
-  checkMcpProvider,
+  checkMcpCallbackUrl,
   MCP_ANSWER_MAX_BYTES,
   MCP_REFUSAL_MAX_BYTES,
+  mcpAsked,
+  mcpProviderAsked,
   mcpRefusal,
   readMcpServerList,
   readMcpSignIn,
@@ -730,17 +728,6 @@ export function createExecutionHostClient(
         return read(response.status, await answer.atMost(MCP_ANSWER_MAX_BYTES));
       },
     );
-  };
-
-  /** Checks a call's provider and server, and says what it is about. */
-  const mcpAsked = (
-    operation: string,
-    provider: ExecutionMcpProvider,
-    server: string | null,
-  ): McpAsked => {
-    checkMcpProvider(provider);
-    if (server !== null) checkExecutionMcpServerName(server);
-    return { operation, provider, server };
   };
 
   const health = (requestOptions: ExecutionRequestOptions = {}) =>
@@ -1567,7 +1554,7 @@ export function createExecutionHostClient(
     },
 
     mcpServers: async (provider, requestOptions = {}) => {
-      const asked = mcpAsked("mcp servers", provider, null);
+      const asked = mcpProviderAsked("mcp servers", provider);
       return mcpRequest(
         asked,
         "/servers",
@@ -1606,6 +1593,7 @@ export function createExecutionHostClient(
       requestOptions = {},
     ) => {
       const asked = mcpAsked("mcp finish sign in", provider, server);
+      checkMcpCallbackUrl(callbackUrl);
       return mcpRequest(
         asked,
         "/sign-in/finish",

@@ -1,7 +1,5 @@
 import {
-  checkExecutionMcpServerName,
   decodeExecutionMcpServerRequest,
-  encodeExecutionMcpServerRequest,
   isExecutionMcpProvider,
   type ExecutionMcpProvider,
 } from "../../src/index.js";
@@ -29,7 +27,12 @@ import {
   type ExecutionStreamFrame,
 } from "../../src/client/index.js";
 import { followExecutionSession } from "../../src/client/follow.js";
-import { checkMcpProvider } from "../../src/client/mcp.js";
+import {
+  checkMcpCallbackUrl,
+  mcpAsked,
+  mcpError,
+  mcpProviderAsked,
+} from "../../src/client/mcp.js";
 import { FakeMcp, FakeMcpRefusal, type FakeMcpProfile } from "./fake-mcp.js";
 import type { ExecutionHostConformanceHost } from "../../src/testing/index.js";
 import { PROVIDERS_BODY } from "../client/stub-host.js";
@@ -457,10 +460,17 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
       return { ...model.usagePage(query), warnings: [] };
     },
     mcpServers: (provider, options) =>
-      mcpCall(model, "mcp servers", provider, null, options?.signal, () => ({
-        servers: model.mcp.list(provider),
-        warnings: [],
-      })),
+      mcpCall(
+        model,
+        "mcp servers",
+        provider,
+        NO_SERVER,
+        options?.signal,
+        () => ({
+          servers: model.mcp.list(provider),
+          warnings: [],
+        }),
+      ),
     mcpSignIn: (provider, server, options) =>
       mcpCall(model, "mcp sign in", provider, server, options?.signal, () =>
         model.mcp.signIn(provider, server),
@@ -475,8 +485,8 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
         () => model.mcp.state(provider, server),
       ),
     mcpFinishSignIn: async (provider, server, callbackUrl, options) => {
-      // Refused as the HTTP client refuses it, before anything else.
-      encodeExecutionMcpServerRequest({ server, callbackUrl });
+      // Refused as every carrier refuses it, before anything else.
+      checkMcpCallbackUrl(callbackUrl);
       return mcpCall(
         model,
         "mcp finish sign in",
@@ -507,32 +517,28 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
  * refuses what the protocol would as a `TypeError` first, then answers, or
  * throws the host's refusal as an `ExecutionMcpError`.
  */
+/** Says an MCP call names no server: `mcpServers`. */
+const NO_SERVER = Symbol("no server");
+
 async function mcpCall<T>(
   model: FakeHostModel,
   operation: string,
   provider: ExecutionMcpProvider,
-  server: string | null,
+  server: unknown,
   signal: AbortSignal | undefined,
   run: () => T,
 ): Promise<T> {
   aborted(signal);
-  checkMcpProvider(provider);
-  if (server !== null) checkExecutionMcpServerName(server);
-  const details = { operation, provider, server };
-  if (model.mcp.profile === "absent") {
-    throw new ExecutionMcpError("unsupported", "no MCP connections here", {
-      ...details,
-      status: 404,
-    });
-  }
+  const asked =
+    server === NO_SERVER
+      ? mcpProviderAsked(operation, provider)
+      : mcpAsked(operation, provider, server);
+  if (model.mcp.profile === "absent") throw mcpError("unsupported", 404, asked);
   try {
     return run();
   } catch (error) {
     if (!(error instanceof FakeMcpRefusal)) throw error;
-    throw new ExecutionMcpError(error.code, `refused: ${error.code}`, {
-      ...details,
-      status: error.status,
-    });
+    throw mcpError(error.code, error.status, asked);
   }
 }
 
@@ -796,6 +802,7 @@ export function modelHooks(
             server: "atlassian",
             completeSignIn: () => model.mcp.complete("claude", "atlassian"),
             callbackUrl: (signIn) => model.mcp.callbackUrl(signIn),
+            expireSignIn: () => model.mcp.expire("claude", "atlassian"),
           },
         }
       : {}),

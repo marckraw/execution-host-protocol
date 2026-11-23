@@ -25,6 +25,8 @@ export class FakeMcpRefusal extends Error {
 }
 
 interface FakeSignIn {
+  /** When it expires: `signIn.expiresAt`, until `expire` brings it forward. */
+  deadline: number;
   nonce: string;
   signIn: ExecutionMcpSignIn;
   status: ExecutionMcpSignInStatus;
@@ -108,6 +110,7 @@ export class FakeMcp {
       expiresAt: new Date(Date.now() + this.expiresInMs).toISOString(),
     };
     this.signIns.set(key(provider, name), {
+      deadline: Date.parse(signIn.expiresAt),
       nonce,
       signIn,
       status: { state: "pending" },
@@ -162,6 +165,15 @@ export class FakeMcp {
     this.connect(provider, name, record);
   }
 
+  /** Makes the pending sign-in's time run out now, as `expiresAt` passing does. */
+  expire(provider: ExecutionMcpProvider, name: string): void {
+    const record = this.signIns.get(key(provider, name));
+    if (record?.status.state !== "pending") {
+      throw new Error(`no pending sign-in for ${name}`);
+    }
+    record.deadline = 0;
+  }
+
   /** The URL the provider's page sends the browser to, for this sign-in. */
   callbackUrl(signIn: ExecutionMcpSignIn): string {
     const nonce = new URL(signIn.signInUrl).searchParams.get("state");
@@ -214,10 +226,7 @@ export class FakeMcp {
     name: string,
   ): FakeSignIn | undefined {
     const record = this.signIns.get(key(provider, name));
-    if (
-      record?.status.state === "pending" &&
-      Date.now() >= Date.parse(record.signIn.expiresAt)
-    ) {
+    if (record?.status.state === "pending" && Date.now() >= record.deadline) {
       record.status = { state: "failed", reason: "The sign-in expired" };
     }
     return record;
