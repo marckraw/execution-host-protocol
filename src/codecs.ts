@@ -605,6 +605,8 @@ const SESSION_PATCH_REFUSAL_WORDS: Record<
   "turn-running": "A turn is running; the mode can change once it ends",
   "unsupported-on-host": "This host cannot change this session's mode",
   "unsupported-for-provider": "The session's provider does not offer this mode",
+  "checkout-taken":
+    "Another session works in its checkout; take the settle back once that work is done",
 };
 
 function decodeEvent(raw: unknown): KindAwareResult<ExecutionHostEvent> {

@@ -1233,7 +1233,9 @@ export interface ExecutionSessionPatchRequest {
    * The person settled the session (true), or took that back (false), on a
    * host advertising `sessions.settled.v1` (MAR-5673). A settled session
    * works in no checkout, whatever it still runs, until a turn of its starts
-   * again. It changes nothing else: the session still takes messages. Idempotent:
+   * again. Taking it back for a session with work running or queued, while
+   * another session works in its checkout, is refused with a 409 coded
+   * `checkout-taken`, changing nothing. It changes nothing else: the session still takes messages. Idempotent:
    * settling a settled session, or taking back a settle that isn't there,
    * changes nothing and answers the same.
    */
@@ -1293,11 +1295,16 @@ export type ExecutionSessionPatchAppliesFrom =
  *   what the policy asks of it: a preset, mode, policy, sandbox, reviewer or
  *   collaboration mode its listing's `permissions` leave out. Only the part
  *   for the session's own provider is checked.
+ * - `checkout-taken` (409, MAR-5673): taking back the settle (`settled:
+ *   false`) of a session with work running or queued would put it beside
+ *   another session working in its checkout. Nothing changed; it may be sent
+ *   again once that work is done.
  */
 export const EXECUTION_SESSION_PATCH_REFUSAL_CODES = [
   "turn-running",
   "unsupported-on-host",
   "unsupported-for-provider",
+  "checkout-taken",
 ] as const;
 export type ExecutionSessionPatchRefusalCode =
   (typeof EXECUTION_SESSION_PATCH_REFUSAL_CODES)[number];
@@ -1307,6 +1314,7 @@ export const EXECUTION_SESSION_PATCH_REFUSAL_STATUS = {
   "turn-running": 409,
   "unsupported-on-host": 400,
   "unsupported-for-provider": 400,
+  "checkout-taken": 409,
 } as const satisfies Record<ExecutionSessionPatchRefusalCode, number>;
 
 /**

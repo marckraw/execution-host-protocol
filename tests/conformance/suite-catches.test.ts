@@ -144,6 +144,27 @@ describe("the conformance suite", () => {
     }
   });
 
+  it("fails a host that takes back a settle beside a session at work in its checkout (review r2)", async () => {
+    const model = new FakeHostModel();
+    const error = await runCase(
+      "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      (api) => ({
+        ...api,
+        patchSession: async (sessionId, patch, options) => {
+          // Taken back whoever works there: what the host must never do.
+          const session = model.sessions.get(sessionId);
+          if (patch.settled === false && session) {
+            session.settled = false;
+            return { status: "patched", sessionId, settled: false };
+          }
+          return api.patchSession(sessionId, patch, options);
+        },
+      }),
+      model,
+    );
+    expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+  });
+
   it("passes a host that places no starts in checkouts, skipping those cases", async () => {
     for (const entry of executionHostConformanceCases) {
       expect(

@@ -21,6 +21,7 @@ import {
 import {
   ExecutionHostError,
   ExecutionMcpError,
+  ExecutionSessionPatchError,
   ExecutionStartWorksInError,
   ExecutionTaskOutputError,
   type ExecutionHostApi,
@@ -138,6 +139,24 @@ export class FakeHostModel {
       place,
       workingThere: place === "checkout" ? [] : workingThere,
     };
+  }
+
+  /**
+   * Whether taking back `session`'s settle would put it beside another
+   * session at work in the checkout (MAR-5673's review r2): its own work
+   * runs, and another's does there.
+   */
+  unsettleTaken(session: FakeSession): boolean {
+    if (!session.settled || !session.working || session.place !== "checkout") {
+      return false;
+    }
+    return [...this.sessions.values()].some(
+      (one) =>
+        one !== session &&
+        one.place === "checkout" &&
+        one.working &&
+        !one.settled,
+    );
   }
 
   /** Holds the turns of sessions started from now on, until the release it gives. */
@@ -503,6 +522,12 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
       checkPatch(patch);
       const session = model.sessions.get(sessionId);
       if (!session) return { status: "no-session", sessionId };
+      if (patch.settled === false && model.unsettleTaken(session)) {
+        throw new ExecutionSessionPatchError("checkout-taken", "taken", {
+          sessionId,
+          status: 409,
+        });
+      }
       if (patch.title !== undefined) session.title = patch.title;
       if (patch.settled !== undefined) session.settled = patch.settled;
       return {
@@ -839,6 +864,15 @@ export function fakeFetch(
     if (method === "PATCH") {
       const decoded = decodeExecutionSessionPatchRequest(String(init?.body));
       if (!decoded.ok) return json({ error: "Invalid session patch" }, 400);
+      if (decoded.value.settled === false && model.unsettleTaken(session)) {
+        return json(
+          {
+            error: "Another session works in its checkout",
+            code: "checkout-taken",
+          },
+          409,
+        );
+      }
       if (decoded.value.title !== undefined)
         session.title = decoded.value.title;
       if (decoded.value.settled !== undefined)

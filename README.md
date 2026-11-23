@@ -1127,7 +1127,10 @@ advertising `sessions.settled.v1`. A settled session works in no checkout,
 whatever it still runs, until a turn of its starts again; nothing else
 changes, and it still takes messages. The answer echoes `settled`. It is
 idempotent: settling a settled session, or taking back a settle that isn't
-there, changes nothing and answers the same. A host
+there, changes nothing and answers the same. Taking back the settle of a session with
+work running or queued, while another session works in its checkout, is
+refused with a 409 coded `checkout-taken` (`ExecutionSessionPatchError`),
+changing nothing: it would put two agents in one checkout. A host
 without the capability refuses the field as an unknown one, so the client
 refuses the patch unsent there, with an `ExecutionSessionPatchError` coded
 `unsupported-on-host` (`hostTakesSettled`).
@@ -2374,7 +2377,9 @@ starts running until the release it gives back. The suite starts in the free
 checkout and in a worktree, and reads their echoes; is refused the checkout
 beside a session at work (`checkout-taken`, naming it) while `auto` gets a
 worktree; and settles a session twice, reads `settled` in its snapshot and
-the list, starts in the checkout it freed, and takes the settle back twice. A
+the list, starts in the checkout it freed, is refused taking the settle back
+beside that start (`checkout-taken`), and takes it back twice once their work
+is done. A
 host that advertises `start.worksIn.v1` must give it, and fails those cases
 without it; only a host that places none leaves it out, and skips them.
 `executionHostConformanceCases` are the same cases

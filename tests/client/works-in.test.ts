@@ -387,6 +387,24 @@ describe("settling a session (MAR-5673)", () => {
     ]);
   });
 
+  it("throws a take-back beside a session at work as checkout-taken, nothing changed (review r2)", async () => {
+    advertising("sessions.settled.v1");
+    host.patchStatus = 409;
+    host.patchRefusal = {
+      error: "session-2 works in its checkout",
+      code: "checkout-taken",
+    };
+    const refusal = await client()
+      .patchSession("session-1", { settled: false })
+      .catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ExecutionSessionPatchError);
+    expect(refusal).toMatchObject({
+      code: "checkout-taken",
+      status: 409,
+      sessionId: "session-1",
+    });
+  });
+
   it("asks both capabilities of a patch naming a mode and settled", async () => {
     advertising("sessions.settled.v1");
     await expect(
