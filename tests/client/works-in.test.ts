@@ -248,6 +248,37 @@ describe("starting with worksIn (MAR-5673)", () => {
     });
   });
 
+  it("reads a checkout start's 409 that confirms what it requires as the session that exists (review)", async () => {
+    advertising("start.worksIn.v1", "start.requires.v1");
+    host.sessions.add(sessionId);
+    host.existingRequires = ["linux"];
+    expect(
+      await client().start({ ...placed("checkout"), requires: ["linux"] }),
+    ).toEqual({ status: "exists", sessionId, commandId: expect.any(String) });
+    // And one that doesn't confirm it is refused as ever.
+    host.existingRequires = [];
+    await expect(
+      client().start({ ...placed("checkout"), requires: ["linux"] }),
+    ).rejects.toMatchObject({ code: "requirements-unconfirmed" });
+  });
+
+  it("reads a checkout-taken refusal whose fields don't read as malformed, never as the session that exists (review)", async () => {
+    advertising("start.worksIn.v1");
+    host.startStatus = 409;
+    for (const refusal of [
+      { code: "checkout-taken", error: "taken", workingThere: [] },
+      { code: "checkout-taken", error: 7, workingThere: ["session-2"] },
+      { code: "checkout-taken", error: "taken" },
+    ]) {
+      host.startRefusal = refusal;
+      await expect(client().start(placed("checkout"))).rejects.toMatchObject({
+        kind: "malformed",
+        operation: "start",
+        status: 409,
+      });
+    }
+  });
+
   it("reads a checkout-taken refusal, and nothing that isn't one", () => {
     const refusal = {
       error: "taken",

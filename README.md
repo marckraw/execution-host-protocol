@@ -1125,7 +1125,9 @@ in `warnings` (`worksIn`): the session runs either way.
 `{ "settled": true }`, and taking it back as `{ "settled": false }`, on a host
 advertising `sessions.settled.v1`. A settled session works in no checkout,
 whatever it still runs, until a turn of its starts again; nothing else
-changes, and it still takes messages. The answer echoes `settled`. A host
+changes, and it still takes messages. The answer echoes `settled`. It is
+idempotent: settling a settled session, or taking back a settle that isn't
+there, changes nothing and answers the same. A host
 without the capability refuses the field as an unknown one, so the client
 refuses the patch unsent there, with an `ExecutionSessionPatchError` coded
 `unsupported-on-host` (`hostTakesSettled`).
@@ -2273,7 +2275,16 @@ usage leaves it out, and is held instead to refusing `listTurnUsage` as
 that ended long ago, now: a record listed out of the order turns ended is
 what shows a cursor that lost its `since`, so a host that backfills gives the
 suite this; one that does not leaves it out, and the `since` cases use live
-turns alone. `executionHostConformanceCases` are the same cases
+turns alone. `checkouts` is for a host that places starts in a person's
+checkout (`start.worksIn.v1`, MAR-5673): a checkout's `workingDirectory`
+nobody works in, and `holdTurns()`, which keeps the turns of the sessions it
+starts running until the release it gives back. The suite starts in the free
+checkout and in a worktree, and reads their echoes; is refused the checkout
+beside a session at work (`checkout-taken`, naming it) while `auto` gets a
+worktree; and settles a session twice, reads `settled` in its snapshot and
+the list, starts in the checkout it freed, and takes the settle back twice. A
+host that places none leaves it out, and skips those cases.
+`executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind
 the HTTP client with a fake `fetch`.

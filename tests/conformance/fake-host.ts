@@ -15,6 +15,7 @@ import {
 } from "../../src/index.js";
 import {
   ExecutionHostError,
+  ExecutionStartWorksInError,
   ExecutionTaskOutputError,
   type ExecutionHostApi,
   type ExecutionSessionSummary,
@@ -39,7 +40,22 @@ export interface FakeSession {
   attachments: Map<string, Uint8Array>;
   turns: ExecutionTurn[];
   createdAt: string;
+  /** Where it works in the person's checkout (MAR-5673), when it was placed in one. */
+  place: "checkout" | "worktree" | null;
+  /** Its turn runs: held by the suite's `holdTurns`. */
+  working: boolean;
+  /** The person settled it, and no turn has begun since. */
+  settled: boolean;
 }
+
+/** The folder the model's starts may work in, as a person's checkout (MAR-5673). */
+export const FAKE_CHECKOUT = "/Users/person/code/backpack";
+
+/** A start's place in the checkout, or the refusal of one someone works in. */
+export type FakePlacement =
+  | { kind: "placed"; place: "checkout" | "worktree"; workingThere: string[] }
+  | { kind: "taken"; workingThere: string[] }
+  | { kind: "none" };
 
 export interface FakeHostOptions {
   /**
@@ -49,6 +65,8 @@ export interface FakeHostOptions {
   recordsUsage?: boolean;
   /** Whether it backfills, and so gives the suite `backfillTurnUsage`. */
   backfillsUsage?: boolean;
+  /** Whether it places starts in a person's checkout (`start.worksIn.v1`); on by default. */
+  checkouts?: boolean;
 }
 
 export class FakeHostModel {
@@ -61,15 +79,64 @@ export class FakeHostModel {
   readonly watchers = new Set<
     (sessionId: string, envelope: ExecutionHostEventEnvelope | null) => void
   >();
+  readonly checkouts: boolean;
+  /** Whether the turns of sessions started now are held running (`holdTurns`). */
+  private holding = false;
   private created = 0;
   private turnsEnded = 0;
 
   constructor(options: FakeHostOptions = {}) {
+    this.checkouts = options.checkouts ?? true;
     this.recordsUsage = options.recordsUsage ?? true;
     this.backfillsUsage = this.recordsUsage && (options.backfillsUsage ?? true);
   }
 
-  start(sessionId: string, providerId: string): "started" | "exists" {
+  /**
+   * Where a start in the checkout works (MAR-5673), as agents-daemon decides:
+   * `auto` in it while nobody works there, else a worktree; `checkout` only
+   * while nobody does, else refused; `worktree` always.
+   */
+  placement(request: {
+    workingDirectory?: string;
+    worksIn?: "auto" | "checkout" | "worktree";
+  }): FakePlacement {
+    if (!this.checkouts || request.workingDirectory !== FAKE_CHECKOUT) {
+      return { kind: "none" };
+    }
+    const workingThere = [...this.sessions.values()]
+      .filter((one) => one.place === "checkout" && one.working && !one.settled)
+      .map((one) => one.sessionId);
+    const asked = request.worksIn ?? "auto";
+    if (asked === "checkout" && workingThere.length > 0) {
+      return { kind: "taken", workingThere };
+    }
+    const place =
+      asked === "auto"
+        ? workingThere.length > 0
+          ? "worktree"
+          : "checkout"
+        : asked;
+    return {
+      kind: "placed",
+      place,
+      workingThere: place === "checkout" ? [] : workingThere,
+    };
+  }
+
+  /** Holds the turns of sessions started from now on, until the release it gives. */
+  holdTurns(): () => void {
+    this.holding = true;
+    return () => {
+      this.holding = false;
+      for (const session of this.sessions.values()) session.working = false;
+    };
+  }
+
+  start(
+    sessionId: string,
+    providerId: string,
+    place: "checkout" | "worktree" | null = null,
+  ): "started" | "exists" {
     if (this.sessions.has(sessionId)) return "exists";
     this.created += 1;
     this.sessions.set(sessionId, {
@@ -82,6 +149,9 @@ export class FakeHostModel {
       createdAt: new Date(
         Date.UTC(2026, 9, 29, 0, 0, this.created),
       ).toISOString(),
+      place,
+      working: this.holding,
+      settled: false,
     });
     // As a host does, the start is on the log before anything else.
     this.emit(sessionId, [{ kind: "status", status: "running" }]);
@@ -231,6 +301,7 @@ export class FakeHostModel {
       workspace: null,
       prUrl: null,
       roomId: null,
+      ...(session.settled ? { settled: true as const } : {}),
       createdAt: session.createdAt,
       updatedAt: session.createdAt,
       deletedAt: null,
@@ -270,6 +341,7 @@ export class FakeHostModel {
       workspace: null,
       prUrl: null,
       roomId: null,
+      ...(session.settled ? { settled: true as const } : {}),
     };
   }
 
@@ -361,9 +433,37 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
       aborted(options?.signal);
       const commandId = request.commandId ?? "minted";
       const sessionId = request.config.sessionId;
-      const status = model.start(sessionId, request.providerId);
+      const placement = model.sessions.has(sessionId)
+        ? ({ kind: "none" } as const)
+        : model.placement(request.config);
+      if (placement.kind === "taken") {
+        throw new ExecutionStartWorksInError("checkout-taken", "taken", {
+          status: 409,
+          workingThere: placement.workingThere,
+        });
+      }
+      const status = model.start(
+        sessionId,
+        request.providerId,
+        placement.kind === "placed" ? placement.place : null,
+      );
       return status === "started"
-        ? { status, sessionId, commandId, workspace: null }
+        ? {
+            status,
+            sessionId,
+            commandId,
+            workspace: null,
+            ...(placement.kind === "placed" &&
+            request.config.worksIn !== undefined
+              ? {
+                  worksIn: {
+                    place: placement.place,
+                    checkoutRoot: FAKE_CHECKOUT,
+                    workingThere: placement.workingThere,
+                  },
+                }
+              : {}),
+          }
         : { status, sessionId, commandId };
     },
     command: async (sessionId, _command, options) => {
@@ -387,10 +487,12 @@ export function fakeApi(model: FakeHostModel): ExecutionHostApi {
       const session = model.sessions.get(sessionId);
       if (!session) return { status: "no-session", sessionId };
       if (patch.title !== undefined) session.title = patch.title;
+      if (patch.settled !== undefined) session.settled = patch.settled;
       return {
         status: "patched",
         sessionId,
         ...(patch.title === undefined ? {} : { title: session.title }),
+        ...(patch.settled === undefined ? {} : { settled: session.settled }),
       };
     },
     followSession: (sessionId, options) =>
@@ -477,6 +579,19 @@ export function fakeFetch(
     const signal = init?.signal ?? undefined;
     if (signal?.aborted) throw signal.reason;
     const headers = new Headers(init?.headers);
+    // Public, as the daemon's: what it can do (MAR-5673's probes read it).
+    if (url.pathname === "/health") {
+      return json({
+        status: "ok",
+        apiVersion: "v0",
+        executionProtocol: {
+          version: EXECUTION_PROTOCOL_VERSION,
+          capabilities: model.checkouts
+            ? ["start.worksIn.v1", "sessions.settled.v1"]
+            : [],
+        },
+      });
+    }
     if (headers.get("Authorization") !== `Bearer ${token}`) {
       return json({ error: "Unauthorized" }, 401);
     }
@@ -499,11 +614,41 @@ export function fakeFetch(
         const decoded = decodeExecutionStartRequest(String(init?.body));
         if (!decoded.ok) return json({ error: "Invalid start request" }, 400);
         const { sessionId } = decoded.value.config;
-        const status = model.start(sessionId, decoded.value.providerId);
+        const placement = model.sessions.has(sessionId)
+          ? ({ kind: "none" } as const)
+          : model.placement(decoded.value.config);
+        if (placement.kind === "taken") {
+          return json(
+            {
+              error: `${placement.workingThere.join(", ")} is working in ${FAKE_CHECKOUT}`,
+              code: "checkout-taken",
+              workingThere: placement.workingThere,
+            },
+            409,
+          );
+        }
+        const status = model.start(
+          sessionId,
+          decoded.value.providerId,
+          placement.kind === "placed" ? placement.place : null,
+        );
         return status === "exists"
           ? json({ error: `Session already exists: ${sessionId}` }, 409)
           : json(
-              { protocolVersion: EXECUTION_PROTOCOL_VERSION, sessionId },
+              {
+                protocolVersion: EXECUTION_PROTOCOL_VERSION,
+                sessionId,
+                ...(placement.kind === "placed" &&
+                decoded.value.config.worksIn !== undefined
+                  ? {
+                      worksIn: {
+                        place: placement.place,
+                        checkoutRoot: FAKE_CHECKOUT,
+                        workingThere: placement.workingThere,
+                      },
+                    }
+                  : {}),
+              },
               201,
             );
       }
@@ -594,10 +739,15 @@ export function fakeFetch(
       if (!decoded.ok) return json({ error: "Invalid session patch" }, 400);
       if (decoded.value.title !== undefined)
         session.title = decoded.value.title;
+      if (decoded.value.settled !== undefined)
+        session.settled = decoded.value.settled;
       return json({
         protocolVersion: EXECUTION_PROTOCOL_VERSION,
         sessionId,
         ...(decoded.value.title === undefined ? {} : { title: session.title }),
+        ...(decoded.value.settled === undefined
+          ? {}
+          : { settled: session.settled }),
       });
     }
     if (method === "GET") return json(model.snapshot(sessionId));
@@ -624,6 +774,14 @@ export function modelHooks(
       ? {
           backfillTurnUsage: (usage: ExecutionTurnUsage, endedAt: string) =>
             model.backfillTurnUsage(usage, endedAt),
+        }
+      : {}),
+    ...(model.checkouts
+      ? {
+          checkouts: {
+            workingDirectory: FAKE_CHECKOUT,
+            holdTurns: () => model.holdTurns(),
+          },
         }
       : {}),
   };
