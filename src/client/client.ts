@@ -79,10 +79,15 @@ import {
   permissionModesRefusal,
   settledRefusal,
 } from "./session-patch.js";
-import { hostTakesWorksIn, worksInRefusal } from "./works-in.js";
+import {
+  ExecutionStartWorksInError,
+  hostTakesWorksIn,
+  worksInRefusal,
+} from "./works-in.js";
 import {
   type ExecutionWorksInEcho,
   isExecutionWorksIn,
+  readExecutionCheckoutTakenRefusal,
   readExecutionWorksInEcho,
 } from "../works-in.js";
 import {
@@ -379,7 +384,9 @@ export interface ExecutionHostClient extends ExecutionHostApi {
    * and is refused here, unsent, with an `ExecutionStartWorksInError` coded
    * `works-in-unsupported` when the host does not advertise
    * `start.worksIn.v1` (MAR-5673); `auto` goes to any host, as absent. A
-   * `worksIn` outside `EXECUTION_WORKS_IN` is a `TypeError`, unsent.
+   * `worksIn` outside `EXECUTION_WORKS_IN` is a `TypeError`, unsent. A
+   * `checkout` the host refused, another session working there, is the same
+   * error coded `checkout-taken`, with `workingThere` and status 409.
    */
   start(
     request: ExecutionStartRequest,
@@ -1070,6 +1077,29 @@ export function createExecutionHostClient(
             }
         > => {
           if (response.status === 409) {
+            // A `checkout` start another session's work refused (MAR-5673):
+            // nothing started, so it is no session that exists.
+            if (worksIn === "checkout") {
+              const text = await refusalText(response);
+              const taken = readExecutionCheckoutTakenRefusal(
+                parseOrNull(text),
+              );
+              if (taken !== null) {
+                throw new ExecutionStartWorksInError(
+                  "checkout-taken",
+                  boundedReason(taken.error, connection.scrub),
+                  { status: 409, workingThere: taken.workingThere },
+                );
+              }
+              if (requires.length === 0 && !reach) {
+                return { status: "exists", sessionId, commandId };
+              }
+              throw new ExecutionHostError(
+                "malformed",
+                "the host answered 409 to a start in a checkout, saying neither that the checkout is taken nor what the session it has was checked for",
+                { operation: "start", status: 409 },
+              );
+            }
             if (requires.length === 0 && !reach) {
               await response.body?.cancel().catch(() => {});
               return { status: "exists", sessionId, commandId };

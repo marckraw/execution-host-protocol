@@ -75,6 +75,8 @@ export interface ExecutionSessionSummary {
   workspace: ExecutionSessionWorkspace | null;
   prUrl: string | null;
   roomId: string | null;
+  /** The person settled it, and no turn has begun since (MAR-5673); absent: not. */
+  settled?: true;
   createdAt: string | null;
   updatedAt: string | null;
   /** When it was torn down; null for a session that was not. */
@@ -307,6 +309,7 @@ function readSummary(
       value === null || isHttpUrl(value) ? { ok: true, value } : { ok: false },
     ),
     roomId: field<string | null>("roomId", null, text),
+    ...(raw.settled === true ? { settled: true as const } : {}),
     createdAt: field<string | null>("createdAt", null, text),
     updatedAt: field<string | null>("updatedAt", null, text),
     deletedAt: field<string | null>("deletedAt", null, text),

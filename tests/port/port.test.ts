@@ -120,6 +120,10 @@ describe("errors over a port", () => {
       ),
       new ExecutionStartSelectionError("unknown-skill", "skills", 400),
       new ExecutionStartWorksInError("works-in-unsupported", "no worksIn"),
+      new ExecutionStartWorksInError("checkout-taken", "taken", {
+        status: 409,
+        workingThere: ["s-2"],
+      }),
       new ExecutionInlineAttachmentsError("too-many", "five is too many", {
         operation: "start",
         index: 4,

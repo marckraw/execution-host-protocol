@@ -3,19 +3,29 @@ import type { ExecutionHostHealth } from "./health.js";
 /**
  * `works-in-unsupported`: the host does not advertise `start.worksIn.v1`, or
  * its descriptor is unreadable, so it would decide by itself where a start
- * in a checkout works (MAR-5673). Nothing was sent.
+ * in a checkout works (MAR-5673). Nothing was sent. `checkout-taken`: the
+ * host refused a `checkout` start (409), another session working there,
+ * `workingThere`; nothing was started.
  */
-export type ExecutionStartWorksInErrorCode = "works-in-unsupported";
+export type ExecutionStartWorksInErrorCode =
+  "works-in-unsupported" | "checkout-taken";
 
-/** A start whose `config.worksIn` this host can't be trusted with, refused unsent. */
+/** A start's `config.worksIn` refused: unsent, or by the host. */
 export class ExecutionStartWorksInError extends Error {
   readonly operation = "start";
+  /** The host's status for its refusal; null when nothing was sent. */
+  readonly status: number | null;
+  /** Who works in the checkout, by id, for `checkout-taken`; else empty. */
+  readonly workingThere: string[];
   constructor(
     readonly code: ExecutionStartWorksInErrorCode,
     readonly reason: string,
+    details: { status?: number | null; workingThere?: string[] } = {},
   ) {
     super(`start failed: ${code}: ${reason}`);
     this.name = "ExecutionStartWorksInError";
+    this.status = details.status ?? null;
+    this.workingThere = [...(details.workingThere ?? [])];
   }
 }
 
