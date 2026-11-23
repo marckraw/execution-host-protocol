@@ -21,6 +21,8 @@ for (const loaded of [commonJs, esModule]) {
     "turn-running": 409,
     "unsupported-on-host": 400,
     "unsupported-for-provider": 400,
+    // A settle taken back beside a session at work (MAR-5673).
+    "checkout-taken": 409,
   });
   assert.equal(loaded.ExecutionSessionPatchError, undefined);
   assert.equal(typeof loaded.decodeExecutionHostProfile, "function");
