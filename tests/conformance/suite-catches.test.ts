@@ -55,6 +55,78 @@ describe("the conformance suite", () => {
     }
   });
 
+  it("fails a host that starts a session in a checkout another session works in (MAR-5673)", async () => {
+    const error = await runCase(
+      "refuses a checkout another session works in, naming it, and gives auto a worktree",
+      (api) => ({
+        ...api,
+        start: async (request, options) => {
+          try {
+            return await api.start(request, options);
+          } catch {
+            // Beside it all the same: what the host must never do.
+            return {
+              status: "started",
+              sessionId: request.config.sessionId,
+              commandId: request.commandId ?? "minted",
+              workspace: null,
+            };
+          }
+        },
+      }),
+    );
+    expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+  });
+
+  it("fails a host whose snapshot doesn't say a session is settled (MAR-5673)", async () => {
+    const error = await runCase(
+      "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      (api) => ({
+        ...api,
+        snapshot: async (sessionId, options) => {
+          const snapshot = await api.snapshot(sessionId, options);
+          if (snapshot === null) return null;
+          const { settled: _, ...rest } = snapshot;
+          return rest;
+        },
+      }),
+    );
+    expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+  });
+
+  it("fails a host whose second settle doesn't answer settled (MAR-5673)", async () => {
+    let calls = 0;
+    const error = await runCase(
+      "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      (api) => ({
+        ...api,
+        patchSession: async (sessionId, patch, options) => {
+          const answer = await api.patchSession(sessionId, patch, options);
+          calls += 1;
+          if (calls === 2 && answer.status === "patched") {
+            const { settled: _, ...rest } = answer;
+            return rest;
+          }
+          return answer;
+        },
+      }),
+    );
+    expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+  });
+
+  it("passes a host that places no starts in checkouts, skipping those cases", async () => {
+    for (const entry of executionHostConformanceCases) {
+      expect(
+        await runCase(
+          entry.name,
+          (api) => api,
+          new FakeHostModel({ checkouts: false }),
+        ),
+        entry.name,
+      ).toBeNull();
+    }
+  });
+
   it("fails a host that answers an unknown session's snapshot", async () => {
     const error = await runCase(
       "snapshots a session it has, and answers null for one it does not",

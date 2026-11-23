@@ -5,6 +5,7 @@ import type {
 } from "../client/follow.js";
 import { ExecutionHostError } from "../client/http.js";
 import { ExecutionMcpError } from "../client/mcp.js";
+import { ExecutionStartWorksInError } from "../client/works-in.js";
 import { ExecutionTaskOutputError } from "../client/task-output.js";
 import { isTimestamp } from "../guards.js";
 import {
@@ -29,6 +30,7 @@ import {
   type ExecutionHostEventEnvelope,
   type ExecutionStartRequest,
 } from "../types.js";
+import type { ExecutionWorksIn } from "../works-in.js";
 
 /**
  * A host under test, set up fresh for each case: the `ExecutionHostApi` to
@@ -85,8 +87,30 @@ export interface ExecutionHostConformanceHost {
    * `unavailable-on-host`, or `unsupported` as a host predating them does.
    */
   mcp?: ExecutionHostConformanceMcp;
+  /**
+   * Starts in a person's own checkout, on a host that places them
+   * (`start.worksIn.v1`, MAR-5673). Leave it out for a host that places
+   * none: the suite then skips the checkout cases.
+   */
+  checkouts?: ExecutionHostConformanceCheckouts;
   /** Runs after the case, whatever its outcome. */
   close?(): void | Promise<void>;
+}
+
+/** What the checkout cases need of a host that places starts in checkouts. */
+export interface ExecutionHostConformanceCheckouts {
+  /**
+   * The top of a git checkout a start may name as its `workingDirectory`,
+   * as the host's checkout root reads it, with no session working in it when
+   * the case starts. Each case gets one of its own.
+   */
+  workingDirectory: string;
+  /**
+   * Keeps the turn of every session the host starts from now on running, as
+   * its provider at work does, until the function it gives back is called:
+   * those sessions work in their checkout meanwhile.
+   */
+  holdTurns(): () => void | Promise<void>;
 }
 
 /** What the MCP cases need of a host that manages MCP connections. */
@@ -226,6 +250,29 @@ async function started(host: ExecutionHostConformanceHost): Promise<string> {
     `start answered ${result.status}, not started`,
   );
   return sessionId;
+}
+
+/** A start in the checkout cases' folder, asking for `worksIn`. */
+async function placedStart(
+  host: ExecutionHostConformanceHost,
+  checkouts: ExecutionHostConformanceCheckouts,
+  worksIn: ExecutionWorksIn,
+) {
+  const sessionId = freshSessionId();
+  const request = startRequest(
+    host.providerId,
+    sessionId,
+    `${sessionId}-start`,
+  );
+  const result = await host.api.start({
+    ...request,
+    config: {
+      ...request.config,
+      workingDirectory: checkouts.workingDirectory,
+      worksIn,
+    },
+  });
+  return { sessionId, result };
 }
 
 /** Events a case can tell apart from whatever the host logs on its own. */
@@ -1685,6 +1732,120 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
             event.server === "linear",
           "mcp.needs-sign-in arrived about another provider or server",
         );
+      },
+    },
+    {
+      name: "works a start in a free checkout there, and says so, or in a worktree of its own when asked",
+      async run(host) {
+        const checkouts = host.checkouts;
+        if (!checkouts) return;
+        const release = checkouts.holdTurns();
+        try {
+          const inIt = await placedStart(host, checkouts, "checkout");
+          check(
+            inIt.result.status === "started" &&
+              inIt.result.worksIn?.place === "checkout" &&
+              inIt.result.worksIn.workingThere.length === 0 &&
+              inIt.result.worksIn.checkoutRoot.length > 0,
+            `a checkout start in a free checkout answered ${describe(inIt.result)}, not started in the checkout beside nobody`,
+          );
+          const own = await placedStart(host, checkouts, "worktree");
+          check(
+            own.result.status === "started" &&
+              own.result.worksIn?.place === "worktree",
+            `a worktree start answered ${describe(own.result)}, not started in a worktree`,
+          );
+        } finally {
+          await release();
+        }
+      },
+    },
+    {
+      name: "refuses a checkout another session works in, naming it, and gives auto a worktree",
+      async run(host) {
+        const checkouts = host.checkouts;
+        if (!checkouts) return;
+        const release = checkouts.holdTurns();
+        try {
+          const first = await placedStart(host, checkouts, "checkout");
+          check(
+            first.result.status === "started",
+            "the first checkout start did not start",
+          );
+          const refused = await rejection(
+            placedStart(host, checkouts, "checkout"),
+            "a checkout start beside a session at work",
+          );
+          check(
+            refused instanceof ExecutionStartWorksInError &&
+              refused.code === "checkout-taken" &&
+              refused.status === 409 &&
+              refused.workingThere.includes(first.sessionId),
+            `a checkout start beside a session at work failed with ${describe(refused)}, not checkout-taken naming it`,
+          );
+          const auto = await placedStart(host, checkouts, "auto");
+          check(
+            auto.result.status === "started" &&
+              auto.result.worksIn?.place === "worktree" &&
+              auto.result.worksIn.workingThere.includes(first.sessionId),
+            `an auto start beside a session at work answered ${describe(auto.result)}, not a worktree naming it`,
+          );
+        } finally {
+          await release();
+        }
+      },
+    },
+    {
+      name: "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      async run(host) {
+        const checkouts = host.checkouts;
+        if (!checkouts) return;
+        const release = checkouts.holdTurns();
+        try {
+          const first = await placedStart(host, checkouts, "checkout");
+          for (const attempt of ["first", "again"]) {
+            const answer = await host.api.patchSession(first.sessionId, {
+              settled: true,
+            });
+            check(
+              answer.status === "patched" && answer.settled === true,
+              `settling it (${attempt}) answered ${describe(answer)}, not patched and settled`,
+            );
+          }
+          const snapshot = await host.api.snapshot(first.sessionId);
+          check(
+            snapshot?.settled === true,
+            "its snapshot does not say it is settled",
+          );
+          const listed = (await host.api.listSessions()).sessions.find(
+            (one) => one.sessionId === first.sessionId,
+          );
+          check(
+            listed?.settled === true,
+            "the list does not say it is settled",
+          );
+          const next = await placedStart(host, checkouts, "checkout");
+          check(
+            next.result.status === "started" &&
+              next.result.worksIn?.place === "checkout",
+            `a checkout start beside a settled session answered ${describe(next.result)}, not started in the checkout`,
+          );
+          for (const attempt of ["first", "again"]) {
+            const answer = await host.api.patchSession(first.sessionId, {
+              settled: false,
+            });
+            check(
+              answer.status === "patched" && answer.settled === false,
+              `taking the settle back (${attempt}) answered ${describe(answer)}, not patched and unsettled`,
+            );
+          }
+          check(
+            (await host.api.snapshot(first.sessionId))?.settled === undefined,
+            "its snapshot still says it is settled once that was taken back",
+          );
+        } finally {
+          await release();
+        }
       },
     },
     {

@@ -1233,7 +1233,9 @@ export interface ExecutionSessionPatchRequest {
    * The person settled the session (true), or took that back (false), on a
    * host advertising `sessions.settled.v1` (MAR-5673). A settled session
    * works in no checkout, whatever it still runs, until a turn of its starts
-   * again. It changes nothing else: the session still takes messages.
+   * again. It changes nothing else: the session still takes messages. Idempotent:
+   * settling a settled session, or taking back a settle that isn't there,
+   * changes nothing and answers the same.
    */
   settled?: boolean;
 }

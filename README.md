@@ -1125,7 +1125,9 @@ in `warnings` (`worksIn`): the session runs either way.
 `{ "settled": true }`, and taking it back as `{ "settled": false }`, on a host
 advertising `sessions.settled.v1`. A settled session works in no checkout,
 whatever it still runs, until a turn of its starts again; nothing else
-changes, and it still takes messages. The answer echoes `settled`. A host
+changes, and it still takes messages. The answer echoes `settled`. It is
+idempotent: settling a settled session, or taking back a settle that isn't
+there, changes nothing and answers the same. A host
 without the capability refuses the field as an unknown one, so the client
 refuses the patch unsent there, with an `ExecutionSessionPatchError` coded
 `unsupported-on-host` (`hostTakesSettled`).
@@ -2362,7 +2364,16 @@ signs out. A callback that is not the sign-in's must be refused `rejected`,
 without quoting it, and leave the sign-in pending for the real one. A host that manages none leaves it out, and is held to refusing
 every MCP call `unavailable-on-host` (or `unsupported`). Every host carries
 `mcp.needs-sign-in` to a follower as it was sent, and refuses a bad MCP call
-as a `TypeError`. `executionHostConformanceCases` are the same cases
+as a `TypeError`. `checkouts` is for a host that places starts in a person's
+checkout (`start.worksIn.v1`, MAR-5673): a checkout's `workingDirectory`
+nobody works in, and `holdTurns()`, which keeps the turns of the sessions it
+starts running until the release it gives back. The suite starts in the free
+checkout and in a worktree, and reads their echoes; is refused the checkout
+beside a session at work (`checkout-taken`, naming it) while `auto` gets a
+worktree; and settles a session twice, reads `settled` in its snapshot and
+the list, starts in the checkout it freed, and takes the settle back twice. A
+host that places none leaves it out, and skips those cases.
+`executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind
 the HTTP client with a fake `fetch`; and a shared host and an older one over a

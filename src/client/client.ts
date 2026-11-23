@@ -86,6 +86,7 @@ import {
 } from "./works-in.js";
 import {
   type ExecutionWorksInEcho,
+  EXECUTION_CHECKOUT_TAKEN,
   isExecutionWorksIn,
   readExecutionCheckoutTakenRefusal,
   readExecutionWorksInEcho,
@@ -308,6 +309,8 @@ export type ExecutionSessionPatchResult =
       effort?: string | null;
       permissionConfig?: ExecutionPermissionConfig;
       appliesFrom?: ExecutionSessionPatchAppliesFrom;
+      /** Whether it is settled now, when the patch named it (MAR-5673). */
+      settled?: boolean;
     }
   | { status: "no-session"; sessionId: string };
 
@@ -1077,36 +1080,37 @@ export function createExecutionHostClient(
             }
         > => {
           if (response.status === 409) {
-            // A `checkout` start another session's work refused (MAR-5673):
-            // nothing started, so it is no session that exists.
-            if (worksIn === "checkout") {
-              const text = await refusalText(response);
-              const taken = readExecutionCheckoutTakenRefusal(
-                parseOrNull(text),
-              );
-              if (taken !== null) {
-                throw new ExecutionStartWorksInError(
-                  "checkout-taken",
-                  boundedReason(taken.error, connection.scrub),
-                  { status: 409, workingThere: taken.workingThere },
-                );
-              }
-              if (requires.length === 0 && !reach) {
-                return { status: "exists", sessionId, commandId };
-              }
-              throw new ExecutionHostError(
-                "malformed",
-                "the host answered 409 to a start in a checkout, saying neither that the checkout is taken nor what the session it has was checked for",
-                { operation: "start", status: 409 },
-              );
-            }
-            if (requires.length === 0 && !reach) {
+            const checkoutAsked = worksIn === "checkout";
+            if (requires.length === 0 && !reach && !checkoutAsked) {
               await response.body?.cancel().catch(() => {});
               return { status: "exists", sessionId, commandId };
             }
-            // The session is older than this request: what it was checked
-            // against is the host's echo on the 409, or nothing (MAR-3725).
+            // Read once (MAR-5673's review): a `checkout` refused, or the
+            // session that exists and what it was checked against, the
+            // host's echo on the 409, or nothing (MAR-3725).
             const existing = parseOrNull(await refusalText(response));
+            // A `checkout` another session's work refused: nothing started,
+            // so it is no session that exists. The code with fields that
+            // don't read is no refusal this client can trust: malformed.
+            if (
+              checkoutAsked &&
+              isRecord(existing) &&
+              existing.code === EXECUTION_CHECKOUT_TAKEN
+            ) {
+              const taken = readExecutionCheckoutTakenRefusal(existing);
+              if (taken === null) {
+                throw new ExecutionHostError(
+                  "malformed",
+                  "the host refused the checkout as taken, in a refusal that does not read (its error or workingThere)",
+                  { operation: "start", status: 409 },
+                );
+              }
+              throw new ExecutionStartWorksInError(
+                "checkout-taken",
+                boundedReason(taken.error, connection.scrub),
+                { status: 409, workingThere: taken.workingThere },
+              );
+            }
             if (
               requires.length > 0 &&
               !confirmsExecutionStartRequirements(existing, requires)
