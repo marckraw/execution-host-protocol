@@ -168,6 +168,10 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * start and every command (MAR-5634). A host without it enforces none, so a
    * client never sends a start for a provider whose policy it cannot read to
    * a host without it.
+   *
+   * @deprecated Since MAR-5692 no host advertises it: a provider is offered
+   * where it is installed and signed in, and nothing refuses on who asks.
+   * Kept, so a host or a client that still names it reads.
    */
   "providers.drivePolicy.v1",
   /**
@@ -1476,6 +1480,9 @@ export interface ExecutionProvider {
    * why a start would be refused, never to change it. Absent when the host
    * has none for the provider, or says it in a shape this build cannot read
    * (with a warning): unknown, not "anyone may".
+   *
+   * @deprecated Since MAR-5692 no host reports one: see
+   * `ExecutionDrivePolicy`. Still read, tolerantly, from a host that does.
    */
   drivePolicy?: ExecutionDrivePolicy;
 }

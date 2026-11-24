@@ -19,6 +19,11 @@ import type {
  * would be refused before it sends one, and to show the owner their switches;
  * it never changes it. Both sides decide with `drivePolicyRefusalOf`, so they
  * agree.
+ *
+ * @deprecated Since MAR-5692 no host reports or enforces a drive policy:
+ * a provider is offered where it is installed and signed in, and a host's
+ * own cap on a provider's live sessions is its own refusal. Kept, additive
+ * and unused, so nothing that reads it breaks; nothing new should.
  */
 export interface ExecutionDrivePolicy {
   /**
@@ -53,7 +58,11 @@ export interface ExecutionDrivePolicy {
   liveSessions: number;
 }
 
-/** What is asked of a provider, for `drivePolicyRefusalOf`. */
+/**
+ * What is asked of a provider, for `drivePolicyRefusalOf`.
+ *
+ * @deprecated Since MAR-5692: see `ExecutionDrivePolicy`.
+ */
 export interface ExecutionDriveAsk {
   /** The provider asked, as `GET /v0/providers` names it: the flags are its. */
   providerId: string;
@@ -74,8 +83,10 @@ export interface ExecutionDriveAsk {
   needsNewProcess: boolean;
 }
 
+/** @deprecated Since MAR-5692: see `ExecutionDrivePolicy`. */
 export const EXECUTION_DRIVE_POLICY_REFUSED = "drive-policy-refused" as const;
 
+/** @deprecated Since MAR-5692: see `ExecutionDrivePolicy`. */
 export const EXECUTION_DRIVE_POLICY_REFUSAL_REASONS = [
   "no-owner",
   "no-actor",
@@ -87,6 +98,7 @@ export const EXECUTION_DRIVE_POLICY_REFUSAL_REASONS = [
   "any-host",
   "at-capacity",
 ] as const;
+/** @deprecated Since MAR-5692: see `ExecutionDrivePolicy`. */
 export type ExecutionDrivePolicyRefusalReason =
   (typeof EXECUTION_DRIVE_POLICY_REFUSAL_REASONS)[number];
 
@@ -94,6 +106,8 @@ export type ExecutionDrivePolicyRefusalReason =
  * Why a provider's drive policy refuses an ask, and the host's flag that
  * would allow it, as `<providerId>.<flag>` (`antigravity.allowTokenDriven`).
  * `no-owner` and `no-actor` name none: no flag allows them.
+ *
+ * @deprecated Since MAR-5692: see `ExecutionDrivePolicy`.
  */
 export interface ExecutionDrivePolicyRefusal {
   code: typeof EXECUTION_DRIVE_POLICY_REFUSED;
@@ -171,6 +185,8 @@ const VIA_WORDS: Record<ExecutionActorVia, string> = {
  * 7. `any-host`: a start letting the line pick its host needs `anyHost`.
  * 8. `at-capacity`: an ask that needs a new process, while `liveSessions`
  *    has reached `maxConcurrentSessions`.
+ *
+ * @deprecated Since MAR-5692: see `ExecutionDrivePolicy`.
  */
 export function drivePolicyRefusalOf(
   policy: ExecutionDrivePolicy,
@@ -264,6 +280,8 @@ export function drivePolicyRefusalOf(
  * a boolean, and both counts non-negative integers. Fields beyond those are
  * ignored. The provider listing reads one it cannot read as absent, with a
  * warning, and never as more permissive than it is.
+ *
+ * @deprecated Since MAR-5692: see `ExecutionDrivePolicy`.
  */
 export function decodeExecutionDrivePolicy(
   raw: unknown,
@@ -305,6 +323,8 @@ export function decodeExecutionDrivePolicy(
  * Reads a host's refusal coded `drive-policy-refused` (MAR-5634): a `reason`
  * this build knows, and a `message` and `flag` when they are non-empty
  * strings. A refusal without a readable message gets one naming its reason.
+ *
+ * @deprecated Since MAR-5692: see `ExecutionDrivePolicy`.
  */
 export function decodeExecutionDrivePolicyRefusal(
   raw: unknown,

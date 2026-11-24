@@ -194,10 +194,20 @@ a provider's [drive policy](#who-may-drive-a-provider-the-drive-policy) reads:
   and a reader ignores them if one does.
 - **The host records; the client vouches.** `actor` is the sending client's
   word. A host has no users of its own, so authorizing who may act stays with
-  the client that knows them. The one exception is a provider's drive policy,
-  which the host applies to the actor as given.
+  the client that knows them. No host refuses on it (the drive policy that
+  once did is deprecated, MAR-5692).
 
 ## Who may drive a provider: the drive policy
+
+> **Deprecated since MAR-5692.** No host reports or enforces a drive policy,
+> nor advertises `providers.drivePolicy.v1`: a provider is offered where it is
+> installed and signed in, and nothing refuses on who asks. A host may still
+> cap how many of a provider's sessions run at once (Antigravity's, on the
+> daemon), and refuses one past it as it refuses anything, in its own words.
+> The types, `drivePolicyRefusalOf`, the decoders and
+> `hostEnforcesDrivePolicy` stay exported, additive and unused, so nothing
+> that reads them breaks; build nothing new on them. What follows is the
+> contract as it was.
 
 Some providers may only be driven in certain ways: Antigravity runs on one
 person's consumer sign-in, which Google allows for a person driving it, not
@@ -1985,7 +1995,8 @@ one-word family (`opus`) as a whole word (`claude-opus-5-5`, `Opus 5.5`). How
 much of a window that limits is used is the caller's to judge.
 A provider's `drivePolicy` is who may drive it there, and how many of its
 sessions run at once (see
-[the drive policy](#who-may-drive-a-provider-the-drive-policy)): absent, and
+[the drive policy](#who-may-drive-a-provider-the-drive-policy), deprecated:
+no host reports one since MAR-5692): absent, and
 named in `warnings` by `decodeExecutionProviderListResponse`, when it cannot
 be read. A provider's `permissions` are what its sessions can ask for in
 `permissionConfig` (`features.permissions`): the `presets`, and its own part —

@@ -101,6 +101,9 @@ export function hostEnforcesFileReach(
  * Whether the host enforces the drive policy it reports for each provider
  * (`providers.drivePolicy.v1`, MAR-5634). A host that does not enforces none,
  * so a client sends it no start for a provider whose policy it cannot read.
+ *
+ * @deprecated Since MAR-5692 no host advertises `providers.drivePolicy.v1`:
+ * see `ExecutionDrivePolicy`.
  */
 export function hostEnforcesDrivePolicy(
   health: Pick<ExecutionHostHealth, "capabilities">,
