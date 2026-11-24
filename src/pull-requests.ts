@@ -60,10 +60,12 @@ export type ExecutionPullRequestReviewDecision =
   (typeof EXECUTION_PULL_REQUEST_REVIEW_DECISIONS)[number];
 
 /**
- * How many `mentioned` facts a session carries at most: the host keeps the
- * newest, and a reader keeps no more than this of a longer list. Every fact
- * of another role is kept, whatever their number: a cap that could drop one
- * would change the session's primary (MAR-5696 review).
+ * How many `mentioned` facts a session carries at most (the contract): every
+ * fact of the roles opened, pushed, merged, edited and reviewed is kept; at
+ * most 100 `mentioned` facts are kept, newest first. The host keeps no more,
+ * and a reader keeps no more than this of a longer list. Mentions never
+ * raise a row and are never primary, so bounding them costs nothing; a cap
+ * on any other role could change the session's primary (MAR-5696 review).
  */
 export const EXECUTION_PULL_REQUEST_MENTIONS_MAX = 100;
 
@@ -112,6 +114,10 @@ export interface ExecutionPullRequestState {
  * One thing a session did to one pull request (MAR-5696). A session's
  * `pullRequests` holds one per pull request and role, newest first: the
  * same role again moves its fact up, with the newer `at`.
+ *
+ * The list's bound is part of the contract: every fact of the roles opened,
+ * pushed, merged, edited and reviewed is kept; at most 100 `mentioned` facts
+ * are kept, newest first (`EXECUTION_PULL_REQUEST_MENTIONS_MAX`).
  */
 export interface ExecutionPullRequestFact {
   /** `owner/name`, any repository; compared without regard to case. */

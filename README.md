@@ -1129,10 +1129,12 @@ back, and its own branch being a PR's head. Each is one
 A snapshot and the list carry `pullRequests` whole, and a `session.patch`
 carries it whole each time it changes, so a reader replaces what it held
 with it. It holds one fact per pull request and role, the newest (the same
-role again moves its fact up), newest first. Every fact of a role that can
-make a primary is kept, however many; only mentions are capped, at the
-newest 100 (`EXECUTION_PULL_REQUEST_MENTIONS_MAX`), so no number of mentions
-can push out the pull request a session opened. A pull request is its repository and number,
+role again moves its fact up), newest first. Its bound is part of the
+contract: every fact of the roles opened, pushed, merged, edited and
+reviewed is kept; at most 100 `mentioned` facts are kept, newest first
+(`EXECUTION_PULL_REQUEST_MENTIONS_MAX`). Mentions never raise a row and are
+never primary, so no number of them can push out the pull request a session
+opened. A pull request is its repository and number,
 the repository without regard to case: `pullRequestKeyOf` is its one key.
 The same number in another repository is another pull request. A host
 without the capability leaves `pullRequests` out: unknown, never none.

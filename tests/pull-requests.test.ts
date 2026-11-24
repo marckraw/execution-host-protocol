@@ -599,6 +599,46 @@ describe("decodeExecutionPullRequests", () => {
     });
   });
 
+  it("keeps the newest 100 of 101 distinct mentions, and every fact of every other role, older ones included (the contract)", () => {
+    expect(EXECUTION_PULL_REQUEST_MENTIONS_MAX).toBe(100);
+    const second = (n: number) =>
+      new Date(Date.UTC(2026, 11, 1, 0, 0, n)).toISOString();
+    // 101 distinct mentions, two repositories, at seconds 10..110.
+    const mentions = Array.from({ length: 101 }, (_, index) =>
+      fact("mentioned", index + 1, 0, {
+        repository: index % 2 === 0 ? "acme/app" : "acme/lib",
+        at: second(10 + index),
+      }),
+    );
+    // Facts of every other role, some older than the oldest mention, some
+    // newer than the newest, some in between: none of them may go.
+    const others = [
+      fact("opened", 500, 0, { at: second(0) }),
+      fact("pushed", 501, 0, { at: second(5) }),
+      fact("merged", 502, 0, { at: second(60) }),
+      fact("edited", 503, 0, { at: second(200) }),
+      fact("reviewed", 504, 0, { at: second(1) }),
+    ];
+    const decoded = decodeExecutionPullRequests([...mentions, ...others]);
+    if (!decoded.ok) throw new Error(decoded.reason);
+    const kept = decoded.value.filter((one) => one.role === "mentioned");
+    expect(kept).toEqual([...mentions].slice(1).reverse());
+    expect(kept.some((one) => one.number === 1)).toBe(false);
+    expect(
+      decoded.value
+        .filter((one) => one.role !== "mentioned")
+        .map((one) => one.role)
+        .sort(),
+    ).toEqual(["edited", "merged", "opened", "pushed", "reviewed"]);
+    expect(decoded.value).toHaveLength(105);
+    expect(decoded.warnings).toEqual([
+      { reason: "dropped-excess-entries", path: "pullRequests" },
+    ]);
+    // Newest first throughout, the kept facts of every role interleaved.
+    const times = decoded.value.map((one) => Date.parse(one.at));
+    expect(times).toEqual([...times].sort((left, right) => right - left));
+  });
+
   it(`keeps every fact but mentions, and the newest ${EXECUTION_PULL_REQUEST_MENTIONS_MAX} mentions, saying so`, () => {
     const mentions = Array.from(
       { length: EXECUTION_PULL_REQUEST_MENTIONS_MAX + 5 },
