@@ -1162,6 +1162,9 @@ describe("session.patch pull requests (MAR-5696)", () => {
       "https://github.com/acme/repo/issues/7",
       "https://github.com/acme/repo/pull/7/files",
       "http://github.com/acme/repo/pull/7",
+      // A repository named `.` or `..` resolves away: `github.com/pull/7`.
+      "https://github.com/acme/../pull/7",
+      "https://github.com/acme/./pull/7",
       7,
       "",
     ]) {
@@ -1178,6 +1181,69 @@ describe("session.patch pull requests (MAR-5696)", () => {
       expect(decoded.ok && decoded.value.event).not.toHaveProperty(
         "delta.patch.prUrl",
       );
+    }
+  });
+});
+
+describe("a patch with both pullRequests and an older host's prUrl (MAR-5698)", () => {
+  const envelope = (patch: Record<string, unknown>) =>
+    JSON.stringify({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sessionId: "session-1",
+      seq: 4,
+      event: { kind: "delta", delta: { kind: "session.patch", patch } },
+    });
+  const fact = {
+    repository: "acme/repo",
+    number: 12,
+    role: "opened",
+    source: "command",
+    at: "2026-11-24T09:00:00.000Z",
+  };
+
+  it("lets an empty list win: none, and no prUrl beside it", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      envelope({
+        pullRequests: [],
+        prUrl: "https://github.com/acme/repo/pull/7",
+      }),
+    );
+    expect(decoded).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        event: {
+          kind: "delta",
+          delta: { kind: "session.patch", patch: { pullRequests: [] } },
+        },
+      }),
+    });
+  });
+
+  it("lets a list that says another pull request win, and drops the prUrl", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      envelope({
+        pullRequests: [fact],
+        prUrl: "https://github.com/acme/repo/pull/7",
+      }),
+    );
+    expect(decoded).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        event: {
+          kind: "delta",
+          delta: { kind: "session.patch", patch: { pullRequests: [fact] } },
+        },
+      }),
+    });
+  });
+
+  it("reads a prUrl where the patch has no list, a null one too", () => {
+    for (const prUrl of ["https://github.com/acme/repo/pull/7", null]) {
+      const decoded = decodeExecutionEventEnvelope(envelope({ prUrl }));
+      expect(decoded.ok && decoded.value.event, String(prUrl)).toEqual({
+        kind: "delta",
+        delta: { kind: "session.patch", patch: { prUrl } },
+      });
     }
   });
 });

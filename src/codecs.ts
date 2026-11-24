@@ -665,9 +665,13 @@ function decodeEvent(raw: unknown): KindAwareResult<ExecutionHostEvent> {
   }
 }
 
-/** A pull request's address on github.com, as an older host's `prUrl` was. */
+/**
+ * A pull request's address on github.com, as an older host's `prUrl` was: its
+ * repository's name never `.` or `..`, which a reader's URL would resolve away
+ * (`github.com/acme/../pull/7` is `github.com/pull/7`).
+ */
 const LEGACY_PULL_REQUEST_URL =
-  /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d{0,9}$/;
+  /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/(?!\.\.?\/)[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d{0,9}$/;
 
 function isLegacyPullRequestUrl(value: unknown): value is string {
   return typeof value === "string" && LEGACY_PULL_REQUEST_URL.test(value);
@@ -729,11 +733,16 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
           });
         }
       }
-      // An older host's one word on its pull request (MAR-5698): kept while
+      // An older host's one word on its pull request (MAR-5698), read only
+      // where the patch has no `pullRequests`: a list, even an empty one, is
+      // the whole word and wins, and `prUrl` beside it is dropped. Kept while
       // it is a pull request's address on github.com (or null), so a reader
       // whose hosts send no `pullRequests` yet still has it; anything else is
       // dropped and named. Nothing is made of it here: the reader decides.
-      if (raw.patch.prUrl !== undefined) {
+      if (
+        raw.patch.prUrl !== undefined &&
+        raw.patch.pullRequests === undefined
+      ) {
         if (
           raw.patch.prUrl === null ||
           isLegacyPullRequestUrl(raw.patch.prUrl)
