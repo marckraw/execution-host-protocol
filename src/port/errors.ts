@@ -39,6 +39,10 @@ import {
   ExecutionStartWorksInError,
   type ExecutionStartWorksInErrorCode,
 } from "../client/works-in.js";
+import {
+  ExecutionStartBrowserError,
+  type ExecutionStartBrowserErrorCode,
+} from "../client/browser.js";
 import { isRecord } from "../guards.js";
 
 /**
@@ -205,6 +209,13 @@ export function fromPortError(
         code as ExecutionStartWorksInErrorCode,
         reason,
         { status: status(), workingThere: strings("workingThere") ?? [] },
+      );
+    case "ExecutionStartBrowserError":
+      if (code === null) break;
+      return new ExecutionStartBrowserError(
+        code as ExecutionStartBrowserErrorCode,
+        reason,
+        status(),
       );
     case "ExecutionInlineAttachmentsError":
       if (code === null) break;

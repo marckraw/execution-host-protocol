@@ -10,6 +10,7 @@ import {
   ExecutionStartRequirementsError,
   ExecutionStartSelectionError,
   ExecutionStartWorksInError,
+  ExecutionStartBrowserError,
   ExecutionTaskOutputError,
   type ExecutionHostApi,
   type ExecutionHostErrorKind,
@@ -124,6 +125,12 @@ describe("errors over a port", () => {
         status: 409,
         workingThere: ["s-2"],
       }),
+      new ExecutionStartBrowserError("browser-unsupported", "no chrome"),
+      new ExecutionStartBrowserError(
+        "browser-unsupported-provider",
+        "not for this provider",
+        400,
+      ),
       new ExecutionInlineAttachmentsError("too-many", "five is too many", {
         operation: "start",
         index: 4,

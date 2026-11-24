@@ -60,6 +60,11 @@ export {
   type ExecutionStartWorksInErrorCode,
 } from "./works-in.js";
 export {
+  ExecutionStartBrowserError,
+  hostTakesChrome,
+  type ExecutionStartBrowserErrorCode,
+} from "./browser.js";
+export {
   ExecutionInteractionResponseError,
   hostTakesStructuredInteractions,
   type ExecutionInteractionResponseErrorCode,

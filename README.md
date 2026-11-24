@@ -1175,6 +1175,47 @@ the start request's `automation.autoCreatePr`, with its capability
 `automation.create-pr`, which are gone (0.43): an older host's `prUrl` and an
 older client's `automation` are read past as any unknown field.
 
+## A session that drives the person's own Chrome
+
+A start can ask for the person's own Chrome (MAR-5726), on a host advertising
+`start.browser.chrome.v1`, with `config.browser: "chrome"`
+(`EXECUTION_START_BROWSERS`). The session's Claude Code runs with Claude in
+Chrome on (the CLI's `--chrome`), for its whole life and every resume. Its
+tools reach the Chrome extension through Chrome's native-messaging host on the
+same machine and as the same user, so only a host on a person's own machine
+offers it, and only with its setting on.
+
+```json
+{ "config": { "sessionId": "session-1", "browser": "chrome", "…": "…" } }
+```
+
+- A value outside the list is refused as `invalid-payload`, never dropped.
+- A host without the capability ignores the field and starts the session
+  without Chrome, so the client refuses such a start itself, unsent, with an
+  `ExecutionStartBrowserError` coded `browser-unsupported`
+  (`hostTakesChrome`). A start without `browser` is unchanged: one request,
+  no probe.
+- A capable host refuses with a 400 and a code
+  (`EXECUTION_START_BROWSER_REFUSAL_CODES`), and starts nothing:
+  `browser-unavailable-on-host` (its setting is off),
+  `browser-unsupported-provider` (only Claude Code drives Chrome), or
+  `browser-unsupported-with-skills` (the start also picks skills, and a
+  picked session's Claude Code would point Chrome at a helper in a config
+  folder that goes with the session). The client throws the same error with
+  that code and status 400, in its own words.
+- It is fixed at the first start: a 409 / exists neither changes nor
+  confirms it.
+
+The same host puts `chrome` on each provider that can drive it in
+`GET /v0/providers` (`ExecutionProviderChrome`), looked at as it answers:
+`nativeHost`, whether Chrome's native-messaging host for Claude Code is
+installed (the `com.anthropic.claude_code_browser_extension` manifest in
+Chrome's `NativeMessagingHosts`, and the helper it names), and `extension`,
+whether the Claude extension is in one of Chrome's profiles. Claude Code
+installs the native host itself the first time it runs with Chrome on, after
+which Chrome has to reconnect the extension. Absent is unknown; one this build
+can't read is left out and named in `warnings`.
+
 ## A host's MCP servers and skills
 
 Authenticated `GET /v0/host` lists what the host has for a session to use
