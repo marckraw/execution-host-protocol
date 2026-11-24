@@ -75,7 +75,11 @@ export interface ExecutionSessionSummary {
   workspace: ExecutionSessionWorkspace | null;
   prUrl: string | null;
   roomId: string | null;
-  /** The person settled it, and no turn has begun since (MAR-5673); absent: not. */
+  /**
+   * The person settled it, and no turn has begun since (MAR-5673); absent:
+   * not. Their mark alone: it frees no checkout, which a session holds until
+   * it is deleted or fully quiescent, settled or not.
+   */
   settled?: true;
   createdAt: string | null;
   updatedAt: string | null;

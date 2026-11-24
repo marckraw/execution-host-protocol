@@ -1084,12 +1084,17 @@ advertising `start.worksIn.v1`, in `config.worksIn` (`EXECUTION_WORKS_IN`):
   is refused. The same start with `auto` or `worktree` gets a worktree.
 - `worktree`: a worktree of its own, always.
 
-A session is **working in** a checkout while a turn of its runs, a task of
-its runs, or something is queued for it, and nobody settled it since its last
-turn began. One that finished, failed or was settled leaves the checkout to
-the next start. Its snapshot and the list say `settled: true` while it is
-settled, in the host's own word: a new turn ends that, whatever the person's
-own mark of it says.
+A session **holds** its checkout from its start until it is deleted or fully
+quiescent: no turn running, nothing queued for it (the host's queue or its
+provider's), no task of its running, and no turn of the provider's own still
+possible after one ended. Never two sessions in one checkout: the host takes
+the hold once, when the session starts or begins work again in a checkout it
+let go of (refused `checkout-taken` while another holds it), and drops it
+once, when the session is quiescent. A session that finished, failed or
+stopped leaves the checkout to the next start; settling one changes nothing
+of it. Its snapshot and the list say `settled: true` while it is settled, in
+the host's own word: a new turn ends that, whatever the person's own mark of
+it says.
 
 The host's 201 says where it works, as `worksIn`
 (`ExecutionWorksInEcho`): `place` (`checkout` or `worktree`), the checkout's
@@ -1123,14 +1128,14 @@ in `warnings` (`worksIn`): the session runs either way.
 
 **Settling.** A person's settle reaches the host as a patch,
 `{ "settled": true }`, and taking it back as `{ "settled": false }`, on a host
-advertising `sessions.settled.v1`. A settled session works in no checkout,
-whatever it still runs, until a turn of its starts again; nothing else
-changes, and it still takes messages. The answer echoes `settled`. It is
-idempotent: settling a settled session, or taking back a settle that isn't
-there, changes nothing and answers the same. Taking back the settle of a session with
-work running or queued, while another session works in its checkout, is
-refused with a 409 coded `checkout-taken` (`ExecutionSessionPatchError`),
-changing nothing: it would put two agents in one checkout. A host
+advertising `sessions.settled.v1`. It is the person's word, kept and echoed:
+it never frees a checkout a session still works in (0.41: before it, a host
+let go of a settled session's running turn), and the session still takes
+messages. The answer echoes `settled`. It is idempotent: settling a settled
+session, or taking back a settle that isn't there, changes nothing and
+answers the same, and a take-back is never refused for the checkout. (A
+host from 0.40 may refuse one with a 409 coded `checkout-taken`; the code
+stays readable.) A host
 without the capability refuses the field as an unknown one, so the client
 refuses the patch unsent there, with an `ExecutionSessionPatchError` coded
 `unsupported-on-host` (`hostTakesSettled`).
@@ -2376,10 +2381,10 @@ nobody works in, and `holdTurns()`, which keeps the turns of the sessions it
 starts running until the release it gives back. The suite starts in the free
 checkout and in a worktree, and reads their echoes; is refused the checkout
 beside a session at work (`checkout-taken`, naming it) while `auto` gets a
-worktree; and settles a session twice, reads `settled` in its snapshot and
-the list, starts in the checkout it freed, is refused taking the settle back
-beside that start (`checkout-taken`), and takes it back twice once their work
-is done. A
+worktree; and settles a session at work twice, reads `settled` in its
+snapshot and the list, is refused a checkout start beside it all the same
+(`checkout-taken`), takes the settle back twice, and once the session's work
+is done starts in the checkout. A
 host that advertises `start.worksIn.v1` must give it, and fails those cases
 without it; only a host that places none leaves it out, and skips them.
 `executionHostConformanceCases` are the same cases

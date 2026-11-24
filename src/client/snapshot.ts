@@ -83,8 +83,9 @@ export interface ExecutionSessionSnapshot {
   roomId: string | null;
   /**
    * The person settled it, and no turn of its has begun since (MAR-5673,
-   * `start.worksIn.v1`): it works in no checkout. Absent: not settled, or a
-   * host that doesn't say.
+   * `sessions.settled.v1`): their mark alone. It frees no checkout: a session
+   * holds its checkout until it is deleted or fully quiescent, whether or not
+   * it is settled. Absent: not settled, or a host that doesn't say.
    */
   settled?: true;
 }
