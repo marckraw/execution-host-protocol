@@ -228,6 +228,50 @@ describe("the conformance suite", () => {
       expect(error).toBeInstanceOf(ExecutionHostConformanceError);
     });
 
+    it("fails a host that doesn't advertise them but sends them on a session.patch, its snapshot and list clean (review P2)", async () => {
+      const model = new FakeHostModel({ pullRequests: "none" });
+      const found = executionHostConformanceCases.find(
+        (entry) => entry.name === CASE,
+      )!;
+      const error = await found
+        .run(
+          {
+            api: fakeApi(model),
+            ...modelHooks(model),
+            // A hook it was given all the same: the case must not take it
+            // as the capability, and must catch the patch it sends.
+            pullRequests: {
+              record: (sessionId, facts) =>
+                model.recordPullRequests(sessionId, facts),
+            },
+          },
+          { waitMs: 500 },
+        )
+        .then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+      expect((error as Error).message).toMatch(/session\.patch/);
+    });
+
+    it("fails a host that reports them all, as it should, but never advertises them (review P2)", async () => {
+      const model = new FakeHostModel({ pullRequests: "facts" });
+      const found = executionHostConformanceCases.find(
+        (entry) => entry.name === CASE,
+      )!;
+      const error = await found
+        .run(
+          { api: fakeApi(model), ...modelHooks(model), capabilities: [] },
+          { waitMs: 500 },
+        )
+        .then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+    });
+
     it("fails a host whose list keeps both facts of one PR and role", async () => {
       const model = new FakeHostModel();
       const record = model.recordPullRequests.bind(model);

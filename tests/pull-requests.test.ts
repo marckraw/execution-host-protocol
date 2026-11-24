@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeExecutionPullRequests,
-  EXECUTION_PULL_REQUESTS_MAX,
+  EXECUTION_PULL_REQUEST_MENTIONS_MAX,
   isExecutionPullRequestRepository,
   primaryPullRequestOf,
   pullRequestKeyOf,
@@ -105,18 +105,84 @@ describe("primaryPullRequestOf (MAR-5695, board 4)", () => {
   });
 
   it("takes the newest still-open PR it edited or reviewed, before any it merged", () => {
-    const reviewed = fact("reviewed", 3, 4);
+    const reviewed = fact("reviewed", 3, 4, { state: stateOf("open") });
     expectPrimary(
-      [fact("edited", 2, 2), reviewed, fact("merged", 4, 9)],
+      [
+        fact("edited", 2, 2, { state: stateOf("open") }),
+        reviewed,
+        fact("merged", 4, 9),
+      ],
       reviewed,
     );
   });
 
-  it("counts a draft as open, and a PR whose state no fact carries", () => {
+  it("counts a draft as open", () => {
     const draft = fact("edited", 2, 2, { state: stateOf("draft") });
     expectPrimary([draft, fact("merged", 4, 9)], draft);
-    const unknown = fact("reviewed", 3, 2);
-    expectPrimary([unknown, fact("merged", 4, 9)], unknown);
+  });
+
+  it("never counts a PR whose state nobody read as still open: a confirmed merge beats it (review P2)", () => {
+    const merged = fact("merged", 4, 1);
+    expectPrimary([fact("edited", 3, 2), merged], merged);
+    expectPrimary([fact("reviewed", 3, 2), merged], merged);
+    // Alone, it is no primary at all.
+    expectPrimary([fact("edited", 3, 2), fact("mentioned", 5, 3)], null);
+  });
+
+  it("still takes a PR it pushed to with no state at all", () => {
+    const pushed = fact("pushed", 3, 1, { source: "branch" });
+    expectPrimary(
+      [
+        pushed,
+        fact("edited", 4, 2, { state: stateOf("open") }),
+        fact("merged", 5, 3),
+      ],
+      pushed,
+    );
+  });
+
+  it("reads a PR's state from whichever of its facts was read last (review P2)", () => {
+    // The edit carries an open read from 10:10; a mention of the same PR
+    // carries a closed one from 10:20. Closed it is: not still open.
+    const merged = fact("merged", 9, 1);
+    expectPrimary(
+      [
+        fact("edited", 2, 5, {
+          state: stateOf("open", { checkedAt: minute(10) }),
+        }),
+        fact("mentioned", 2, 6, {
+          state: stateOf("closed", { checkedAt: minute(20) }),
+        }),
+        merged,
+      ],
+      merged,
+    );
+    // And the other way round: reopened since it was read closed.
+    const edited = fact("edited", 2, 5, {
+      state: stateOf("closed", { checkedAt: minute(10) }),
+    });
+    expectPrimary(
+      [
+        edited,
+        fact("reviewed", 2, 4, {
+          state: stateOf("open", { checkedAt: minute(20) }),
+        }),
+        merged,
+      ],
+      edited,
+    );
+  });
+
+  it("takes the more settled of two states read at once, in any order", () => {
+    const merged = fact("merged", 9, 1);
+    expectPrimary(
+      [
+        fact("edited", 2, 5, { state: stateOf("open") }),
+        fact("reviewed", 2, 6, { state: stateOf("closed") }),
+        merged,
+      ],
+      merged,
+    );
   });
 
   it("passes over a changed PR that is merged or closed, by its state or by the session's own merge", () => {
@@ -202,6 +268,36 @@ describe("primaryPullRequestOf (MAR-5695, board 4)", () => {
       );
     });
 
+    it("takes the role first in EXECUTION_PULL_REQUEST_ROLES when one PR was edited and reviewed at once (review P3)", () => {
+      const edited = fact("edited", 7, 1, { state: stateOf("open") });
+      const reviewed = fact("reviewed", 7, 1, { state: stateOf("open") });
+      expectPrimary([reviewed, edited], edited);
+      expectPrimary([edited, reviewed], edited);
+    });
+
+    it("tells apart one PR spelt in two cases at once, by its spelling", () => {
+      const upper = fact("pushed", 7, 1, { repository: "Acme/App" });
+      expectPrimary(
+        [fact("pushed", 7, 1, { repository: "acme/app" }), upper],
+        upper,
+      );
+    });
+
+    it("gives one answer for a whole session's facts in every order, ties and all (review P3)", () => {
+      const state = { state: stateOf("open") };
+      const facts = [
+        fact("reviewed", 7, 1, state),
+        fact("edited", 7, 1, state),
+        fact("edited", 7, 1, { ...state, repository: "acme/lib" }),
+        fact("reviewed", 8, 1, { ...state, repository: "Acme/App" }),
+        fact("merged", 9, 1),
+        fact("mentioned", 10, 1),
+      ];
+      // 720 orders: the newest, then the higher number, wins.
+      expectPrimary(facts, facts[3]!);
+      expectPrimary(facts.slice(0, 3), facts[1]!);
+    });
+
     it("puts a fact whose time cannot be read last", () => {
       const readable = fact("opened", 1, 1);
       expectPrimary([fact("opened", 9, 0, { at: "soon" }), readable], readable);
@@ -211,7 +307,10 @@ describe("primaryPullRequestOf (MAR-5695, board 4)", () => {
   describe("repositories that differ", () => {
     it("treats the same number in two repositories as two PRs", () => {
       // acme/lib#7 was merged; acme/app#7 is still open, and the one to show.
-      const app = fact("edited", 7, 1, { repository: "acme/app" });
+      const app = fact("edited", 7, 1, {
+        repository: "acme/app",
+        state: stateOf("open"),
+      });
       expectPrimary(
         [app, fact("merged", 7, 2, { repository: "acme/lib" })],
         app,
@@ -481,21 +580,70 @@ describe("decodeExecutionPullRequests", () => {
     expect(title).toHaveLength(256);
   });
 
-  it(`keeps the newest ${EXECUTION_PULL_REQUESTS_MAX} of a longer list, and says so`, () => {
-    const many = Array.from(
-      { length: EXECUTION_PULL_REQUESTS_MAX + 5 },
+  it("takes a PR's state from the read made last, even when it sits on a fact dropped as older (review P2)", () => {
+    const decoded = decodeExecutionPullRequests([
+      fact("edited", 7, 0, {
+        at: "2026-11-24T11:00:00.000Z",
+        state: stateOf("closed", { checkedAt: "2026-11-24T13:00:00.000Z" }),
+      }),
+      fact("edited", 7, 0, { at: "2026-11-24T12:00:00.000Z" }),
+    ]);
+    expect(decoded).toEqual({
+      ok: true,
+      value: [
+        fact("edited", 7, 0, {
+          at: "2026-11-24T12:00:00.000Z",
+          state: stateOf("closed", { checkedAt: "2026-11-24T13:00:00.000Z" }),
+        }),
+      ],
+    });
+  });
+
+  it(`keeps every fact but mentions, and the newest ${EXECUTION_PULL_REQUEST_MENTIONS_MAX} mentions, saying so`, () => {
+    const mentions = Array.from(
+      { length: EXECUTION_PULL_REQUEST_MENTIONS_MAX + 5 },
       (_, index) =>
         fact("mentioned", index + 1, 0, {
-          at: new Date(Date.UTC(2026, 10, 24, 0, 0, index)).toISOString(),
+          at: new Date(Date.UTC(2026, 10, 24, 12, 0, index)).toISOString(),
         }),
     );
-    const decoded = decodeExecutionPullRequests(many);
+    const others = (
+      ["opened", "pushed", "merged", "edited", "reviewed"] as const
+    ).map((role, index) => fact(role, 1000 + index, index));
+    const decoded = decodeExecutionPullRequests([...others, ...mentions]);
     if (!decoded.ok) throw new Error(decoded.reason);
-    expect(decoded.value).toHaveLength(EXECUTION_PULL_REQUESTS_MAX);
-    expect(decoded.value[0]?.number).toBe(EXECUTION_PULL_REQUESTS_MAX + 5);
-    expect(decoded.value.at(-1)?.number).toBe(6);
+    const kept = decoded.value.filter((one) => one.role === "mentioned");
+    expect(kept).toHaveLength(EXECUTION_PULL_REQUEST_MENTIONS_MAX);
+    expect(kept[0]?.number).toBe(EXECUTION_PULL_REQUEST_MENTIONS_MAX + 5);
+    expect(kept.at(-1)?.number).toBe(6);
+    expect(decoded.value.filter((one) => one.role !== "mentioned")).toEqual(
+      [...others].reverse(),
+    );
     expect(decoded.warnings).toEqual([
       { reason: "dropped-excess-entries", path: "pullRequests" },
     ]);
+  });
+
+  it("never lets mentions erase the primary: one opened, then a hundred mentions (review P1)", () => {
+    const opened = fact("opened", 1, 0);
+    const mentions = Array.from({ length: 100 }, (_, index) =>
+      fact("mentioned", index + 2, 1 + (index % 50), {
+        repository: index < 50 ? "acme/lib" : "acme/docs",
+      }),
+    );
+    const decoded = decodeExecutionPullRequests([opened, ...mentions]);
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value).toHaveLength(101);
+    expect(decoded.warnings).toBeUndefined();
+    expect(primaryPullRequestOf(decoded.value)).toEqual(opened);
+    // Past the mention cap too: the opened fact stays, the oldest mention goes.
+    const more = decodeExecutionPullRequests([
+      opened,
+      ...mentions,
+      fact("mentioned", 999, 59),
+    ]);
+    if (!more.ok) throw new Error(more.reason);
+    expect(more.value).toContainEqual(opened);
+    expect(primaryPullRequestOf(more.value)).toEqual(opened);
   });
 });

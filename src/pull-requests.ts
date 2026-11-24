@@ -60,10 +60,12 @@ export type ExecutionPullRequestReviewDecision =
   (typeof EXECUTION_PULL_REQUEST_REVIEW_DECISIONS)[number];
 
 /**
- * How many facts a session carries at most: the host keeps the newest, and
- * a reader keeps no more than this of a longer list.
+ * How many `mentioned` facts a session carries at most: the host keeps the
+ * newest, and a reader keeps no more than this of a longer list. Every fact
+ * of another role is kept, whatever their number: a cap that could drop one
+ * would change the session's primary (MAR-5696 review).
  */
-export const EXECUTION_PULL_REQUESTS_MAX = 100;
+export const EXECUTION_PULL_REQUEST_MENTIONS_MAX = 100;
 
 /** The bound on a fact's `itemId` and `agentRunId`. */
 const ID_MAX_LENGTH = 256;
@@ -146,7 +148,8 @@ export function pullRequestKeyOf(ref: ExecutionPullRequestRef): string {
 export interface ExecutionPullRequestPrimaryCandidate extends ExecutionPullRequestRef {
   role: ExecutionPullRequestRole;
   at: string;
-  state?: { state: ExecutionPullRequestStatus };
+  /** When there are several, the one read last counts (`checkedAt`). */
+  state?: { state: ExecutionPullRequestStatus; checkedAt?: string };
 }
 
 /**
@@ -156,13 +159,15 @@ export interface ExecutionPullRequestPrimaryCandidate extends ExecutionPullReque
  * the after-chains and every one-PR reader follow it, so the server, the web
  * app and the daemon all take it from here.
  *
- * "Still open" is open or a draft. A pull request whose state no fact
- * carries counts as open, unless the session merged it. Mentions are never
- * primary.
+ * "Still open" is known: the pull request's state, the one read last of any
+ * of its facts, is open or a draft, and the session did not merge it. One
+ * whose state nobody read is not still open, so a host that reads no state
+ * never makes an edit or a review primary. Mentions are never primary.
  *
  * Pure, and blind to order: "newest" is the latest `at`, then the higher
- * number, then the repository first in code-unit order, so the same facts
- * in any order give the same answer. It hands back the fact itself.
+ * number, then the repository first in code-unit order (case aside, then as
+ * spelt), then the role first in `EXECUTION_PULL_REQUEST_ROLES`, so the same
+ * facts in any order give the same answer. It hands back the fact itself.
  */
 export function primaryPullRequestOf<
   T extends ExecutionPullRequestPrimaryCandidate,
@@ -171,22 +176,24 @@ export function primaryPullRequestOf<
   if (opened) return opened;
   const pushed = newestOf(facts.filter((fact) => fact.role === "pushed"));
   if (pushed) return pushed;
-  const ended = new Set<string>();
+  const states = new Map<string, { state: ExecutionPullRequestStatus }>();
+  const merged = new Set<string>();
   for (const fact of facts) {
-    if (
-      fact.role === "merged" ||
-      fact.state?.state === "merged" ||
-      fact.state?.state === "closed"
-    ) {
-      ended.add(pullRequestKeyOf(fact));
+    const key = pullRequestKeyOf(fact);
+    if (fact.role === "merged") merged.add(key);
+    if (!fact.state) continue;
+    const held = states.get(key);
+    if (!held || fresherState(fact.state, held) < 0) {
+      states.set(key, fact.state);
     }
   }
   const changed = newestOf(
-    facts.filter(
-      (fact) =>
-        (fact.role === "edited" || fact.role === "reviewed") &&
-        !ended.has(pullRequestKeyOf(fact)),
-    ),
+    facts.filter((fact) => {
+      if (fact.role !== "edited" && fact.role !== "reviewed") return false;
+      const key = pullRequestKeyOf(fact);
+      const state = states.get(key)?.state;
+      return (state === "open" || state === "draft") && !merged.has(key);
+    }),
   );
   if (changed) return changed;
   return newestOf(facts.filter((fact) => fact.role === "merged"));
@@ -202,9 +209,18 @@ function newestOf<T extends ExecutionPullRequestPrimaryCandidate>(
   return newest;
 }
 
-function timeOf(at: string): number {
-  const time = Date.parse(at);
+function timeOf(at: string | undefined): number {
+  const time = at === undefined ? Number.NaN : Date.parse(at);
   return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+}
+
+/** Negative when `left` is the larger of two numbers `right` is not. */
+function byLarger(left: number, right: number): number {
+  return left > right ? -1 : left < right ? 1 : 0;
+}
+
+function byCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /** Negative when `left` is the newer: the order a session's list is in. */
@@ -212,16 +228,40 @@ function newerFirst(
   left: ExecutionPullRequestPrimaryCandidate,
   right: ExecutionPullRequestPrimaryCandidate,
 ): number {
-  const byTime = timeOf(right.at) - timeOf(left.at);
-  if (byTime !== 0 && !Number.isNaN(byTime)) return byTime;
-  if (left.number !== right.number) return right.number - left.number;
-  const leftRepository = left.repository.toLowerCase();
-  const rightRepository = right.repository.toLowerCase();
-  return leftRepository < rightRepository
-    ? -1
-    : leftRepository > rightRepository
-      ? 1
-      : 0;
+  return (
+    byLarger(timeOf(left.at), timeOf(right.at)) ||
+    byLarger(left.number, right.number) ||
+    byCodeUnits(
+      left.repository.toLowerCase(),
+      right.repository.toLowerCase(),
+    ) ||
+    byCodeUnits(left.repository, right.repository) ||
+    EXECUTION_PULL_REQUEST_ROLES.indexOf(left.role) -
+      EXECUTION_PULL_REQUEST_ROLES.indexOf(right.role)
+  );
+}
+
+/** The more settled of two states read at once: an end outranks an open. */
+const STATE_RANK: Record<ExecutionPullRequestStatus, number> = {
+  merged: 0,
+  closed: 1,
+  open: 2,
+  draft: 3,
+};
+
+/**
+ * Negative when `left` is the state to keep: the one read last (a state
+ * without `checkedAt` last of all), and of two read at once the more
+ * settled, so the choice is blind to order too.
+ */
+function fresherState(
+  left: { state: ExecutionPullRequestStatus; checkedAt?: string },
+  right: { state: ExecutionPullRequestStatus; checkedAt?: string },
+): number {
+  return (
+    byLarger(timeOf(left.checkedAt), timeOf(right.checkedAt)) ||
+    STATE_RANK[left.state] - STATE_RANK[right.state]
+  );
 }
 
 /**
@@ -230,8 +270,10 @@ function newerFirst(
  * cannot read, as one of a role or source it does not know, is dropped and
  * named; so is a state it cannot read, the fact kept. What it keeps is the
  * contract's list whatever the host sent: one fact per pull request and
- * role, the newest; newest first; at most `EXECUTION_PULL_REQUESTS_MAX`; and
- * one state per pull request, the one read last.
+ * role, the newest; newest first; every fact but mentions, and at most
+ * `EXECUTION_PULL_REQUEST_MENTIONS_MAX` of those, the newest; and one state
+ * per pull request, the one read last of any fact the host sent, a fact
+ * dropped as older included.
  *
  * Warnings' paths start at `pullRequests`; a caller puts its own place
  * before them.
@@ -242,6 +284,9 @@ export function decodeExecutionPullRequests(
   if (!Array.isArray(raw)) return { ok: false, reason: "invalid-payload" };
   const warnings: ExecutionDecodeWarning[] = [];
   const byFact = new Map<string, ExecutionPullRequestFact>();
+  // One state per pull request, the one read last, chosen before any fact
+  // is dropped as older: an older action can carry the newer read.
+  const states = new Map<string, ExecutionPullRequestState>();
   raw.forEach((entry, index) => {
     const path = `pullRequests.${index}`;
     const fact = readFact(entry, path, warnings);
@@ -249,28 +294,34 @@ export function decodeExecutionPullRequests(
       warnings.push({ reason: "dropped-invalid-field", path });
       return;
     }
-    const key = `${pullRequestKeyOf(fact)} ${fact.role}`;
+    const pullRequest = pullRequestKeyOf(fact);
+    if (fact.state) {
+      const held = states.get(pullRequest);
+      if (!held || fresherState(fact.state, held) < 0) {
+        states.set(pullRequest, fact.state);
+      }
+    }
+    const key = `${pullRequest} ${fact.role}`;
     const held = byFact.get(key);
     if (!held || newerFirst(fact, held) < 0) byFact.set(key, fact);
   });
 
-  // One state per pull request: the one read last, on each of its facts.
-  const states = new Map<string, ExecutionPullRequestState>();
-  for (const fact of byFact.values()) {
-    if (!fact.state) continue;
-    const key = pullRequestKeyOf(fact);
-    const held = states.get(key);
-    if (!held || timeOf(fact.state.checkedAt) > timeOf(held.checkedAt)) {
-      states.set(key, fact.state);
+  let mentions = 0;
+  let excess = false;
+  const facts: ExecutionPullRequestFact[] = [];
+  for (const fact of [...byFact.values()].sort(newerFirst)) {
+    if (fact.role === "mentioned") {
+      mentions += 1;
+      if (mentions > EXECUTION_PULL_REQUEST_MENTIONS_MAX) {
+        excess = true;
+        continue;
+      }
     }
-  }
-  let facts = [...byFact.values()].sort(newerFirst).map((fact) => {
     const { state: _, ...bare } = fact;
     const state = states.get(pullRequestKeyOf(fact));
-    return state ? { ...bare, state } : bare;
-  });
-  if (facts.length > EXECUTION_PULL_REQUESTS_MAX) {
-    facts = facts.slice(0, EXECUTION_PULL_REQUESTS_MAX);
+    facts.push(state ? { ...bare, state } : bare);
+  }
+  if (excess) {
     warnings.push({ reason: "dropped-excess-entries", path: "pullRequests" });
   }
   return {

@@ -1,7 +1,6 @@
 import {
   decodeExecutionMcpServerRequest,
   decodeExecutionPullRequests,
-  EXECUTION_PULL_REQUESTS_MAX,
   isExecutionMcpProvider,
   type ExecutionMcpProvider,
   type ExecutionPullRequestFact,
@@ -222,7 +221,7 @@ export class FakeHostModel {
       ...session.pullRequests,
     ]);
     if (!folded.ok) throw new Error("unreadable pull requests");
-    session.pullRequests = folded.value.slice(0, EXECUTION_PULL_REQUESTS_MAX);
+    session.pullRequests = folded.value;
     this.emit(sessionId, [
       {
         kind: "delta",

@@ -1129,8 +1129,10 @@ back, and its own branch being a PR's head. Each is one
 A snapshot and the list carry `pullRequests` whole, and a `session.patch`
 carries it whole each time it changes, so a reader replaces what it held
 with it. It holds one fact per pull request and role, the newest (the same
-role again moves its fact up), newest first, at most 100
-(`EXECUTION_PULL_REQUESTS_MAX`). A pull request is its repository and number,
+role again moves its fact up), newest first. Every fact of a role that can
+make a primary is kept, however many; only mentions are capped, at the
+newest 100 (`EXECUTION_PULL_REQUEST_MENTIONS_MAX`), so no number of mentions
+can push out the pull request a session opened. A pull request is its repository and number,
 the repository without regard to case: `pullRequestKeyOf` is its one key.
 The same number in another repository is another pull request. A host
 without the capability leaves `pullRequests` out: unknown, never none.
@@ -1147,22 +1149,28 @@ them, `title`, `url` and `checkedAt`.
 session's primary pull request, which its chip and after-chains follow: the
 newest it opened; else the newest it pushed to; else the newest still open
 (open or a draft) of those it edited or reviewed; else the newest it merged;
-else none. One whose state no fact carries counts as open, unless the
-session merged it; a mention is never primary. It is pure and blind to
-order (newest is the latest `at`, then the higher number, then the
-repository first in order), takes any shape with `repository`, `number`,
-`role`, `at` and an optional `state.state`, and hands back the fact it chose.
+else none. Still open is known, never assumed: the pull request's state,
+the one read last (`checkedAt`) of any of its facts, is open or a draft, and
+the session did not merge it. One whose state nobody read is not still
+open, so on a host that reads no state an edit or a review is never
+primary, while a push still is. A mention is never primary. It is pure and
+blind to order (newest is the latest `at`, then the higher number, then the
+repository first in order, then the role first in
+`EXECUTION_PULL_REQUEST_ROLES`), takes any shape with `repository`,
+`number`, `role`, `at` and an optional `state` of `state` and `checkedAt`,
+and hands back the fact it chose.
 
 The reader (`decodeExecutionPullRequests`, which the snapshot, the list and
 `session.patch` use) refuses a `pullRequests` that is no list, and drops a
 fact it cannot read, as one of a role or source it doesn't know, naming it
 in `warnings`; a state it cannot read is dropped from its fact the same way.
 What it keeps holds to the rules above whatever the host sent, every fact of
-one pull request carrying the state read last.
+one pull request carrying the state read last, chosen from every fact the
+host sent, before an older one of the same role is dropped.
 
 This replaces `prUrl` (on `session.patch`, the snapshot and the list) and
 the start request's `automation.autoCreatePr`, with its capability
-`automation.create-pr`, which are gone (0.42): an older host's `prUrl` and an
+`automation.create-pr`, which are gone (0.43): an older host's `prUrl` and an
 older client's `automation` are read past as any unknown field.
 
 ## A host's MCP servers and skills

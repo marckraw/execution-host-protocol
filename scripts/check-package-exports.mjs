@@ -329,7 +329,8 @@ for (const loaded of [commonJs, esModule]) {
   assert.equal(typeof loaded.primaryPullRequestOf, "function");
   assert.equal(typeof loaded.decodeExecutionPullRequests, "function");
   assert.equal(typeof loaded.pullRequestKeyOf, "function");
-  assert.equal(loaded.EXECUTION_PULL_REQUESTS_MAX, 100);
+  assert.equal(loaded.EXECUTION_PULL_REQUEST_MENTIONS_MAX, 100);
+  assert.equal(loaded.EXECUTION_PULL_REQUESTS_MAX, undefined);
   assert.deepEqual(loaded.EXECUTION_PULL_REQUEST_ROLES, [
     "opened",
     "pushed",

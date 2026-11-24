@@ -306,19 +306,20 @@ function checkoutsOf(
 }
 
 /**
- * The host's pull request hook, or null for a host that reports none. One
- * that advertises `sessions.pullRequests.v1` without it fails, as one
- * advertising `start.worksIn.v1` without checkouts does.
+ * The host's pull request hook when it advertises `sessions.pullRequests.v1`,
+ * or null when it doesn't: what it advertises decides, never whether it gave
+ * a hook (MAR-5696 review). One that advertises it without the hook fails,
+ * as one advertising `start.worksIn.v1` without checkouts does.
  */
 function pullRequestsOf(
   host: ExecutionHostConformanceHost,
 ): ExecutionHostConformancePullRequests | null {
-  if (host.pullRequests) return host.pullRequests;
+  if (!host.capabilities.includes("sessions.pullRequests.v1")) return null;
   check(
-    !host.capabilities.includes("sessions.pullRequests.v1"),
+    host.pullRequests !== undefined,
     "the host advertises sessions.pullRequests.v1, but gives the suite no pullRequests to hold it to",
   );
-  return null;
+  return host.pullRequests;
 }
 
 /** A start in the checkout cases' folder, asking for `worksIn`. */
@@ -1960,7 +1961,39 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
             (one) => one.sessionId === sessionId,
           );
         if (!pullRequests) {
-          // Unknown, never none: a host that reports none says nothing.
+          // Unknown, never none: a host that reports none says nothing, on
+          // its log as much as its snapshot and list, even when its hook is
+          // handed a pull request anyway.
+          await host.pullRequests?.record(sessionId, [
+            {
+              repository: "acme/app",
+              number: 7,
+              role: "opened",
+              source: "command",
+              at: "2026-11-24T10:00:00.000Z",
+            },
+          ]);
+          await host.emit(sessionId, marked(sessionId, 1));
+          const following = follow(
+            host.api,
+            sessionId,
+            0,
+            hasAll(sessionId, 1),
+          );
+          try {
+            await within(following.reached, waitMs, "the follow");
+          } finally {
+            await following.follow.stop();
+          }
+          check(
+            !following.kept.some(
+              (envelope) =>
+                envelope.event.kind === "delta" &&
+                envelope.event.delta.kind === "session.patch" &&
+                envelope.event.delta.patch.pullRequests !== undefined,
+            ),
+            "a host without sessions.pullRequests.v1 sent pullRequests on a session.patch",
+          );
           const snapshot = await host.api.snapshot(sessionId);
           check(
             snapshot !== null && snapshot.pullRequests === undefined,
