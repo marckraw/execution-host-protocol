@@ -4,6 +4,7 @@ import type {
 } from "./file-reach.js";
 import type { ExecutionProviderSessionCap } from "./session-cap.js";
 import type { ExecutionMcpProvider } from "./mcp.js";
+import type { ExecutionPullRequestFact } from "./pull-requests.js";
 import type { HarnessEvidence } from "./harness-evidence.js";
 import type {
   ExecutionToolAttachment,
@@ -20,7 +21,6 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
   "sessions.metadata",
   "workspaces.materialize",
   "callbacks.status",
-  "automation.create-pr",
   "attachments.inline-image",
   "commands.cancelQueued",
   /**
@@ -189,6 +189,23 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * unknown one, so the shared client sends it none.
    */
   "sessions.settled.v1",
+  /**
+   * The host reports the pull requests each session's agent acted on
+   * (MAR-5696): what it ran (`gh pr …`), the GitHub MCP tools it called, PR
+   * URLs in what its tools gave back, and its own branch, in any repository.
+   * A snapshot and the list carry `pullRequests` whole, and a `session.patch`
+   * carries it whole each time it changes. A host without it leaves
+   * `pullRequests` out: unknown, never none.
+   */
+  "sessions.pullRequests.v1",
+  /**
+   * Beside `sessions.pullRequests.v1`, the host reads each pull request's
+   * state and checks from GitHub itself, with its own sign-in (MAR-5696, the
+   * personal profile on a Mac), and puts them on every fact as `state`,
+   * sending the list again when they change. A host without it sends no
+   * `state`.
+   */
+  "sessions.pullRequests.state.v1",
 ] as const;
 export type KnownExecutionProtocolCapability =
   (typeof EXECUTION_PROTOCOL_CAPABILITY_IDS)[number];
@@ -794,7 +811,12 @@ export type ExecutionSessionDelta =
         activity?: ExecutionActivitySignal;
         contextWindow?: ExecutionContextWindow;
         continuationToken?: string | null;
-        prUrl?: string | null;
+        /**
+         * The pull requests the session's agent acted on, whole, newest
+         * first (`sessions.pullRequests.v1`, MAR-5696): a reader replaces
+         * what it held with it.
+         */
+        pullRequests?: ExecutionPullRequestFact[];
         roomId?: string | null;
         /**
          * The model the session's turns run on from the next one, after a
@@ -1137,10 +1159,6 @@ export interface ExecutionCallbackConfig {
   secret: string;
 }
 
-export interface ExecutionAutomationConfig {
-  autoCreatePr?: boolean;
-}
-
 export interface ExecutionStartRequest {
   protocolVersion: typeof EXECUTION_PROTOCOL_VERSION;
   providerId: string;
@@ -1167,7 +1185,6 @@ export interface ExecutionStartRequest {
   metadata?: ExecutionSessionMetadata | null;
   workspace?: ExecutionWorkspaceSource;
   callback?: ExecutionCallbackConfig;
-  automation?: ExecutionAutomationConfig;
   /**
    * The named Environment on the host whose declared variables this session
    * should be prepared with (ADR-0011). A residency (Project) that names none

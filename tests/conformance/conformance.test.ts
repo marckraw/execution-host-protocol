@@ -74,14 +74,19 @@ describeExecutionHostConformance(
   },
 );
 
-// A host predating turns.usage.v1 (MAR-4943) and mcp.connections.v1
-// (MAR-5668) passes too, by refusing the history as not-found and MCP calls as
-// unsupported, over a port and over HTTP.
+// A host predating turns.usage.v1 (MAR-4943), mcp.connections.v1 (MAR-5668)
+// and sessions.pullRequests.v1 (MAR-5696) passes too, by refusing the history
+// as not-found and MCP calls as unsupported, and saying no pullRequests, over
+// a port and over HTTP.
 describeExecutionHostConformance(
   { describe, it },
   "a host without turn usage, over a MessageChannel",
   () => {
-    const model = new FakeHostModel({ recordsUsage: false, mcp: "absent" });
+    const model = new FakeHostModel({
+      recordsUsage: false,
+      mcp: "absent",
+      pullRequests: "none",
+    });
     const { port1, port2 } = new MessageChannel();
     const server = servePort(port2, fakeApi(model));
     const api = createPortClient(port1);
@@ -100,7 +105,11 @@ describeExecutionHostConformance(
   { describe, it },
   "a host without turn usage, behind the HTTP client",
   () => {
-    const model = new FakeHostModel({ recordsUsage: false, mcp: "absent" });
+    const model = new FakeHostModel({
+      recordsUsage: false,
+      mcp: "absent",
+      pullRequests: "none",
+    });
     const api = createExecutionHostClient({
       baseUrl: "http://daemon.test",
       token: "conformance-token",
@@ -111,12 +120,13 @@ describeExecutionHostConformance(
 );
 
 // A shared host (MAR-5668) passes by refusing every MCP call
-// unavailable-on-host, over a port and over HTTP.
+// unavailable-on-host, and reports pull requests without reading GitHub
+// itself (MAR-5696), over a port and over HTTP.
 describeExecutionHostConformance(
   { describe, it },
   "a shared host without MCP connections, over a MessageChannel",
   () => {
-    const model = new FakeHostModel({ mcp: "shared" });
+    const model = new FakeHostModel({ mcp: "shared", pullRequests: "facts" });
     const { port1, port2 } = new MessageChannel();
     const server = servePort(port2, fakeApi(model));
     const api = createPortClient(port1);
@@ -135,7 +145,7 @@ describeExecutionHostConformance(
   { describe, it },
   "a shared host without MCP connections, behind the HTTP client",
   () => {
-    const model = new FakeHostModel({ mcp: "shared" });
+    const model = new FakeHostModel({ mcp: "shared", pullRequests: "facts" });
     const api = createExecutionHostClient({
       baseUrl: "http://daemon.test",
       token: "conformance-token",

@@ -155,7 +155,16 @@ const snapshot = {
   ],
   lastSeq: 17,
   workspace: sessionWorkspaceFixtures.project.value,
-  prUrl: "https://github.com/marckraw/new-blok/pull/7",
+  pullRequests: [
+    {
+      repository: "marckraw/new-blok",
+      number: 7,
+      role: "opened" as const,
+      source: "command" as const,
+      itemId: "item-3",
+      at: "2026-11-24T10:00:00.000Z",
+    },
+  ],
   roomId: null,
 };
 
@@ -201,7 +210,10 @@ describe("reading a snapshot", () => {
     const decoded = decodeExecutionSessionSnapshot({
       ...snapshot,
       status: "paused",
-      prUrl: "javascript:alert(1)",
+      pullRequests: [
+        snapshot.pullRequests[0],
+        { ...snapshot.pullRequests[0], role: "closed" },
+      ],
       conversation: [
         { ...conversationItemFixtures.note.value, kind: "image" },
         { id: "broken" },
@@ -218,7 +230,7 @@ describe("reading a snapshot", () => {
     if (!decoded.ok) throw new Error(decoded.reason);
 
     expect(decoded.value.status).toBe("idle");
-    expect(decoded.value.prUrl).toBeNull();
+    expect(decoded.value.pullRequests).toEqual(snapshot.pullRequests);
     expect(decoded.value.conversation).toHaveLength(1);
     expect(decoded.value.conversation[0]).not.toHaveProperty("author");
     expect(decoded.value.turns).toEqual([
@@ -231,7 +243,7 @@ describe("reading a snapshot", () => {
       "status",
       "turns.0.fileChanges.1",
       "turns.1",
-      "prUrl",
+      "pullRequests.1",
     ]);
   });
 
@@ -239,14 +251,46 @@ describe("reading a snapshot", () => {
     const {
       turns: _turns,
       workspace: _workspace,
-      prUrl: _prUrl,
+      pullRequests: _pullRequests,
       roomId: _roomId,
       ...older
     } = snapshot;
-    void [_turns, _workspace, _prUrl, _roomId];
+    void [_turns, _workspace, _pullRequests, _roomId];
     expect(decodeExecutionSessionSnapshot(older)).toMatchObject({
       ok: true,
-      value: { turns: [], workspace: null, prUrl: null, roomId: null },
+      value: { turns: [], workspace: null, roomId: null },
     });
+  });
+
+  it("leaves pullRequests out for a host that does not say, and reads past an older host's prUrl (MAR-5696)", () => {
+    const { pullRequests: _, ...older } = snapshot;
+    const decoded = decodeExecutionSessionSnapshot({
+      ...older,
+      prUrl: "https://github.com/marckraw/new-blok/pull/7",
+    });
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value).not.toHaveProperty("pullRequests");
+    expect(decoded.value).not.toHaveProperty("prUrl");
+    expect(decoded.warnings).toBeUndefined();
+  });
+
+  it("drops a pullRequests that is no list, and says so (MAR-5696)", () => {
+    const decoded = decodeExecutionSessionSnapshot({
+      ...snapshot,
+      pullRequests: { 0: snapshot.pullRequests[0] },
+    });
+    if (!decoded.ok) throw new Error(decoded.reason);
+    expect(decoded.value).not.toHaveProperty("pullRequests");
+    expect(decoded.warnings).toEqual([
+      { reason: "dropped-invalid-field", path: "pullRequests" },
+    ]);
+  });
+
+  it("keeps a capable host's empty list: none, not unknown (MAR-5696)", () => {
+    const decoded = decodeExecutionSessionSnapshot({
+      ...snapshot,
+      pullRequests: [],
+    });
+    expect(decoded).toMatchObject({ ok: true, value: { pullRequests: [] } });
   });
 });

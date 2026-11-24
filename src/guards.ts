@@ -35,6 +35,17 @@ export function isBoundedString(
   );
 }
 
+/** An absolute `http:` or `https:` URL. */
+export function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /** RFC 3339 in UTC or with an offset, as `Date.prototype.toISOString` writes it. */
 const TIMESTAMP =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;

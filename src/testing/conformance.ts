@@ -9,6 +9,10 @@ import { ExecutionStartWorksInError } from "../client/works-in.js";
 import { ExecutionTaskOutputError } from "../client/task-output.js";
 import { isTimestamp } from "../guards.js";
 import {
+  primaryPullRequestOf,
+  type ExecutionPullRequestFact,
+} from "../pull-requests.js";
+import {
   EXECUTION_MCP_SERVER_SOURCES,
   EXECUTION_MCP_SERVER_STATES,
   isExecutionMcpServerName,
@@ -102,6 +106,14 @@ export interface ExecutionHostConformanceHost {
    * host that places none: the suite then skips those cases.
    */
   checkouts?: ExecutionHostConformanceCheckouts;
+  /**
+   * The pull requests a host's detector hears its sessions act on
+   * (`sessions.pullRequests.v1`, MAR-5696). Required of a host that
+   * advertises it, which fails the pull request case without it. Leave it
+   * out only for a host that reports none: the suite then holds it to
+   * leaving `pullRequests` out.
+   */
+  pullRequests?: ExecutionHostConformancePullRequests;
   /** Runs after the case, whatever its outcome. */
   close?(): void | Promise<void>;
 }
@@ -120,6 +132,21 @@ export interface ExecutionHostConformanceCheckouts {
    * those sessions work in their checkout meanwhile.
    */
   holdTurns(): () => void | Promise<void>;
+}
+
+/** What the pull request case needs of a host that reports them. */
+export interface ExecutionHostConformancePullRequests {
+  /**
+   * Has the session's agent act on pull requests as the host's detector
+   * hears it, each of `facts` as given: the host folds them into the
+   * session's list and sends it. A host that reads GitHub itself
+   * (`sessions.pullRequests.state.v1`) takes each fact's `state` as what it
+   * read; the suite gives one there alone.
+   */
+  record(
+    sessionId: string,
+    facts: ExecutionPullRequestFact[],
+  ): void | Promise<void>;
 }
 
 /** What the MCP cases need of a host that manages MCP connections. */
@@ -276,6 +303,23 @@ function checkoutsOf(
     "the host advertises start.worksIn.v1, but gives the suite no checkouts to hold it to",
   );
   return null;
+}
+
+/**
+ * The host's pull request hook when it advertises `sessions.pullRequests.v1`,
+ * or null when it doesn't: what it advertises decides, never whether it gave
+ * a hook (MAR-5696 review). One that advertises it without the hook fails,
+ * as one advertising `start.worksIn.v1` without checkouts does.
+ */
+function pullRequestsOf(
+  host: ExecutionHostConformanceHost,
+): ExecutionHostConformancePullRequests | null {
+  if (!host.capabilities.includes("sessions.pullRequests.v1")) return null;
+  check(
+    host.pullRequests !== undefined,
+    "the host advertises sessions.pullRequests.v1, but gives the suite no pullRequests to hold it to",
+  );
+  return host.pullRequests;
 }
 
 /** A start in the checkout cases' folder, asking for `worksIn`. */
@@ -1905,6 +1949,150 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
         } finally {
           await release();
         }
+      },
+    },
+    {
+      name: "reports the pull requests a session acted on, whole, one per pull request and role, newest first, to followers, its snapshot and the list",
+      async run(host, { waitMs }) {
+        const pullRequests = pullRequestsOf(host);
+        const sessionId = await started(host);
+        const listed = async () =>
+          (await host.api.listSessions()).sessions.find(
+            (one) => one.sessionId === sessionId,
+          );
+        if (!pullRequests) {
+          // Unknown, never none: a host that reports none says nothing, on
+          // its log as much as its snapshot and list, even when its hook is
+          // handed a pull request anyway.
+          await host.pullRequests?.record(sessionId, [
+            {
+              repository: "acme/app",
+              number: 7,
+              role: "opened",
+              source: "command",
+              at: "2026-11-24T10:00:00.000Z",
+            },
+          ]);
+          await host.emit(sessionId, marked(sessionId, 1));
+          const following = follow(
+            host.api,
+            sessionId,
+            0,
+            hasAll(sessionId, 1),
+          );
+          try {
+            await within(following.reached, waitMs, "the follow");
+          } finally {
+            await following.follow.stop();
+          }
+          check(
+            !following.kept.some(
+              (envelope) =>
+                envelope.event.kind === "delta" &&
+                envelope.event.delta.kind === "session.patch" &&
+                envelope.event.delta.patch.pullRequests !== undefined,
+            ),
+            "a host without sessions.pullRequests.v1 sent pullRequests on a session.patch",
+          );
+          const snapshot = await host.api.snapshot(sessionId);
+          check(
+            snapshot !== null && snapshot.pullRequests === undefined,
+            "a host without sessions.pullRequests.v1 put pullRequests on its snapshot",
+          );
+          check(
+            (await listed())?.pullRequests === undefined,
+            "a host without sessions.pullRequests.v1 put pullRequests on the list",
+          );
+          return;
+        }
+        const withState = host.capabilities.includes(
+          "sessions.pullRequests.state.v1",
+        );
+        const state = (repository: string, number: number) =>
+          withState
+            ? {
+                state: {
+                  state: "open" as const,
+                  checks: { passed: 3, failed: 1, running: 0 },
+                  reviewDecision: "changes-requested" as const,
+                  mergeable: false,
+                  title: "Conformance",
+                  url: `https://github.com/${repository}/pull/${number}`,
+                  checkedAt: "2026-11-24T10:05:00.000Z",
+                },
+              }
+            : {};
+        const pushedFirst: ExecutionPullRequestFact = {
+          repository: "acme/app",
+          number: 7,
+          role: "pushed",
+          source: "branch",
+          at: "2026-11-24T10:00:00.000Z",
+          ...state("acme/app", 7),
+        };
+        // The same number in another repository is another pull request.
+        const mentioned: ExecutionPullRequestFact = {
+          repository: "acme/lib",
+          number: 7,
+          role: "mentioned",
+          source: "output-url",
+          itemId: `${sessionId}-item-1`,
+          at: "2026-11-24T10:01:00.000Z",
+        };
+        // Pushed to again: one fact still, the newer.
+        const pushedAgain: ExecutionPullRequestFact = {
+          ...pushedFirst,
+          source: "command",
+          itemId: `${sessionId}-item-2`,
+          at: "2026-11-24T10:02:00.000Z",
+        };
+        // GitHub's names ignore case: the same pull request, another role.
+        const reviewed: ExecutionPullRequestFact = {
+          repository: "Acme/App",
+          number: 7,
+          role: "reviewed",
+          source: "mcp-tool",
+          agentRunId: `${sessionId}-run-1`,
+          at: "2026-11-24T10:03:00.000Z",
+          ...state("acme/app", 7),
+        };
+        const expected = [reviewed, pushedAgain, mentioned];
+        const isExpected = (list: unknown) =>
+          canonical(list) === canonical(expected);
+        const following = follow(host.api, sessionId, 0, (kept) =>
+          kept.some(
+            (envelope) =>
+              envelope.event.kind === "delta" &&
+              envelope.event.delta.kind === "session.patch" &&
+              isExpected(envelope.event.delta.patch.pullRequests),
+          ),
+        );
+        try {
+          await host.pullRequests!.record(sessionId, [pushedFirst, mentioned]);
+          await host.pullRequests!.record(sessionId, [pushedAgain, reviewed]);
+          await within(
+            following.reached,
+            waitMs,
+            "a session.patch carrying the session's pull requests whole",
+          );
+        } finally {
+          await following.follow.stop();
+        }
+        const snapshot = await host.api.snapshot(sessionId);
+        check(snapshot !== null, "snapshot() of a started session is null");
+        check(
+          isExpected(snapshot.pullRequests),
+          `its snapshot's pullRequests are ${canonical(snapshot.pullRequests)}, not ${canonical(expected)}`,
+        );
+        const summary = await listed();
+        check(
+          isExpected(summary?.pullRequests),
+          `the list's pullRequests are ${canonical(summary?.pullRequests)}, not ${canonical(expected)}`,
+        );
+        check(
+          primaryPullRequestOf(snapshot.pullRequests!)?.role === "pushed",
+          "its primary is not the pull request it pushed to",
+        );
       },
     },
     {

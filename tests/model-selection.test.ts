@@ -221,7 +221,6 @@ describe("the snapshot says what the next turn runs on (MAR-3662)", () => {
     turns: [],
     lastSeq: 12,
     workspace: null,
-    prUrl: null,
     roomId: null,
   };
 

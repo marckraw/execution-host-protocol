@@ -1064,23 +1064,26 @@ describe("structured interactions", () => {
   });
 });
 
-describe("session.patch PR URL", () => {
-  it("accepts additive HTTP(S) PR URLs", () => {
+describe("session.patch pull requests (MAR-5696)", () => {
+  const fact = {
+    repository: "acme/repo",
+    number: 7,
+    role: "opened",
+    source: "command",
+    itemId: "item-1",
+    at: "2026-11-24T10:00:00.000Z",
+  };
+  const envelope = (patch: Record<string, unknown>) =>
+    JSON.stringify({
+      protocolVersion: 1,
+      sessionId: "session-1",
+      seq: 7,
+      event: { kind: "delta", delta: { kind: "session.patch", patch } },
+    });
+
+  it("reads the list whole", () => {
     expect(
-      decodeExecutionEventEnvelope(
-        JSON.stringify({
-          protocolVersion: 1,
-          sessionId: "session-1",
-          seq: 7,
-          event: {
-            kind: "delta",
-            delta: {
-              kind: "session.patch",
-              patch: { prUrl: "https://github.com/acme/repo/pull/7" },
-            },
-          },
-        }),
-      ),
+      decodeExecutionEventEnvelope(envelope({ pullRequests: [fact] })),
     ).toEqual({
       ok: true,
       value: {
@@ -1089,36 +1092,56 @@ describe("session.patch PR URL", () => {
         seq: 7,
         event: {
           kind: "delta",
-          delta: {
-            kind: "session.patch",
-            patch: { prUrl: "https://github.com/acme/repo/pull/7" },
-          },
+          delta: { kind: "session.patch", patch: { pullRequests: [fact] } },
         },
       },
     });
   });
 
-  it("accepts null and rejects non-HTTP(S) schemes", () => {
-    const envelope = (prUrl: unknown) =>
-      JSON.stringify({
-        protocolVersion: 1,
-        sessionId: "session-1",
-        seq: 8,
+  it("refuses a list that is no list, as any known field gone wrong", () => {
+    for (const pullRequests of [null, fact, "acme/repo#7"]) {
+      expect(decodeExecutionEventEnvelope(envelope({ pullRequests }))).toEqual({
+        ok: false,
+        reason: "invalid-payload",
+      });
+    }
+  });
+
+  it("drops a fact it cannot read, names it, and applies the rest", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      envelope({
+        pullRequests: [fact, { ...fact, role: "approved" }],
+        runningTasks: 0,
+      }),
+    );
+    expect(decoded).toEqual({
+      ok: true,
+      value: expect.objectContaining({
         event: {
           kind: "delta",
-          delta: { kind: "session.patch", patch: { prUrl } },
+          delta: {
+            kind: "session.patch",
+            patch: { pullRequests: [fact], runningTasks: 0 },
+          },
         },
-      });
-
-    expect(decodeExecutionEventEnvelope(envelope(null))).toMatchObject({
-      ok: true,
+      }),
+      warnings: [
+        {
+          reason: "dropped-invalid-field",
+          path: "event.delta.patch.pullRequests.1",
+        },
+      ],
     });
+  });
+
+  it("reads past an older host's prUrl, which no longer means anything", () => {
     expect(
-      decodeExecutionEventEnvelope(envelope("javascript:alert(1)")),
-    ).toEqual({ ok: false, reason: "invalid-payload" });
-    expect(decodeExecutionEventEnvelope(envelope("not a URL"))).toEqual({
-      ok: false,
-      reason: "invalid-payload",
+      decodeExecutionEventEnvelope(
+        envelope({ prUrl: "https://github.com/acme/repo/pull/7" }),
+      ),
+    ).toMatchObject({
+      ok: true,
+      value: { event: { delta: { kind: "session.patch", patch: {} } } },
     });
   });
 });
@@ -1235,12 +1258,19 @@ describe("start request contract", () => {
       url: "https://example.test/callback",
       secret: "fixture-secret",
     },
-    automation: { autoCreatePr: true },
   };
 
   it("round-trips the current daemon-compatible request", () => {
     expect(
       decodeExecutionStartRequest(encodeExecutionStartRequest(request)),
+    ).toEqual({ ok: true, value: request });
+  });
+
+  it("reads past an older client's automation, which asks for nothing now (MAR-5696)", () => {
+    expect(
+      decodeExecutionStartRequest(
+        JSON.stringify({ ...request, automation: { autoCreatePr: true } }),
+      ),
     ).toEqual({ ok: true, value: request });
   });
 
