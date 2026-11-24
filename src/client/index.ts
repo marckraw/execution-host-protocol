@@ -65,7 +65,6 @@ export {
   type ExecutionInteractionResponseErrorCode,
 } from "./interactions.js";
 export {
-  hostEnforcesDrivePolicy,
   hostEnforcesFileReach,
   hostEnforcesStartRequirements,
   parseExecutionHostHealth,
