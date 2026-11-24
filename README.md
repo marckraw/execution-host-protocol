@@ -1201,9 +1201,12 @@ offers it, and only with its setting on.
   `browser` is unchanged: one request, no probe.
 - A port has no `/health`, so the port client first asks the host's
   `providers()`. It sends a browser start only for a provider whose entry
-  carries `chrome`. A host whose providers carry none, or can't be read, gets
-  `browser-unsupported`. One where another provider carries it gets
-  `browser-unsupported-provider`. Both are unsent.
+  has a `chrome` that reads whole (`readExecutionProviderChrome`). A host
+  whose providers have none, can't be read or aren't a list gets
+  `browser-unsupported`; one where another provider has one gets
+  `browser-unsupported-provider`. Both are unsent. A cancel while it asks is
+  the caller's own abort reason, and a port that closes meanwhile is the
+  port's `network` error.
 - A host that knows `browser` refuses with a 400 and a code
   (`EXECUTION_START_BROWSER_REFUSAL_CODES`), and starts nothing:
   `browser-unavailable-on-host` (it doesn't offer Chrome),

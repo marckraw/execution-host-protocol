@@ -360,11 +360,16 @@ export function createPortClient(
         if (!isExecutionStartBrowser(browser)) {
           throw new TypeError('config.browser must be "chrome"');
         }
-        const providers = await (
-          call("providers", "providers", [options]) as ReturnType<
-            ExecutionHostApi["providers"]
-          >
-        ).catch(() => null);
+        let providers: unknown;
+        try {
+          providers = await call("providers", "providers", [options]);
+        } catch {
+          // The caller's cancel and the port's end are what they are, never
+          // a host that can't drive Chrome (MAR-5726 review 2).
+          if (options?.signal?.aborted) throw options.signal.reason;
+          if (closed) throw closedError("start");
+          providers = null;
+        }
         const refused = chromeStartRefusal(providers, request.providerId);
         if (refused) throw refused;
       }

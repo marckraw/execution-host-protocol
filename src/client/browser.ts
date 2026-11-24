@@ -1,5 +1,6 @@
 import {
   isExecutionStartBrowserRefusalCode,
+  readExecutionProviderChrome,
   type ExecutionStartBrowserRefusalCode,
 } from "../browser.js";
 import { isRecord } from "../guards.js";
@@ -77,24 +78,30 @@ export const BROWSER_REFUSAL_REASONS: Record<
  * with no `/health` to read (the port, MAR-5726): a host that takes
  * `config.browser` puts `chrome` on each provider that can drive it, and one
  * that predates the field can't, its decoder dropping it. So the start goes
- * only to a provider that carries `chrome`; for one that doesn't, on a host
- * where another does, it is `browser-unsupported-provider`; otherwise, or
- * when the providers can't be read, `browser-unsupported`. Nothing is sent
- * either way (`status` null). Null: it may go.
+ * only to a provider whose `chrome` reads (`readExecutionProviderChrome`);
+ * for one that doesn't, on a host where another does, it is
+ * `browser-unsupported-provider`; otherwise, or when the providers can't be
+ * read or aren't a list, `browser-unsupported`. Nothing is sent either way
+ * (`status` null). Null: it may go.
  */
 export function chromeStartRefusal(
-  providers: ReadonlyArray<{ id: string; chrome?: unknown }> | null,
+  providers: unknown,
   providerId: string,
 ): ExecutionStartBrowserError | null {
-  if (providers === null) {
+  if (!Array.isArray(providers)) {
     return new ExecutionStartBrowserError(
       "browser-unsupported",
       "the host's providers could not be read, so it cannot be trusted to start the session with Chrome; nothing was sent",
     );
   }
-  const drives = (provider: { chrome?: unknown }) => isRecord(provider.chrome);
+  // An entry is proof only when its `chrome` reads whole: `{}`, or a shape
+  // this build can't read, is unknown, never support.
+  const drives = (entry: unknown) =>
+    isRecord(entry) && readExecutionProviderChrome(entry.chrome) !== null;
   if (
-    providers.some((provider) => provider.id === providerId && drives(provider))
+    providers.some(
+      (entry) => isRecord(entry) && entry.id === providerId && drives(entry),
+    )
   )
     return null;
   return providers.some(drives)

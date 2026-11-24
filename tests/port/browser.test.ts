@@ -37,12 +37,12 @@ const provider = (
 });
 
 /** A peer whose providers are as given, counting what reaches its start. */
-function connect(providers: () => Promise<ExecutionProvider[]>) {
+function connect(providers: () => Promise<unknown>) {
   const base = fakeApi(new FakeHostModel());
   const starts: ExecutionStartRequest[] = [];
   const api: ExecutionHostApi = {
     ...base,
-    providers,
+    providers: providers as ExecutionHostApi["providers"],
     start: async (request, options) => {
       starts.push(request);
       return base.start(request, options);
@@ -55,7 +55,7 @@ function connect(providers: () => Promise<ExecutionProvider[]>) {
     client.close();
     server.close();
   });
-  return { client, starts };
+  return { client, server, starts };
 }
 
 const request = (
@@ -142,6 +142,101 @@ describe("a browser start over a port", () => {
     });
     await client.start(startRequestWithEnvironmentFixture.value);
     expect([asked, starts.length]).toEqual([0, 1]);
+  });
+});
+
+describe("what a browser start over a port is never refused for (review 2)", () => {
+  it.each([
+    ["an empty chrome", [{ ...provider("claude"), chrome: {} }]],
+    [
+      "a chrome it can't read",
+      [
+        {
+          ...provider("claude"),
+          chrome: { nativeHost: "yes", extension: true },
+        },
+      ],
+    ],
+    [
+      "a chrome that isn't an object",
+      [{ ...provider("claude"), chrome: true }],
+    ],
+    [
+      "a catalogue that is an object",
+      { providers: [provider("claude", found)] },
+    ],
+    ["a catalogue that is text", "claude"],
+    ["no catalogue", null],
+    ["entries that aren't objects", [null, "claude", 7]],
+  ])(
+    "refuses %s as browser-unsupported, sending nothing",
+    async (_name, reply) => {
+      const { client, starts } = connect(async () => reply);
+      const failure = await client
+        .start(request("claude"))
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ExecutionStartBrowserError);
+      expect(failure).toMatchObject({
+        code: "browser-unsupported",
+        status: null,
+      });
+      expect(starts).toEqual([]);
+    },
+  );
+
+  it("keeps an already-aborted signal's own reason, asking nothing", async () => {
+    let asked = 0;
+    const { client, starts } = connect(async () => {
+      asked += 1;
+      return [provider("claude", found)];
+    });
+    const reason = new Error("the person went away");
+    const failure = await client
+      .start(request("claude"), { signal: AbortSignal.abort(reason) })
+      .catch((error: unknown) => error);
+    expect(failure).toBe(reason);
+    expect([asked, starts.length]).toEqual([0, 0]);
+  });
+
+  it("keeps the reason of an abort while the providers are asked", async () => {
+    let asked = () => {};
+    const askedNow = new Promise<void>((resolve) => {
+      asked = resolve;
+    });
+    const { client, starts } = connect(() => {
+      asked();
+      return new Promise(() => {});
+    });
+    const controller = new AbortController();
+    const reason = new Error("cancelled mid-probe");
+    const pending = client
+      .start(request("claude"), { signal: controller.signal })
+      .catch((error: unknown) => error);
+    await askedNow;
+    controller.abort(reason);
+    expect(await pending).toBe(reason);
+    expect(starts).toEqual([]);
+  });
+
+  it("is the port's network error when the port closes while the providers are asked", async () => {
+    let asked = () => {};
+    const askedNow = new Promise<void>((resolve) => {
+      asked = resolve;
+    });
+    const { client, server, starts } = connect(() => {
+      asked();
+      return new Promise(() => {});
+    });
+    const pending = client
+      .start(request("claude"))
+      .catch((error: unknown) => error);
+    await askedNow;
+    server.close();
+    const failure = await pending;
+    expect(failure).toBeInstanceOf(ExecutionHostError);
+    expect(failure).toMatchObject({ kind: "network", operation: "start" });
+    expect(failure).not.toBeInstanceOf(ExecutionStartBrowserError);
+    expect(starts).toEqual([]);
   });
 });
 
