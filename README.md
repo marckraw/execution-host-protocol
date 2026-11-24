@@ -1170,10 +1170,14 @@ What it keeps holds to the rules above whatever the host sent, every fact of
 one pull request carrying the state read last, chosen from every fact the
 host sent, before an older one of the same role is dropped.
 
-This replaces `prUrl` (on `session.patch`, the snapshot and the list) and
-the start request's `automation.autoCreatePr`, with its capability
-`automation.create-pr`, which are gone (0.43): an older host's `prUrl` and an
-older client's `automation` are read past as any unknown field.
+This replaces `prUrl` (on the snapshot and the list) and the start request's
+`automation.autoCreatePr`, with its capability `automation.create-pr`, which
+are gone (0.43): an older client's `automation` is read past as any unknown
+field. On `session.patch` an older host's `prUrl` is still read (0.43.1,
+MAR-5698): kept, deprecated, while it is a pull request's address on
+github.com or null, and dropped with a warning otherwise, so a reader whose
+hosts don't send `pullRequests` yet still has their one word on it. The
+decoder makes nothing of it: what it means is the reader's.
 
 ## A host's MCP servers and skills
 

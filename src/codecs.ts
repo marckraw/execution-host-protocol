@@ -665,6 +665,14 @@ function decodeEvent(raw: unknown): KindAwareResult<ExecutionHostEvent> {
   }
 }
 
+/** A pull request's address on github.com, as an older host's `prUrl` was. */
+const LEGACY_PULL_REQUEST_URL =
+  /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/[A-Za-z0-9._-]{1,100}\/pull\/[1-9]\d{0,9}$/;
+
+function isLegacyPullRequestUrl(value: unknown): value is string {
+  return typeof value === "string" && LEGACY_PULL_REQUEST_URL.test(value);
+}
+
 function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
   if (!isRecord(raw) || typeof raw.kind !== "string") {
     return failure("invalid-payload");
@@ -718,6 +726,23 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
           patchWarnings.push({
             ...warning,
             path: `event.delta.patch.${warning.path}`,
+          });
+        }
+      }
+      // An older host's one word on its pull request (MAR-5698): kept while
+      // it is a pull request's address on github.com (or null), so a reader
+      // whose hosts send no `pullRequests` yet still has it; anything else is
+      // dropped and named. Nothing is made of it here: the reader decides.
+      if (raw.patch.prUrl !== undefined) {
+        if (
+          raw.patch.prUrl === null ||
+          isLegacyPullRequestUrl(raw.patch.prUrl)
+        ) {
+          patch.prUrl = raw.patch.prUrl;
+        } else {
+          patchWarnings.push({
+            reason: "dropped-invalid-field",
+            path: "event.delta.patch.prUrl",
           });
         }
       }
