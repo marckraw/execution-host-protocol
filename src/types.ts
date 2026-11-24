@@ -190,10 +190,11 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    */
   "start.worksIn.v1",
   /**
-   * The host takes a patch's `settled` (MAR-5673): a session the person
-   * settled works in no checkout, so the next start in it may take it. A
-   * host without it refuses the field as any unknown one, so the shared
-   * client sends it none.
+   * The host takes a patch's `settled` (MAR-5673): the person's mark, kept
+   * and echoed in the session's snapshot and the list. It frees no checkout:
+   * a session holds its checkout until it is deleted or fully quiescent,
+   * whether or not it is settled. A host without it refuses the field as any
+   * unknown one, so the shared client sends it none.
    */
   "sessions.settled.v1",
 ] as const;
