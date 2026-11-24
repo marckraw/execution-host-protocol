@@ -14,5 +14,6 @@ export {
   type ExecutionHostConformanceHost,
   type ExecutionHostConformanceMcp,
   type ExecutionHostConformanceOptions,
+  type ExecutionHostConformancePullRequests,
   type ExecutionHostConformanceRunner,
 } from "./conformance.js";

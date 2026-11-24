@@ -25,7 +25,8 @@ import {
   type ExecutionSessionStatus,
   type ExecutionSessionWorkspace,
 } from "../types.js";
-import { isHttpUrl, nullableString, oneOf } from "./snapshot.js";
+import type { ExecutionPullRequestFact } from "../pull-requests.js";
+import { nullableString, oneOf, pullRequestsOf } from "./snapshot.js";
 
 /**
  * Which sessions to list (`GET /v0/execution/sessions`), as agents-daemon
@@ -73,7 +74,8 @@ export interface ExecutionSessionSummary {
   /** The newest envelope it includes: where a follower of it would resume. */
   lastSeq: number;
   workspace: ExecutionSessionWorkspace | null;
-  prUrl: string | null;
+  /** As on a snapshot (MAR-5696): absent from a host that does not say. */
+  pullRequests?: ExecutionPullRequestFact[];
   roomId: string | null;
   /**
    * The person settled it, and no turn has begun since (MAR-5673); absent:
@@ -309,9 +311,7 @@ function readSummary(
       null,
       nullable(decodeExecutionSessionWorkspace),
     ),
-    prUrl: field<string | null>("prUrl", null, (value) =>
-      value === null || isHttpUrl(value) ? { ok: true, value } : { ok: false },
-    ),
+    ...pullRequestsOf(raw.pullRequests, warnings, `${path}.`),
     roomId: field<string | null>("roomId", null, text),
     ...(raw.settled === true ? { settled: true as const } : {}),
     createdAt: field<string | null>("createdAt", null, text),

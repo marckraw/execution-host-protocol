@@ -1,7 +1,10 @@
 import {
   decodeExecutionMcpServerRequest,
+  decodeExecutionPullRequests,
+  EXECUTION_PULL_REQUESTS_MAX,
   isExecutionMcpProvider,
   type ExecutionMcpProvider,
+  type ExecutionPullRequestFact,
 } from "../../src/index.js";
 import {
   decodeExecutionCommandEnvelope,
@@ -59,6 +62,8 @@ export interface FakeSession {
   working: boolean;
   /** The person settled it, and no turn has begun since. */
   settled: boolean;
+  /** The pull requests its agent acted on (MAR-5696), newest first. */
+  pullRequests: ExecutionPullRequestFact[];
 }
 
 /** The folder the model's starts may work in, as a person's checkout (MAR-5673). */
@@ -82,6 +87,13 @@ export interface FakeHostOptions {
   mcp?: FakeMcpProfile;
   /** Whether it places starts in a person's checkout (`start.worksIn.v1`); on by default. */
   checkouts?: boolean;
+  /**
+   * What it says of the pull requests sessions acted on (MAR-5696): nothing,
+   * as a host predating it; the facts (`sessions.pullRequests.v1`); or the
+   * facts with each one's state too (`.state.v1`), as the personal profile
+   * on a Mac. `state` by default.
+   */
+  pullRequests?: "none" | "facts" | "state";
 }
 
 export class FakeHostModel {
@@ -96,6 +108,7 @@ export class FakeHostModel {
     (sessionId: string, envelope: ExecutionHostEventEnvelope | null) => void
   >();
   readonly checkouts: boolean;
+  readonly pullRequests: "none" | "facts" | "state";
   /** Whether the turns of sessions started now are held running (`holdTurns`). */
   private holding = false;
   private created = 0;
@@ -103,6 +116,7 @@ export class FakeHostModel {
 
   constructor(options: FakeHostOptions = {}) {
     this.checkouts = options.checkouts ?? true;
+    this.pullRequests = options.pullRequests ?? "state";
     this.recordsUsage = options.recordsUsage ?? true;
     this.backfillsUsage = this.recordsUsage && (options.backfillsUsage ?? true);
     this.mcp = new FakeMcp(options.mcp ?? "personal");
@@ -169,6 +183,7 @@ export class FakeHostModel {
       place,
       working: this.holding,
       settled: false,
+      pullRequests: [],
     });
     // As a host does, the start is on the log before anything else.
     this.emit(sessionId, [{ kind: "status", status: "running" }]);
@@ -188,6 +203,42 @@ export class FakeHostModel {
       session.log.push(envelope);
       for (const watch of this.watchers) watch(sessionId, envelope);
     }
+  }
+
+  /**
+   * The session's agent acted on pull requests, as the host's detector hears
+   * it (MAR-5696): folded into its list, one per pull request and role, the
+   * newest, and sent whole on a `session.patch`.
+   */
+  recordPullRequests(sessionId: string, facts: ExecutionPullRequestFact[]) {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`no session ${sessionId}`);
+    const given =
+      this.pullRequests === "state"
+        ? facts
+        : facts.map(({ state: _, ...fact }) => fact);
+    const folded = decodeExecutionPullRequests([
+      ...given,
+      ...session.pullRequests,
+    ]);
+    if (!folded.ok) throw new Error("unreadable pull requests");
+    session.pullRequests = folded.value.slice(0, EXECUTION_PULL_REQUESTS_MAX);
+    this.emit(sessionId, [
+      {
+        kind: "delta",
+        delta: {
+          kind: "session.patch",
+          patch: { pullRequests: session.pullRequests },
+        },
+      },
+    ]);
+  }
+
+  /** A snapshot's or a listed session's `pullRequests`, when it says them. */
+  pullRequestsOf(session: FakeSession) {
+    return this.pullRequests === "none"
+      ? {}
+      : { pullRequests: session.pullRequests };
   }
 
   remove(sessionId: string): void {
@@ -316,7 +367,7 @@ export class FakeHostModel {
       conversationItemCount: 0,
       lastSeq: session.log.length,
       workspace: null,
-      prUrl: null,
+      ...this.pullRequestsOf(session),
       roomId: null,
       ...(session.settled ? { settled: true as const } : {}),
       createdAt: session.createdAt,
@@ -356,7 +407,7 @@ export class FakeHostModel {
       turns: session.turns.map((turn) => ({ ...turn, fileChanges: [] })),
       lastSeq: session.log.length,
       workspace: null,
-      prUrl: null,
+      ...this.pullRequestsOf(session),
       roomId: null,
       ...(session.settled ? { settled: true as const } : {}),
     };
@@ -924,7 +975,13 @@ function mcpRoute(
 
 /** What the model advertises, as its `/health` says it. */
 export function fakeCapabilities(model: FakeHostModel): string[] {
-  return model.checkouts ? ["start.worksIn.v1", "sessions.settled.v1"] : [];
+  return [
+    ...(model.checkouts ? ["start.worksIn.v1", "sessions.settled.v1"] : []),
+    ...(model.pullRequests === "none" ? [] : ["sessions.pullRequests.v1"]),
+    ...(model.pullRequests === "state"
+      ? ["sessions.pullRequests.state.v1"]
+      : []),
+  ];
 }
 
 /** The hooks a conformance case needs of the model, whatever face it wears. */
@@ -957,6 +1014,14 @@ export function modelHooks(
           },
         }
       : {}),
+    ...(model.pullRequests === "none"
+      ? {}
+      : {
+          pullRequests: {
+            record: (sessionId: string, facts: ExecutionPullRequestFact[]) =>
+              model.recordPullRequests(sessionId, facts),
+          },
+        }),
     ...(model.mcp.profile === "personal"
       ? {
           mcp: {

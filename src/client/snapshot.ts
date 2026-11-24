@@ -25,6 +25,10 @@ import {
   type ExecutionTurn,
   type ExecutionTurnFileChange,
 } from "../types.js";
+import {
+  decodeExecutionPullRequests,
+  type ExecutionPullRequestFact,
+} from "../pull-requests.js";
 
 export interface ExecutionSessionSnapshotTurn extends ExecutionTurn {
   fileChanges: ExecutionTurnFileChange[];
@@ -79,7 +83,14 @@ export interface ExecutionSessionSnapshot {
   lastSeq: number;
   /** Where the host prepared the session; null when it reported none. */
   workspace: ExecutionSessionWorkspace | null;
-  prUrl: string | null;
+  /**
+   * The pull requests the session's agent acted on, newest first, one per
+   * pull request and role (`sessions.pullRequests.v1`, MAR-5696). Its
+   * primary is `primaryPullRequestOf(pullRequests)`. Absent from a host
+   * without it, or when unreadable, which `warnings` names: unknown, never
+   * none.
+   */
+  pullRequests?: ExecutionPullRequestFact[];
   roomId: string | null;
   /**
    * The person settled it, and no turn of its has begun since (MAR-5673,
@@ -229,11 +240,7 @@ export function decodeExecutionSessionSnapshot(
             ? { ok: true, value: null }
             : decodeExecutionSessionWorkspace(value),
       ),
-      prUrl: field<string | null>("prUrl", null, (value) =>
-        value === null || isHttpUrl(value)
-          ? { ok: true, value: value as string | null }
-          : { ok: false },
-      ),
+      ...pullRequestsOf(raw.pullRequests, warnings),
       roomId: field<string | null>("roomId", null, (value) =>
         value === null || isNonEmptyString(value)
           ? { ok: true, value: value as string | null }
@@ -308,14 +315,29 @@ export function nullableString(
     : { ok: false };
 }
 
-export function isHttpUrl(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
+/**
+ * A snapshot's or a listed session's `pullRequests`, as a spread: absent
+ * stays absent, and one that is no list is dropped and named, at `place`
+ * (`sessions.3.` for a listed one).
+ */
+export function pullRequestsOf(
+  raw: unknown,
+  warnings: ExecutionDecodeWarning[],
+  place = "",
+): { pullRequests?: ExecutionPullRequestFact[] } {
+  if (raw === undefined) return {};
+  const decoded = decodeExecutionPullRequests(raw);
+  if (!decoded.ok) {
+    warnings.push({
+      reason: "dropped-invalid-field",
+      path: `${place}pullRequests`,
+    });
+    return {};
   }
+  for (const warning of decoded.warnings ?? []) {
+    warnings.push({ ...warning, path: `${place}${warning.path}` });
+  }
+  return { pullRequests: decoded.value };
 }
 
 function isNonEmptyString(value: unknown): value is string {

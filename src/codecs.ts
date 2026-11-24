@@ -22,6 +22,7 @@ import {
 } from "./tool-attachment-codecs.js";
 import {
   isBoundedString,
+  isHttpUrl,
   isNonEmptyString,
   isNonNegativeInteger,
   isPositiveInteger,
@@ -32,6 +33,7 @@ import {
   UNSHOWABLE_CHARACTERS,
 } from "./guards.js";
 import { isExecutionMcpProvider, isExecutionMcpServerName } from "./mcp.js";
+import { decodeExecutionPullRequests } from "./pull-requests.js";
 import {
   EXECUTION_INTERACTION_DESCRIPTION_MAX_LENGTH,
   EXECUTION_INTERACTION_HEADER_MAX_LENGTH,
@@ -64,7 +66,6 @@ import {
   type ExecutionActorKind,
   type ExecutionActorVia,
   type ExecutionAttentionState,
-  type ExecutionAutomationConfig,
   type ExecutionCallbackConfig,
   type ExecutionContextWindow,
   type ExecutionConversationItem,
@@ -417,8 +418,6 @@ export function decodeExecutionStartRequest(
   if (!workspace.ok) return workspace;
   const callback = decodeOptionalCallback(base.value.callback);
   if (!callback.ok) return callback;
-  const automation = decodeOptionalAutomation(base.value.automation);
-  if (!automation.ok) return automation;
   // A misspelled environment is refused rather than dropped: dropping it runs
   // the session on the base set alone, which looks like success and is the one
   // outcome the caller did not ask for.
@@ -445,7 +444,6 @@ export function decodeExecutionStartRequest(
     ...optionalProperty("metadata", metadata.value),
     ...optionalProperty("workspace", workspace.value),
     ...optionalProperty("callback", callback.value),
-    ...optionalProperty("automation", automation.value),
     ...optionalProperty(
       "environment",
       base.value.environment as string | null | undefined,
@@ -707,11 +705,21 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
         }
         patch.continuationToken = raw.patch.continuationToken;
       }
-      if (raw.patch.prUrl !== undefined) {
-        if (raw.patch.prUrl !== null && !isHttpUrl(raw.patch.prUrl)) {
-          return failure("invalid-payload");
+      // The session's pull requests, whole (MAR-5696): a list that is no
+      // list is refused, and a fact this build cannot read costs only itself.
+      const patchWarnings: ExecutionDecodeWarning[] = [];
+      if (raw.patch.pullRequests !== undefined) {
+        const pullRequests = decodeExecutionPullRequests(
+          raw.patch.pullRequests,
+        );
+        if (!pullRequests.ok) return failure("invalid-payload");
+        patch.pullRequests = pullRequests.value;
+        for (const warning of pullRequests.warnings ?? []) {
+          patchWarnings.push({
+            ...warning,
+            path: `event.delta.patch.${warning.path}`,
+          });
         }
-        patch.prUrl = raw.patch.prUrl;
       }
       if (raw.patch.roomId !== undefined) {
         if (raw.patch.roomId !== null && !isNonEmptyString(raw.patch.roomId)) {
@@ -754,7 +762,7 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
           return failure("invalid-payload");
         patch.updatedAt = raw.patch.updatedAt;
       }
-      return success({ kind: "session.patch", patch });
+      return success({ kind: "session.patch", patch }, patchWarnings);
     }
     case "conversation.item.add": {
       const item = decodeConversationItem(raw.item, "event.delta.item");
@@ -877,16 +885,6 @@ function decodeDelta(raw: unknown): KindAwareResult<ExecutionSessionDelta> {
     }
     default:
       return unknownKind("event.delta.kind", raw.kind);
-  }
-}
-
-function isHttpUrl(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
   }
 }
 
@@ -3060,18 +3058,6 @@ function decodeOptionalCallback(
     isNonEmptyString(raw.secret)
     ? success({ url: raw.url, secret: raw.secret })
     : failure("invalid-payload");
-}
-
-function decodeOptionalAutomation(
-  raw: unknown,
-): ExecutionDecodeResult<ExecutionAutomationConfig | undefined> {
-  if (raw === undefined) return success(undefined);
-  if (
-    !isRecord(raw) ||
-    (raw.autoCreatePr !== undefined && typeof raw.autoCreatePr !== "boolean")
-  )
-    return failure("invalid-payload");
-  return success({ ...optionalProperty("autoCreatePr", raw.autoCreatePr) });
 }
 
 function decodeContextWindow(raw: unknown): ExecutionContextWindow | null {

@@ -618,7 +618,6 @@ describe("the snapshot says what mode the next turn runs under", () => {
     turns: [],
     lastSeq: 12,
     workspace: null,
-    prUrl: null,
     roomId: null,
   };
 

@@ -322,3 +322,46 @@ for (const loaded of [commonJsTesting, esModuleTesting]) {
 console.log(
   "Package exports resolve from CommonJS and ESM: root, client, port and testing.",
 );
+
+// A session's pull requests (MAR-5696): the facts, their reader and the one
+// primary rule at the root, the dead prUrl path gone with its capability.
+for (const loaded of [commonJs, esModule]) {
+  assert.equal(typeof loaded.primaryPullRequestOf, "function");
+  assert.equal(typeof loaded.decodeExecutionPullRequests, "function");
+  assert.equal(typeof loaded.pullRequestKeyOf, "function");
+  assert.equal(loaded.EXECUTION_PULL_REQUESTS_MAX, 100);
+  assert.deepEqual(loaded.EXECUTION_PULL_REQUEST_ROLES, [
+    "opened",
+    "pushed",
+    "merged",
+    "edited",
+    "reviewed",
+    "mentioned",
+  ]);
+  for (const id of [
+    "sessions.pullRequests.v1",
+    "sessions.pullRequests.state.v1",
+  ]) {
+    assert.ok(loaded.EXECUTION_PROTOCOL_CAPABILITY_IDS.includes(id));
+  }
+  assert.ok(
+    !loaded.EXECUTION_PROTOCOL_CAPABILITY_IDS.includes("automation.create-pr"),
+  );
+  assert.equal(
+    loaded.primaryPullRequestOf([
+      {
+        repository: "acme/app",
+        number: 1,
+        role: "merged",
+        at: "2026-11-24T10:00:00Z",
+      },
+      {
+        repository: "acme/app",
+        number: 2,
+        role: "pushed",
+        at: "2026-11-24T09:00:00Z",
+      },
+    ])?.number,
+    2,
+  );
+}

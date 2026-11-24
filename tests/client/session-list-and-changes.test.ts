@@ -28,7 +28,23 @@ const daemonRow = {
   conversationItemCount: 12,
   lastSeq: 48,
   workspace: null,
-  prUrl: null,
+  pullRequests: [
+    {
+      repository: "marckraw/accentdot",
+      number: 412,
+      role: "pushed",
+      source: "branch",
+      at: "2026-10-29T09:00:00.000Z",
+      state: {
+        state: "open",
+        checks: { passed: 9, failed: 1, running: 0 },
+        mergeable: false,
+        title: "Fix the login form",
+        url: "https://github.com/marckraw/accentdot/pull/412",
+        checkedAt: "2026-10-29T09:29:00.000Z",
+      },
+    },
+  ],
   roomId: null,
   createdAt: "2026-10-29T08:00:00.000Z",
   updatedAt: "2026-10-29T09:30:00.000Z",
@@ -115,7 +131,7 @@ describe("listing sessions", () => {
           conversationItemCount: 12,
           lastSeq: 48,
           workspace: null,
-          prUrl: null,
+          pullRequests: daemonRow.pullRequests,
           roomId: null,
           createdAt: "2026-10-29T08:00:00.000Z",
           updatedAt: "2026-10-29T09:30:00.000Z",
@@ -163,7 +179,15 @@ describe("listing sessions", () => {
       sessions: [
         { ...daemonRow, status: "dreaming", conversationItemCount: -1 },
         { ...daemonRow, sessionId: "" },
-        { ...daemonRow, sessionId: "b", futureField: { anything: true } },
+        {
+          ...daemonRow,
+          sessionId: "b",
+          futureField: { anything: true },
+          pullRequests: [
+            daemonRow.pullRequests[0],
+            { ...daemonRow.pullRequests[0], number: 0 },
+          ],
+        },
       ],
       nextCursor: 42,
     });
@@ -185,8 +209,12 @@ describe("listing sessions", () => {
         path: "sessions.0.conversationItemCount",
       },
       { reason: "dropped-invalid-field", path: "sessions.1" },
+      { reason: "dropped-invalid-field", path: "sessions.2.pullRequests.1" },
       { reason: "dropped-invalid-field", path: "nextCursor" },
     ]);
+    expect(decoded.value.sessions[1]?.pullRequests).toEqual(
+      daemonRow.pullRequests,
+    );
   });
 
   it("refuses a page with no frame as malformed, and a refusal by its kind", async () => {

@@ -642,15 +642,15 @@ session's record.
 | `activity`           | what the agent is doing now: `streaming`, `thinking`, `compacting`, `waiting-approval`, `tool:<name>`, or null |
 | `heartbeat`          | nothing; the host is there                                                                                     |
 
-| Delta                     | Carries                                                                                                                                                        |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session.patch`           | `status`, `attention`, `activity`, `contextWindow`, `continuationToken`, `prUrl`, `roomId`, `model`, `effort`, `runningTasks`, `updatedAt` — whichever changed |
-| `conversation.item.add`   | a new item, with `agentRunId` and `taskId` when a subagent or a task produced it                                                                               |
-| `conversation.item.patch` | an item's changed fields, or `textAppend`                                                                                                                      |
-| `turn.add`                | a new turn, with its `origin`                                                                                                                                  |
-| `turn.patch`              | a turn's `endedAt`, `status`, `summary` or, once it ends, its `usage` ([what each turn cost](#what-each-turn-cost))                                            |
-| `turn.fileChanges.add`    | the files a turn changed                                                                                                                                       |
-| `evidence`                | one fact of the harness's record — `turnId` and `evidence`                                                                                                     |
+| Delta                     | Carries                                                                                                                                                               |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session.patch`           | `status`, `attention`, `activity`, `contextWindow`, `continuationToken`, `pullRequests`, `roomId`, `model`, `effort`, `runningTasks`, `updatedAt` — whichever changed |
+| `conversation.item.add`   | a new item, with `agentRunId` and `taskId` when a subagent or a task produced it                                                                                      |
+| `conversation.item.patch` | an item's changed fields, or `textAppend`                                                                                                                             |
+| `turn.add`                | a new turn, with its `origin`                                                                                                                                         |
+| `turn.patch`              | a turn's `endedAt`, `status`, `summary` or, once it ends, its `usage` ([what each turn cost](#what-each-turn-cost))                                                   |
+| `turn.fileChanges.add`    | the files a turn changed                                                                                                                                              |
+| `evidence`                | one fact of the harness's record — `turnId` and `evidence`                                                                                                            |
 
 Commands: `send-message`, `approve`, `deny`, `steer`, `interrupt`,
 `cancel-queued`, `stop-task` and `stop`.
@@ -1097,6 +1097,73 @@ stays readable.) A host
 without the capability refuses the field as an unknown one, so the client
 refuses the patch unsent there, with an `ExecutionSessionPatchError` coded
 `unsupported-on-host` (`hostTakesSettled`).
+
+## A session's pull requests
+
+A host advertising `sessions.pullRequests.v1` reports the pull requests each
+session's agent acted on (MAR-5696), in any repository: what it ran
+(`gh pr create`, `merge`, `edit`, `review`, `comment`, `checkout`, with
+`--repo`), the GitHub MCP tools it called, PR URLs in what its tools gave
+back, and its own branch being a PR's head. Each is one
+`ExecutionPullRequestFact`:
+
+```json
+{
+  "repository": "acme/app",
+  "number": 412,
+  "role": "opened",
+  "source": "command",
+  "itemId": "item-31",
+  "at": "2026-11-24T10:00:00.000Z"
+}
+```
+
+- `role` is what the session did: `opened`, `pushed` (to its head),
+  `merged`, `edited`, `reviewed`, or only `mentioned`, which shows in the
+  session's list and never on a row.
+- `source` is how the host knows: `command`, `mcp-tool`, `output-url`, or
+  `branch`.
+- `itemId` is the conversation item it came from, and `agentRunId` the
+  subagent that acted, when there were ones.
+
+A snapshot and the list carry `pullRequests` whole, and a `session.patch`
+carries it whole each time it changes, so a reader replaces what it held
+with it. It holds one fact per pull request and role, the newest (the same
+role again moves its fact up), newest first, at most 100
+(`EXECUTION_PULL_REQUESTS_MAX`). A pull request is its repository and number,
+the repository without regard to case: `pullRequestKeyOf` is its one key.
+The same number in another repository is another pull request. A host
+without the capability leaves `pullRequests` out: unknown, never none.
+
+A host advertising `sessions.pullRequests.state.v1` as well reads each pull
+request from GitHub itself, with its own sign-in (the personal profile on a
+Mac), and puts what it read on each of its facts as `state`, sending the list
+again when it changes: `state` (`draft`, `open`, `merged` or `closed`),
+`checks` (`passed`, `failed`, `running`), `reviewDecision` (`approved`,
+`changes-requested` or `review-required`) and `mergeable` when GitHub knows
+them, `title`, `url` and `checkedAt`.
+
+**The primary.** `primaryPullRequestOf(facts)` is the one rule for a
+session's primary pull request, which its chip and after-chains follow: the
+newest it opened; else the newest it pushed to; else the newest still open
+(open or a draft) of those it edited or reviewed; else the newest it merged;
+else none. One whose state no fact carries counts as open, unless the
+session merged it; a mention is never primary. It is pure and blind to
+order (newest is the latest `at`, then the higher number, then the
+repository first in order), takes any shape with `repository`, `number`,
+`role`, `at` and an optional `state.state`, and hands back the fact it chose.
+
+The reader (`decodeExecutionPullRequests`, which the snapshot, the list and
+`session.patch` use) refuses a `pullRequests` that is no list, and drops a
+fact it cannot read, as one of a role or source it doesn't know, naming it
+in `warnings`; a state it cannot read is dropped from its fact the same way.
+What it keeps holds to the rules above whatever the host sent, every fact of
+one pull request carrying the state read last.
+
+This replaces `prUrl` (on `session.patch`, the snapshot and the list) and
+the start request's `automation.autoCreatePr`, with its capability
+`automation.create-pr`, which are gone (0.42): an older host's `prUrl` and an
+older client's `automation` are read past as any unknown field.
 
 ## A host's MCP servers and skills
 
@@ -2344,6 +2411,16 @@ snapshot and the list, is refused a checkout start beside it all the same
 is done starts in the checkout. A
 host that advertises `start.worksIn.v1` must give it, and fails those cases
 without it; only a host that places none leaves it out, and skips them.
+`pullRequests` is for a host that reports a session's pull requests
+(`sessions.pullRequests.v1`, MAR-5696): `record(sessionId, facts)` has the
+session's agent act on them as the host's detector hears it, each fact as
+given (`state` included only for a host advertising
+`sessions.pullRequests.state.v1`). The suite records a push, a mention of
+the same number in another repository, the push again and a review of the
+same pull request spelt in other case, and reads one fact per pull request
+and role, newest first, on a follower's `session.patch`, in the snapshot and
+in the list. A host that advertises it must give it; one that reports none
+leaves it out, and is held to leaving `pullRequests` out.
 `executionHostConformanceCases` are the same cases
 for a runner of another shape. This package runs the suite against a fake host
 in process, over a `MessageChannel`, over Electron-shaped ports, and behind

@@ -175,6 +175,126 @@ describe("the conformance suite", () => {
     }
   });
 
+  describe("pull requests (MAR-5696)", () => {
+    const CASE =
+      "reports the pull requests a session acted on, whole, one per pull request and role, newest first, to followers, its snapshot and the list";
+
+    it("passes a host that reports them without their state, and one that reports none", async () => {
+      for (const pullRequests of ["facts", "none"] as const) {
+        expect(
+          await runCase(
+            CASE,
+            (api) => api,
+            new FakeHostModel({ pullRequests }),
+          ),
+          pullRequests,
+        ).toBeNull();
+      }
+    });
+
+    it("fails a host that advertises them but gives the suite no hook", async () => {
+      const model = new FakeHostModel();
+      const found = executionHostConformanceCases.find(
+        (entry) => entry.name === CASE,
+      )!;
+      const error = await found
+        .run(
+          {
+            api: fakeApi(model),
+            ...modelHooks(model),
+            pullRequests: undefined,
+          },
+          { waitMs: 500 },
+        )
+        .then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+    });
+
+    it("fails a host without them whose snapshot says some all the same", async () => {
+      const error = await runCase(
+        CASE,
+        (api) => ({
+          ...api,
+          snapshot: async (sessionId, options) => {
+            const snapshot = await api.snapshot(sessionId, options);
+            return snapshot && { ...snapshot, pullRequests: [] };
+          },
+        }),
+        new FakeHostModel({ pullRequests: "none" }),
+      );
+      expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+    });
+
+    it("fails a host whose list keeps both facts of one PR and role", async () => {
+      const model = new FakeHostModel();
+      const record = model.recordPullRequests.bind(model);
+      model.recordPullRequests = (sessionId, facts) => {
+        record(sessionId, facts);
+        const session = model.sessions.get(sessionId)!;
+        // Appended rather than folded: the first push is still there.
+        if (facts.length > 0 && session.pullRequests.length === 3) {
+          session.pullRequests = [
+            ...session.pullRequests,
+            { ...session.pullRequests[1]!, at: "2026-11-24T10:00:00.000Z" },
+          ];
+        }
+      };
+      expect(await runCase(CASE, (api) => api, model)).toBeInstanceOf(
+        ExecutionHostConformanceError,
+      );
+    });
+
+    it("fails a host that lists them oldest first", async () => {
+      const error = await runCase(CASE, (api) => ({
+        ...api,
+        snapshot: async (sessionId, options) => {
+          const snapshot = await api.snapshot(sessionId, options);
+          return (
+            snapshot && {
+              ...snapshot,
+              pullRequests: [...(snapshot.pullRequests ?? [])].reverse(),
+            }
+          );
+        },
+      }));
+      expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+    });
+
+    it("fails a host that drops a fact's state on the way to the list", async () => {
+      const error = await runCase(CASE, (api) => ({
+        ...api,
+        listSessions: async (query, options) => {
+          const page = await api.listSessions(query, options);
+          return {
+            ...page,
+            sessions: page.sessions.map((session) => ({
+              ...session,
+              pullRequests: session.pullRequests?.map(
+                ({ state: _, ...fact }) => fact,
+              ),
+            })),
+          };
+        },
+      }));
+      expect(error).toBeInstanceOf(ExecutionHostConformanceError);
+    });
+
+    it("fails a host whose followers never hear the list", async () => {
+      const model = new FakeHostModel();
+      model.recordPullRequests = (sessionId, facts) => {
+        const session = model.sessions.get(sessionId)!;
+        const folded = [...facts, ...session.pullRequests];
+        session.pullRequests = folded;
+      };
+      expect(await runCase(CASE, (api) => api, model)).toBeInstanceOf(
+        ExecutionHostConformanceError,
+      );
+    });
+  });
+
   it("fails a host that answers an unknown session's snapshot", async () => {
     const error = await runCase(
       "snapshots a session it has, and answers null for one it does not",
