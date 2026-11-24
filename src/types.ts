@@ -838,6 +838,15 @@ export type ExecutionSessionDelta =
          * what it held with it.
          */
         pullRequests?: ExecutionPullRequestFact[];
+        /**
+         * @deprecated An older host's word (before 0.43, MAR-5698): the
+         * address of the pull request it opened, a pull request's address on
+         * github.com, or null for none. Kept for readers whose hosts send no
+         * `pullRequests` yet; a host on 0.43 sends `pullRequests` instead.
+         * Decoded only where the patch has no `pullRequests`: a list, even an
+         * empty one, wins, and a `prUrl` beside it is dropped.
+         */
+        prUrl?: string | null;
         roomId?: string | null;
         /**
          * The model the session's turns run on from the next one, after a

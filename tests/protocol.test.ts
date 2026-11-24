@@ -1134,15 +1134,117 @@ describe("session.patch pull requests (MAR-5696)", () => {
     });
   });
 
-  it("reads past an older host's prUrl, which no longer means anything", () => {
+  it("keeps an older host's prUrl, a pull request's address on github.com, for its readers (MAR-5698)", () => {
     expect(
       decodeExecutionEventEnvelope(
         envelope({ prUrl: "https://github.com/acme/repo/pull/7" }),
       ),
     ).toMatchObject({
       ok: true,
-      value: { event: { delta: { kind: "session.patch", patch: {} } } },
+      value: {
+        event: {
+          delta: {
+            kind: "session.patch",
+            patch: { prUrl: "https://github.com/acme/repo/pull/7" },
+          },
+        },
+      },
     });
+    const none = decodeExecutionEventEnvelope(envelope({ prUrl: null }));
+    expect(none.ok && none.value.event).toMatchObject({
+      delta: { patch: { prUrl: null } },
+    });
+  });
+
+  it("drops a prUrl that isn't a pull request's address on github.com, and names it (MAR-5698)", () => {
+    for (const prUrl of [
+      "https://evil.example/acme/repo/pull/7",
+      "https://github.com/acme/repo/issues/7",
+      "https://github.com/acme/repo/pull/7/files",
+      "http://github.com/acme/repo/pull/7",
+      // A repository named `.` or `..` resolves away: `github.com/pull/7`.
+      "https://github.com/acme/../pull/7",
+      "https://github.com/acme/./pull/7",
+      7,
+      "",
+    ]) {
+      const decoded = decodeExecutionEventEnvelope(
+        envelope({ status: "idle", prUrl }),
+      );
+      expect(decoded, String(prUrl)).toMatchObject({
+        ok: true,
+        value: { event: { delta: { patch: { status: "idle" } } } },
+        warnings: [
+          { reason: "dropped-invalid-field", path: "event.delta.patch.prUrl" },
+        ],
+      });
+      expect(decoded.ok && decoded.value.event).not.toHaveProperty(
+        "delta.patch.prUrl",
+      );
+    }
+  });
+});
+
+describe("a patch with both pullRequests and an older host's prUrl (MAR-5698)", () => {
+  const envelope = (patch: Record<string, unknown>) =>
+    JSON.stringify({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sessionId: "session-1",
+      seq: 4,
+      event: { kind: "delta", delta: { kind: "session.patch", patch } },
+    });
+  const fact = {
+    repository: "acme/repo",
+    number: 12,
+    role: "opened",
+    source: "command",
+    at: "2026-11-24T09:00:00.000Z",
+  };
+
+  it("lets an empty list win: none, and no prUrl beside it", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      envelope({
+        pullRequests: [],
+        prUrl: "https://github.com/acme/repo/pull/7",
+      }),
+    );
+    expect(decoded).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        event: {
+          kind: "delta",
+          delta: { kind: "session.patch", patch: { pullRequests: [] } },
+        },
+      }),
+    });
+  });
+
+  it("lets a list that says another pull request win, and drops the prUrl", () => {
+    const decoded = decodeExecutionEventEnvelope(
+      envelope({
+        pullRequests: [fact],
+        prUrl: "https://github.com/acme/repo/pull/7",
+      }),
+    );
+    expect(decoded).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        event: {
+          kind: "delta",
+          delta: { kind: "session.patch", patch: { pullRequests: [fact] } },
+        },
+      }),
+    });
+  });
+
+  it("reads a prUrl where the patch has no list, a null one too", () => {
+    for (const prUrl of ["https://github.com/acme/repo/pull/7", null]) {
+      const decoded = decodeExecutionEventEnvelope(envelope({ prUrl }));
+      expect(decoded.ok && decoded.value.event, String(prUrl)).toEqual({
+        kind: "delta",
+        delta: { kind: "session.patch", patch: { prUrl } },
+      });
+    }
   });
 });
 
