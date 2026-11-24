@@ -1,4 +1,8 @@
-import type { ExecutionStartBrowserRefusalCode } from "../browser.js";
+import {
+  isExecutionStartBrowserRefusalCode,
+  type ExecutionStartBrowserRefusalCode,
+} from "../browser.js";
+import { isRecord } from "../guards.js";
 import type { ExecutionHostHealth } from "./health.js";
 
 /**
@@ -10,6 +14,15 @@ import type { ExecutionHostHealth } from "./health.js";
  */
 export type ExecutionStartBrowserErrorCode =
   "browser-unsupported" | ExecutionStartBrowserRefusalCode;
+
+/** Whether `value` is an `ExecutionStartBrowserErrorCode`. */
+export function isExecutionStartBrowserErrorCode(
+  value: unknown,
+): value is ExecutionStartBrowserErrorCode {
+  return (
+    value === "browser-unsupported" || isExecutionStartBrowserRefusalCode(value)
+  );
+}
 
 /** A start's `config.browser` refused: unsent, or by the host. */
 export class ExecutionStartBrowserError extends Error {
@@ -58,3 +71,39 @@ export const BROWSER_REFUSAL_REASONS: Record<
   "browser-unsupported-with-skills":
     "a session that picks skills cannot drive Chrome",
 };
+
+/**
+ * A browser start judged by what a host's `providers()` says, for a carrier
+ * with no `/health` to read (the port, MAR-5726): a host that takes
+ * `config.browser` puts `chrome` on each provider that can drive it, and one
+ * that predates the field can't, its decoder dropping it. So the start goes
+ * only to a provider that carries `chrome`; for one that doesn't, on a host
+ * where another does, it is `browser-unsupported-provider`; otherwise, or
+ * when the providers can't be read, `browser-unsupported`. Nothing is sent
+ * either way (`status` null). Null: it may go.
+ */
+export function chromeStartRefusal(
+  providers: ReadonlyArray<{ id: string; chrome?: unknown }> | null,
+  providerId: string,
+): ExecutionStartBrowserError | null {
+  if (providers === null) {
+    return new ExecutionStartBrowserError(
+      "browser-unsupported",
+      "the host's providers could not be read, so it cannot be trusted to start the session with Chrome; nothing was sent",
+    );
+  }
+  const drives = (provider: { chrome?: unknown }) => isRecord(provider.chrome);
+  if (
+    providers.some((provider) => provider.id === providerId && drives(provider))
+  )
+    return null;
+  return providers.some(drives)
+    ? new ExecutionStartBrowserError(
+        "browser-unsupported-provider",
+        `${BROWSER_REFUSAL_REASONS["browser-unsupported-provider"]}; nothing was sent`,
+      )
+    : new ExecutionStartBrowserError(
+        "browser-unsupported",
+        "the host says of no provider that it can drive Chrome, so it would start the session without it; nothing was sent",
+      );
+}

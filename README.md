@@ -1190,14 +1190,23 @@ offers it, and only with its setting on.
 ```
 
 - A value outside the list is refused as `invalid-payload`, never dropped.
-- A host without the capability ignores the field and starts the session
-  without Chrome, so the client refuses such a start itself, unsent, with an
-  `ExecutionStartBrowserError` coded `browser-unsupported`
-  (`hostTakesChrome`). A start without `browser` is unchanged: one request,
-  no probe.
-- A capable host refuses with a 400 and a code
+- A host that knows `browser` never starts without it. One that doesn't
+  offer Chrome refuses the start with a 400 coded
+  `browser-unavailable-on-host`, whether it advertises the capability or not:
+  its setting may turn off between a client's `/health` and its start.
+- Only a legacy host, predating the field, ignores it and starts the session
+  without Chrome. So the client refuses such a start itself, unsent, with an
+  `ExecutionStartBrowserError` coded `browser-unsupported`, when `/health`
+  doesn't advertise the capability (`hostTakesChrome`). A start without
+  `browser` is unchanged: one request, no probe.
+- A port has no `/health`, so the port client first asks the host's
+  `providers()`. It sends a browser start only for a provider whose entry
+  carries `chrome`. A host whose providers carry none, or can't be read, gets
+  `browser-unsupported`. One where another provider carries it gets
+  `browser-unsupported-provider`. Both are unsent.
+- A host that knows `browser` refuses with a 400 and a code
   (`EXECUTION_START_BROWSER_REFUSAL_CODES`), and starts nothing:
-  `browser-unavailable-on-host` (its setting is off),
+  `browser-unavailable-on-host` (it doesn't offer Chrome),
   `browser-unsupported-provider` (only Claude Code drives Chrome), or
   `browser-unsupported-with-skills` (the start also picks skills, and a
   picked session's Claude Code would point Chrome at a helper in a config
@@ -1207,7 +1216,7 @@ offers it, and only with its setting on.
   confirms it.
 
 The same host puts `chrome` on each provider that can drive it in
-`GET /v0/providers` (`ExecutionProviderChrome`), looked at as it answers:
+`GET /v0/providers` (`ExecutionProviderChrome`), every one of them, looked at as it answers:
 `nativeHost`, whether Chrome's native-messaging host for Claude Code is
 installed (the `com.anthropic.claude_code_browser_extension` manifest in
 Chrome's `NativeMessagingHosts`, and the helper it names), and `extension`,

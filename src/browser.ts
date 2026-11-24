@@ -25,11 +25,16 @@ export function isExecutionStartBrowser(
 }
 
 /**
- * How a host advertising `start.browser.chrome.v1` refuses a start's
- * `browser`, with a 400 and this `code` (MAR-5726). It starts nothing.
+ * How a host that knows `browser` refuses a start's `browser`, with a 400
+ * and this `code` (MAR-5726), whether it advertises `start.browser.chrome.v1`
+ * or not. It starts nothing.
  *
  * - `browser-unavailable-on-host`: the host doesn't offer the person's Chrome
- *   (its setting is off). A host without it never advertises the capability.
+ *   (its setting is off). A host that knows `browser` answers this whenever
+ *   it doesn't offer Chrome, advertised or not: its setting may turn off
+ *   between a client's `/health` and its start, and the start must never go
+ *   ahead without Chrome. Only a legacy host, predating the field, ignores
+ *   it.
  * - `browser-unsupported-provider`: the session's provider can't drive it;
  *   only Claude Code can.
  * - `browser-unsupported-with-skills`: the start also picks skills
@@ -67,8 +72,9 @@ export function isExecutionStartBrowserRefusalCode(
  * - `extension`: the Claude extension is installed in one of Chrome's
  *   profiles.
  *
- * A host advertising `start.browser.chrome.v1` says it for the providers
- * that can; absent is unknown, or a provider that can't.
+ * A host advertising `start.browser.chrome.v1` says it for every provider
+ * that can, so a carrier without `/health` (the port) takes it as the sign
+ * that a browser start may go; absent is unknown, or a provider that can't.
  */
 export interface ExecutionProviderChrome {
   nativeHost: boolean;

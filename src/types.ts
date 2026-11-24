@@ -215,12 +215,16 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * session's Claude Code runs with Claude in Chrome on (the CLI's
    * `--chrome`), driving the person's own Chrome on the machine the host
    * runs on, for its whole life, every resume included. Only a host on a
-   * person's own machine with its setting on advertises it. It refuses
-   * `browser` for another provider, or with skill picks, with a 400 coded
-   * as `EXECUTION_START_BROWSER_REFUSAL_CODES` says, and puts `chrome` on
-   * the providers that can drive it in `GET /v0/providers`. A host without
-   * it ignores `browser` and starts the session without Chrome, so the
-   * shared client refuses to send it there.
+   * person's own machine with its setting on advertises it, and it puts
+   * `chrome` on every provider that can drive it in `GET /v0/providers`.
+   * A host that knows `browser` never starts without it: one that doesn't
+   * offer Chrome refuses it with a 400 coded `browser-unavailable-on-host`
+   * whether it advertises this or not (its setting may turn off between a
+   * client's `/health` and its start), and refuses another provider, or skill
+   * picks, as `EXECUTION_START_BROWSER_REFUSAL_CODES` says. Only a legacy
+   * host, predating the field, ignores it and starts without Chrome, so the
+   * shared client sends it only where `/health` advertises this, and over a
+   * port only for a provider whose `providers()` entry carries `chrome`.
    */
   "start.browser.chrome.v1",
 ] as const;
@@ -1124,7 +1128,9 @@ export interface ExecutionStartConfig {
   /**
    * The browser the session's agent may drive (MAR-5726): `chrome`, the
    * person's own Chrome on the host's machine, for Claude Code. Requires
-   * `start.browser.chrome.v1`. Fixed at first start, kept on every resume;
+   * `start.browser.chrome.v1`; a host that knows it but doesn't offer Chrome
+   * refuses it (400 `browser-unavailable-on-host`), never drops it, and only
+   * a legacy host ignores it. Fixed at first start, kept on every resume;
    * a 409 / exists neither changes nor confirms it. Absent: none.
    */
   browser?: ExecutionStartBrowser;

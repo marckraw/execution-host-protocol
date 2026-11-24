@@ -41,7 +41,7 @@ import {
 } from "../client/works-in.js";
 import {
   ExecutionStartBrowserError,
-  type ExecutionStartBrowserErrorCode,
+  isExecutionStartBrowserErrorCode,
 } from "../client/browser.js";
 import { isRecord } from "../guards.js";
 
@@ -211,12 +211,9 @@ export function fromPortError(
         { status: status(), workingThere: strings("workingThere") ?? [] },
       );
     case "ExecutionStartBrowserError":
-      if (code === null) break;
-      return new ExecutionStartBrowserError(
-        code as ExecutionStartBrowserErrorCode,
-        reason,
-        status(),
-      );
+      // A code this build doesn't know is no browser refusal it can name.
+      if (!isExecutionStartBrowserErrorCode(code)) break;
+      return new ExecutionStartBrowserError(code, reason, status());
     case "ExecutionInlineAttachmentsError":
       if (code === null) break;
       return new ExecutionInlineAttachmentsError(
