@@ -10,7 +10,7 @@ import {
   readExecutionFileReach,
   type ExecutionFileReach,
 } from "./file-reach.js";
-import { decodeExecutionDrivePolicy } from "./drive-policy.js";
+import { decodeExecutionProviderSessionCap } from "./session-cap.js";
 import { decodeHarnessEvidence } from "./harness-evidence-codecs.js";
 import {
   decodeExecutionTurnUsage,
@@ -350,9 +350,8 @@ function decodeAttribution(
 }
 
 /**
- * An envelope's or a start's actor. `via` is required (MAR-5634): a host
- * applies a provider's drive policy to it, and an actor it cannot place could
- * only be guessed at.
+ * An envelope's or a start's actor. `via` is required (MAR-5634): an actor
+ * it cannot place could only be guessed at.
  */
 function decodeActor(raw: unknown): ExecutionActor | null {
   const author = decodeAuthor(raw);
@@ -2040,8 +2039,8 @@ export function decodeExecutionProjectListResponse(
  * and its text is cleaned and cut (MAR-3821), nor does its `usage`
  * (MAR-4198). Nor do its `permissions` and
  * `interactions` (MAR-4052): a shape this build cannot read is left out, and a
- * value it does not know is dropped from its list. Nor does its `drivePolicy`
- * (MAR-5634): one this build cannot read is left out, and named in
+ * value it does not know is dropped from its list. Nor does its `sessionCap`
+ * (MAR-5692): one this build cannot read is left out, and named in
  * `warnings`.
  */
 export function decodeExecutionProviderListResponse(
@@ -2159,25 +2158,25 @@ function decodeExecutionProvider(
       ),
     ),
     ...optionalProperty(
-      "drivePolicy",
-      readDrivePolicy(raw.drivePolicy, `${path}.drivePolicy`, warnings),
+      "sessionCap",
+      readSessionCap(raw.sessionCap, `${path}.sessionCap`, warnings),
     ),
   };
 }
 
 /**
- * A provider's drive policy (MAR-5634), which never costs the catalogue: one
+ * A provider's session cap (MAR-5692), which never costs the catalogue: one
  * this build cannot read is left out, with a warning, so a client treats it
- * as unknown rather than reading a half of it as allowed.
+ * as unknown.
  */
-function readDrivePolicy(
+function readSessionCap(
   raw: unknown,
   path: string,
   warnings: ExecutionDecodeWarning[],
-): ExecutionProvider["drivePolicy"] {
+): ExecutionProvider["sessionCap"] {
   if (raw === undefined) return undefined;
-  const policy = decodeExecutionDrivePolicy(raw);
-  if (policy.ok) return policy.value;
+  const cap = decodeExecutionProviderSessionCap(raw);
+  if (cap.ok) return cap.value;
   warnings.push({ reason: "dropped-invalid-field", path });
   return undefined;
 }

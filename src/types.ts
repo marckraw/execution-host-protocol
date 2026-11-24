@@ -2,7 +2,7 @@ import type {
   ExecutionFileReach,
   ExecutionHostFileReach,
 } from "./file-reach.js";
-import type { ExecutionDrivePolicy } from "./drive-policy.js";
+import type { ExecutionProviderSessionCap } from "./session-cap.js";
 import type { ExecutionMcpProvider } from "./mcp.js";
 import type { HarnessEvidence } from "./harness-evidence.js";
 import type {
@@ -162,18 +162,6 @@ export const EXECUTION_PROTOCOL_CAPABILITY_IDS = [
    * usage, and answers that route 404.
    */
   "turns.usage.v1",
-  /**
-   * The host reports a provider's `drivePolicy` in `GET /v0/providers` and
-   * enforces the policy it reports, with `drivePolicyRefusalOf`, on every
-   * start and every command (MAR-5634). A host without it enforces none, so a
-   * client never sends a start for a provider whose policy it cannot read to
-   * a host without it.
-   *
-   * @deprecated Since MAR-5692 no host advertises it: a provider is offered
-   * where it is installed and signed in, and nothing refuses on who asks.
-   * Kept, so a host or a client that still names it reads.
-   */
-  "providers.drivePolicy.v1",
   /**
    * The host reports the MCP servers its own Claude Code and Codex can use,
    * and signs in to them and out of them, at `/v0/mcp/:provider/…`
@@ -472,8 +460,8 @@ export const EXECUTION_ACTOR_KINDS = ["person", "agent"] as const;
 export type ExecutionActorKind = (typeof EXECUTION_ACTOR_KINDS)[number];
 
 /**
- * How a command reached the host (MAR-5634), which a provider's drive policy
- * reads:
+ * How a command reached the host (MAR-5634), recorded and said, never
+ * refused on (MAR-5692):
  *
  * - `app`: a person in accent. (web, native, desktop, local).
  * - `token`: their AI app, through one of their tokens.
@@ -1474,17 +1462,12 @@ export interface ExecutionProvider {
    */
   interactions?: ExecutionProviderInteractions;
   /**
-   * Who may drive the provider on this host, and how many of its sessions
-   * run at once (MAR-5634), on a host advertising `providers.drivePolicy.v1`,
-   * which enforces it. Configuration on the host: a client reads it to say
-   * why a start would be refused, never to change it. Absent when the host
-   * has none for the provider, or says it in a shape this build cannot read
-   * (with a warning): unknown, not "anyone may".
-   *
-   * @deprecated Since MAR-5692 no host reports one: see
-   * `ExecutionDrivePolicy`. Still read, tolerantly, from a host that does.
+   * Its own cap on its live sessions on this host, and how many are live now
+   * (MAR-5692): Antigravity's, on the daemon. Absent when the host has none
+   * for the provider, or says it in a shape this build cannot read (with a
+   * warning): unknown, not "no cap".
    */
-  drivePolicy?: ExecutionDrivePolicy;
+  sessionCap?: ExecutionProviderSessionCap;
 }
 
 /**

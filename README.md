@@ -167,8 +167,8 @@ Beside the fields every item carries, it reads:
 
 (The item's `actor` stays what it was, the role. The person is the `author`.)
 
-An actor's `via` (MAR-5634) is how the command reached the host, which is what
-a provider's [drive policy](#who-may-drive-a-provider-the-drive-policy) reads:
+An actor's `via` (MAR-5634) is how the command reached the host, recorded and
+said, never refused on:
 
 | `via`        | What sent it                                                       |
 | ------------ | ------------------------------------------------------------------ |
@@ -194,86 +194,34 @@ a provider's [drive policy](#who-may-drive-a-provider-the-drive-policy) reads:
   and a reader ignores them if one does.
 - **The host records; the client vouches.** `actor` is the sending client's
   word. A host has no users of its own, so authorizing who may act stays with
-  the client that knows them. No host refuses on it (the drive policy that
-  once did is deprecated, MAR-5692).
+  the client that knows them. No host refuses on it.
 
-## Who may drive a provider: the drive policy
+## A provider's session cap
 
-> **Deprecated since MAR-5692.** No host reports or enforces a drive policy,
-> nor advertises `providers.drivePolicy.v1`: a provider is offered where it is
-> installed and signed in, and nothing refuses on who asks. A host may still
-> cap how many of a provider's sessions run at once (Antigravity's, on the
-> daemon), and refuses one past it as it refuses anything, in its own words.
-> The types, `drivePolicyRefusalOf`, the decoders and
-> `hostEnforcesDrivePolicy` stay exported, additive and unused, so nothing
-> that reads them breaks; build nothing new on them. What follows is the
-> contract as it was.
-
-Some providers may only be driven in certain ways: Antigravity runs on one
-person's consumer sign-in, which Google allows for a person driving it, not
-for fleets of automations. A provider like that carries a `drivePolicy` in
-`GET /v0/providers` (`ExecutionDrivePolicy`, MAR-5634):
+A host may cap how many of a provider's sessions are live at once: Antigravity's,
+on the daemon (`ANTIGRAVITY_MAX_SESSIONS`). Such a provider carries a
+`sessionCap` in `GET /v0/providers` (`ExecutionProviderSessionCap`, MAR-5692):
 
 ```json
-{
-  "ownerId": "usr_marcin",
-  "allow": {
-    "tokenDriven": true,
-    "automations": false,
-    "waitForRoom": true,
-    "afterChains": false,
-    "anyHost": false,
-    "others": false
-  },
-  "maxConcurrentSessions": 2,
-  "liveSessions": 1
-}
+{ "maxConcurrentSessions": 2, "liveSessions": 1 }
 ```
 
-- **It is configuration on the host.** The operator sets it (an instance's
-  `.env`, a local install's settings), and the host reports what it enforces.
-  A client reads it to explain a refusal before it sends anything, and to show
-  the owner their switches. It never changes it. Loosening a guardrail is a
-  config change, not a code change.
-- **One rule, everywhere.** `drivePolicyRefusalOf(policy, ask)` is the one
-  implementation. The daemon, the in-app runtime, accent.'s server and its UI
-  all call it, so they agree on every answer. It returns null, or an
-  `ExecutionDrivePolicyRefusal`:
-  `{ code: "drive-policy-refused", reason, flag?, message }`. The `flag` is
-  the host's switch that would allow it, named `<providerId>.<flag>`.
-- **Control is never refused.** An interrupt, a stop, a stop-task or a
-  cancel-queued (`act: "control"`) always goes through, so a person or a settle
-  can always stop a session.
+- **It protects the machine and the provider's quota**, and is no check on who
+  asks. A session is live while it holds a process of the provider's or is
+  being given one. Past the cap, a start, or a command that needs a new
+  process, is refused, whoever sent it, as the host refuses anything, in its
+  own words. A stop, an interrupt or an approval never counts against it.
+- **It is configuration on the host**, reported with the host's live count as
+  it is now. A client reads it to say how many run and how many may; it never
+  changes it.
+- **Unknown is not "no cap".** A cap the listing cannot read is left out of the
+  provider, named in `warnings` (`providers.N.sessionCap`), and never costs the
+  catalogue. `decodeExecutionProviderSessionCap` reads one on its own.
 
-What it checks, in order, with the first refusal winning:
-
-| `reason`           | Refused when                                                                                               | `flag`                             |
-| ------------------ | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| `no-owner`         | `ownerId` is null: nobody is signed in                                                                     | none                               |
-| `no-actor`         | the ask carries no `actor`                                                                                 | none                               |
-| `not-owner`        | the actor is not the `person` whose `id` is `ownerId`, and `others` is off                                 | `<provider>.allowOthers`           |
-| `token-driven-off` | `via: "token"`, and `tokenDriven` is off                                                                   | `<provider>.allowTokenDriven`      |
-| `automation`       | `via: "automation"`, and `automations` is off                                                              | `<provider>.allowAutomations`      |
-| `wait-for-room`    | a start that may wait in its host's line, or `via: "line"`, not an `after` chain, and `waitForRoom` is off | `<provider>.allowWaitForRoom`      |
-| `after-chain`      | a start chained `after` another session, and `afterChains` is off                                          | `<provider>.allowAfterChains`      |
-| `any-host`         | a start that lets the line pick any host, and `anyHost` is off                                             | `<provider>.allowAnyHost`          |
-| `at-capacity`      | the ask needs a new process, and `liveSessions` has reached `maxConcurrentSessions`                        | `<provider>.maxConcurrentSessions` |
-
-An `after` chain answers to `afterChains` alone: never to `waitForRoom` too,
-whether the line fires it (`via: "line"`) or it may also wait for room.
-`via: "app"` needs no switch.
-
-- **Enforced where it says so.** A host advertising `providers.drivePolicy.v1`
-  enforces the policy it reports on every start and every command. A host
-  without it enforces none. So a client never sends a start for a provider
-  whose policy it cannot read to a host without it (`hostEnforcesDrivePolicy`,
-  in the client).
-- **Unknown is not open.** A policy the listing cannot read is left out of the
-  provider, named in `warnings` (`providers.N.drivePolicy`), and never costs
-  the catalogue. The client's `providers()` passes those warnings to its
-  `onWarnings`, as `{ operation: "providers", sessionId: null, warnings }`. A client treats an absent policy as unknown, never as
-  "anyone may". `decodeExecutionDrivePolicy` reads one on its own, and
-  `decodeExecutionDrivePolicyRefusal` reads a host's refusal.
+The drive policy of 0.38 (an owner, switches, `drivePolicyRefusalOf`,
+`providers.drivePolicy.v1`) is gone since MAR-5692: a provider is offered where
+it is installed and signed in, and nothing refuses on who asks. A listing that
+still carries a `drivePolicy` has it ignored.
 
 ## Images in tool results
 
@@ -1993,11 +1941,9 @@ a `resetsAt` still limits), and only when it has no `modelFamily` or the model
 is of it — its `slug` or `label` is the family, ignoring case, or names a
 one-word family (`opus`) as a whole word (`claude-opus-5-5`, `Opus 5.5`). How
 much of a window that limits is used is the caller's to judge.
-A provider's `drivePolicy` is who may drive it there, and how many of its
-sessions run at once (see
-[the drive policy](#who-may-drive-a-provider-the-drive-policy), deprecated:
-no host reports one since MAR-5692): absent, and
-named in `warnings` by `decodeExecutionProviderListResponse`, when it cannot
+A provider's `sessionCap` is the host's cap on its live sessions and how many
+are live now (see [a provider's session cap](#a-providers-session-cap)): absent,
+and named in `warnings` by `decodeExecutionProviderListResponse`, when it cannot
 be read. A provider's `permissions` are what its sessions can ask for in
 `permissionConfig` (`features.permissions`): the `presets`, and its own part —
 `codex` with its `approvalPolicies` and `sandboxModes`, and the
