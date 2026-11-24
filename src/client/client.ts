@@ -92,6 +92,16 @@ import {
   readExecutionWorksInEcho,
 } from "../works-in.js";
 import {
+  BROWSER_REFUSAL_REASONS,
+  browserRefusal,
+  ExecutionStartBrowserError,
+  hostTakesChrome,
+} from "./browser.js";
+import {
+  isExecutionStartBrowser,
+  isExecutionStartBrowserRefusalCode,
+} from "../browser.js";
+import {
   followExecutionSession,
   type ExecutionFollowOptions,
   type ExecutionSessionFollow,
@@ -390,6 +400,12 @@ export interface ExecutionHostClient extends ExecutionHostApi {
    * `worksIn` outside `EXECUTION_WORKS_IN` is a `TypeError`, unsent. A
    * `checkout` the host refused, another session working there, is the same
    * error coded `checkout-taken`, with `workingThere` and status 409.
+   * `config.browser` reads the same `/health`, and is refused here, unsent,
+   * with an `ExecutionStartBrowserError` coded `browser-unsupported` when the
+   * host does not advertise `start.browser.chrome.v1` (MAR-5726). A value
+   * outside `EXECUTION_START_BROWSERS` is a `TypeError`, unsent. A capable
+   * host's 400 coded as `EXECUTION_START_BROWSER_REFUSAL_CODES` says is the
+   * same error, with that code and status 400.
    */
   start(
     request: ExecutionStartRequest,
@@ -984,6 +1000,12 @@ export function createExecutionHostClient(
       }
       // A host predating it drops it and decides by itself (MAR-5673).
       const placed = worksIn === "checkout" || worksIn === "worktree";
+      const browser: unknown = startRequest.config.browser;
+      if (browser !== undefined && !isExecutionStartBrowser(browser)) {
+        throw new TypeError('config.browser must be "chrome"');
+      }
+      // A host predating it drops it and starts without Chrome (MAR-5726).
+      const withBrowser = browser !== undefined;
       const instructions: unknown = startRequest.config.instructions;
       if (
         instructions !== undefined &&
@@ -1008,7 +1030,8 @@ export function createExecutionHostClient(
         reach ||
         instructions !== undefined ||
         selected ||
-        placed
+        placed ||
+        withBrowser
       ) {
         const probed = await health({
           signal: requestOptions.signal,
@@ -1027,6 +1050,9 @@ export function createExecutionHostClient(
         }
         if (placed && !hostTakesWorksIn(probed)) {
           throw worksInRefusal(probed);
+        }
+        if (withBrowser && !hostTakesChrome(probed)) {
+          throw browserRefusal(probed);
         }
         if (selected && !hostTakesSelections(probed)) {
           throw new ExecutionStartSelectionError(
@@ -1154,6 +1180,18 @@ export function createExecutionHostClient(
               throw new ExecutionStartInstructionsError(
                 "instructions-unsupported-provider",
                 "the host cannot apply session instructions for this provider",
+                400,
+              );
+            }
+            if (
+              withBrowser &&
+              response.status === 400 &&
+              isRecord(refusal) &&
+              isExecutionStartBrowserRefusalCode(refusal.code)
+            ) {
+              throw new ExecutionStartBrowserError(
+                refusal.code,
+                BROWSER_REFUSAL_REASONS[refusal.code],
                 400,
               );
             }

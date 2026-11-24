@@ -17,5 +17,6 @@ export * from "./tool-attachments.js";
 export * from "./turn-usage.js";
 export * from "./types.js";
 export * from "./works-in.js";
+export * from "./browser.js";
 
 export * from "./selections.js";

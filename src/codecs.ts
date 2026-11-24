@@ -6,6 +6,10 @@ import {
   isExecutionWorksIn,
 } from "./works-in.js";
 import {
+  isExecutionStartBrowser,
+  readExecutionProviderChrome,
+} from "./browser.js";
+import {
   isExecutionFileReach,
   readExecutionFileReach,
   type ExecutionFileReach,
@@ -1769,6 +1773,11 @@ function decodeStartConfig(
   if (raw.worksIn !== undefined && !isExecutionWorksIn(raw.worksIn)) {
     return failure("invalid-payload");
   }
+  // Refused rather than dropped: a dropped `chrome` would start the session
+  // without the browser it was asked for (MAR-5726).
+  if (raw.browser !== undefined && !isExecutionStartBrowser(raw.browser)) {
+    return failure("invalid-payload");
+  }
   if (raw.roomId !== undefined && !isNonEmptyString(raw.roomId)) {
     return failure("invalid-payload");
   }
@@ -1817,6 +1826,7 @@ function decodeStartConfig(
     ),
     ...optionalProperty("workingDirectory", raw.workingDirectory),
     ...optionalProperty("worksIn", raw.worksIn),
+    ...optionalProperty("browser", raw.browser),
     initialMessage: raw.initialMessage,
     model: raw.model,
     effort: raw.effort,
@@ -2039,7 +2049,7 @@ export function decodeExecutionProjectListResponse(
  * `interactions` (MAR-4052): a shape this build cannot read is left out, and a
  * value it does not know is dropped from its list. Nor does its `sessionCap`
  * (MAR-5692): one this build cannot read is left out, and named in
- * `warnings`.
+ * `warnings`. Nor does its `chrome` (MAR-5726), the same way.
  */
 export function decodeExecutionProviderListResponse(
   raw: unknown,
@@ -2159,7 +2169,30 @@ function decodeExecutionProvider(
       "sessionCap",
       readSessionCap(raw.sessionCap, `${path}.sessionCap`, warnings),
     ),
+    ...optionalProperty(
+      "chrome",
+      readProviderChrome(raw.chrome, `${path}.chrome`, warnings),
+    ),
   };
+}
+
+/**
+ * What a host found of the person's Chrome for a provider (MAR-5726), which
+ * never costs the catalogue: one this build cannot read is left out, with a
+ * warning, so a client treats it as unknown.
+ */
+function readProviderChrome(
+  raw: unknown,
+  path: string,
+  warnings: ExecutionDecodeWarning[],
+): ExecutionProvider["chrome"] {
+  if (raw === undefined) return undefined;
+  const chrome = readExecutionProviderChrome(raw);
+  if (chrome === null) {
+    warnings.push({ reason: "dropped-invalid-field", path });
+    return undefined;
+  }
+  return chrome;
 }
 
 /**

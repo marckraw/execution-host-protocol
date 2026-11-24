@@ -13,6 +13,8 @@ import {
   type McpAsked,
 } from "../client/mcp.js";
 import type { ExecutionStreamFrame } from "../client/stream.js";
+import { isExecutionStartBrowser } from "../browser.js";
+import { chromeStartRefusal } from "../client/browser.js";
 import { isRecord } from "../guards.js";
 import type {
   ExecutionDecodeWarning,
@@ -349,7 +351,30 @@ export function createPortClient(
   return {
     providers: (options) => call("providers", "providers", [options]),
     projects: (options) => call("projects", "projects", [options]),
-    start: (request, options) => call("start", "start", [request, options]),
+    start: async (request, options) => {
+      // A peer predating `browser` would start the session without Chrome,
+      // and the port has no `/health` to ask first (MAR-5726 review): its
+      // providers say whether it takes it, and only then is it sent.
+      const browser: unknown = request?.config?.browser;
+      if (browser !== undefined) {
+        if (!isExecutionStartBrowser(browser)) {
+          throw new TypeError('config.browser must be "chrome"');
+        }
+        let providers: unknown;
+        try {
+          providers = await call("providers", "providers", [options]);
+        } catch {
+          // The caller's cancel and the port's end are what they are, never
+          // a host that can't drive Chrome (MAR-5726 review 2).
+          if (options?.signal?.aborted) throw options.signal.reason;
+          if (closed) throw closedError("start");
+          providers = null;
+        }
+        const refused = chromeStartRefusal(providers, request.providerId);
+        if (refused) throw refused;
+      }
+      return call("start", "start", [request, options]);
+    },
     command: (sessionId, command, options) =>
       call("command", `command ${String(command?.kind)}`, [
         sessionId,
