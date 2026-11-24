@@ -1231,13 +1231,12 @@ export interface ExecutionSessionPatchRequest {
   permissionConfig?: ExecutionPermissionConfig;
   /**
    * The person settled the session (true), or took that back (false), on a
-   * host advertising `sessions.settled.v1` (MAR-5673). A settled session
-   * works in no checkout, whatever it still runs, until a turn of its starts
-   * again. Taking it back for a session with work running or queued, while
-   * another session works in its checkout, is refused with a 409 coded
-   * `checkout-taken`, changing nothing. It changes nothing else: the session still takes messages. Idempotent:
-   * settling a settled session, or taking back a settle that isn't there,
-   * changes nothing and answers the same.
+   * host advertising `sessions.settled.v1` (MAR-5673). The person's word,
+   * kept and echoed: it never frees a checkout the session still works in,
+   * which it holds until it is quiescent, and it changes nothing else: the
+   * session still takes messages. Idempotent: settling a settled session, or
+   * taking back a settle that isn't there, changes nothing and answers the
+   * same.
    */
   settled?: boolean;
 }
@@ -1295,10 +1294,9 @@ export type ExecutionSessionPatchAppliesFrom =
  *   what the policy asks of it: a preset, mode, policy, sandbox, reviewer or
  *   collaboration mode its listing's `permissions` leave out. Only the part
  *   for the session's own provider is checked.
- * - `checkout-taken` (409, MAR-5673): taking back the settle (`settled:
- *   false`) of a session with work running or queued would put it beside
- *   another session working in its checkout. Nothing changed; it may be sent
- *   again once that work is done.
+ * - `checkout-taken` (409, MAR-5673): a 0.40 host's refusal to take back the
+ *   settle of a session at work beside another in its checkout. A host from
+ *   0.41 never sends it, since a settle frees no checkout; it stays readable.
  */
 export const EXECUTION_SESSION_PATCH_REFUSAL_CODES = [
   "turn-running",

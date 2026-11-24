@@ -16,11 +16,13 @@ import { isBoundedString, isRecord } from "./guards.js";
  *   claimed at once, so of two such starts at once one is refused.
  * - `worktree`: a worktree of its own, from the checkout's HEAD, always.
  *
- * A session is working in a checkout while its turn runs, a task of its runs,
- * or something is queued for it, and nobody has settled it
- * (`ExecutionSessionPatchRequest.settled`) since its last turn began. One that
- * finished, failed or was settled leaves the checkout to the next. A snapshot
- * and the list say which are settled now (`settled`), in the host's own word.
+ * A session holds its checkout from its start until it is deleted or fully
+ * quiescent: no turn running, nothing queued for it, no task of its running,
+ * and no turn of its provider's own still possible. The host takes the hold
+ * once and drops it once; a session that let go of it takes it again before
+ * any work of its begins, or is refused `checkout-taken`. A settle frees
+ * nothing (0.41). A snapshot and the list say which are settled now
+ * (`settled`), in the host's own word.
  */
 export const EXECUTION_WORKS_IN = ["auto", "checkout", "worktree"] as const;
 export type ExecutionWorksIn = (typeof EXECUTION_WORKS_IN)[number];

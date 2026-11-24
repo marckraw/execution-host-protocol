@@ -80,7 +80,7 @@ describe("the conformance suite", () => {
 
   it("fails a host whose snapshot doesn't say a session is settled (MAR-5673)", async () => {
     const error = await runCase(
-      "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      "settles a session, idempotently, says so in its snapshot and the list, and keeps its checkout while it works",
       (api) => ({
         ...api,
         snapshot: async (sessionId, options) => {
@@ -97,7 +97,7 @@ describe("the conformance suite", () => {
   it("fails a host whose second settle doesn't answer settled (MAR-5673)", async () => {
     let calls = 0;
     const error = await runCase(
-      "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      "settles a session, idempotently, says so in its snapshot and the list, and keeps its checkout while it works",
       (api) => ({
         ...api,
         patchSession: async (sessionId, patch, options) => {
@@ -144,19 +144,16 @@ describe("the conformance suite", () => {
     }
   });
 
-  it("fails a host that takes back a settle beside a session at work in its checkout (review r2)", async () => {
+  it("fails a host whose settle frees the checkout of a session still at work (0.41)", async () => {
     const model = new FakeHostModel();
     const error = await runCase(
-      "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      "settles a session, idempotently, says so in its snapshot and the list, and keeps its checkout while it works",
       (api) => ({
         ...api,
         patchSession: async (sessionId, patch, options) => {
-          // Taken back whoever works there: what the host must never do.
+          // A settle that lets go of its running turn, as 0.40 hosts did.
           const session = model.sessions.get(sessionId);
-          if (patch.settled === false && session) {
-            session.settled = false;
-            return { status: "patched", sessionId, settled: false };
-          }
+          if (patch.settled === true && session) session.working = false;
           return api.patchSession(sessionId, patch, options);
         },
       }),

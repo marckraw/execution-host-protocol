@@ -5,7 +5,6 @@ import type {
 } from "../client/follow.js";
 import { ExecutionHostError } from "../client/http.js";
 import { ExecutionMcpError } from "../client/mcp.js";
-import { ExecutionSessionPatchError } from "../client/session-patch.js";
 import { ExecutionStartWorksInError } from "../client/works-in.js";
 import { ExecutionTaskOutputError } from "../client/task-output.js";
 import { isTimestamp } from "../guards.js";
@@ -1823,7 +1822,7 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
       },
     },
     {
-      name: "settles a session, idempotently, says so in its snapshot and the list, and frees its checkout",
+      name: "settles a session, idempotently, says so in its snapshot and the list, and keeps its checkout while it works",
       async run(host, { waitMs }) {
         const checkouts = checkoutsOf(host);
         if (!checkouts) return;
@@ -1851,56 +1850,58 @@ export const executionHostConformanceCases: readonly ExecutionHostConformanceCas
             listed?.settled === true,
             "the list does not say it is settled",
           );
-          const next = await placedStart(host, checkouts, "checkout");
-          check(
-            next.result.status === "started" &&
-              next.result.worksIn?.place === "checkout",
-            `a checkout start beside a settled session answered ${describe(next.result)}, not started in the checkout`,
-          );
-          // Taken back while it still works, it would share the checkout:
-          // refused, and it stays settled.
+          // A settle is the person's word, never the checkout's: while it
+          // works there, nobody else may.
           const beside = await rejection(
-            host.api.patchSession(first.sessionId, { settled: false }),
-            "taking back the settle of a session at work beside another",
+            placedStart(host, checkouts, "checkout"),
+            "a checkout start beside a settled session at work",
           );
           check(
-            beside instanceof ExecutionSessionPatchError &&
+            beside instanceof ExecutionStartWorksInError &&
               beside.code === "checkout-taken" &&
-              beside.status === 409,
-            `taking back the settle of a session at work beside another failed with ${describe(beside)}, not checkout-taken`,
+              beside.workingThere.includes(first.sessionId),
+            `a checkout start beside a settled session at work failed with ${describe(beside)}, not checkout-taken naming it`,
           );
-          check(
-            (await host.api.snapshot(first.sessionId))?.settled === true,
-            "a refused take-back left it unsettled",
-          );
-          // Their work done, it is taken back, twice alike.
-          await release();
-          const deadline = Date.now() + waitMs;
           for (const attempt of ["first", "again"]) {
-            for (;;) {
-              const answer = await host.api
-                .patchSession(first.sessionId, { settled: false })
-                .catch((error: unknown) => error);
-              const stillAtWork =
-                answer instanceof ExecutionSessionPatchError &&
-                answer.code === "checkout-taken";
-              if (stillAtWork && Date.now() < deadline) {
-                await pause(CONFORMANCE_POLL_MS);
-                continue;
-              }
-              check(
-                !(answer instanceof Error) &&
-                  (answer as { status?: unknown }).status === "patched" &&
-                  (answer as { settled?: unknown }).settled === false,
-                `taking the settle back (${attempt}) answered ${describe(answer)}, not patched and unsettled`,
-              );
-              break;
-            }
+            const answer = await host.api.patchSession(first.sessionId, {
+              settled: false,
+            });
+            check(
+              answer.status === "patched" && answer.settled === false,
+              `taking the settle back (${attempt}) answered ${describe(answer)}, not patched and unsettled`,
+            );
           }
           check(
             (await host.api.snapshot(first.sessionId))?.settled === undefined,
             "its snapshot still says it is settled once that was taken back",
           );
+          // Its work done, the checkout is the next start's.
+          await release();
+          const deadline = Date.now() + waitMs;
+          for (;;) {
+            const next = await placedStart(host, checkouts, "checkout").catch(
+              (error: unknown) => error,
+            );
+            const stillAtWork =
+              next instanceof ExecutionStartWorksInError &&
+              next.code === "checkout-taken";
+            if (stillAtWork && Date.now() < deadline) {
+              await pause(CONFORMANCE_POLL_MS);
+              continue;
+            }
+            check(
+              !(next instanceof Error) &&
+                (
+                  next as {
+                    result: { status: string; worksIn?: { place: string } };
+                  }
+                ).result.status === "started" &&
+                (next as { result: { worksIn?: { place: string } } }).result
+                  .worksIn?.place === "checkout",
+              `a checkout start once its work was done answered ${describe(next)}, not started in the checkout`,
+            );
+            break;
+          }
         } finally {
           await release();
         }
