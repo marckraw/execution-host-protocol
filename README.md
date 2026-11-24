@@ -1174,10 +1174,13 @@ This replaces `prUrl` (on the snapshot and the list) and the start request's
 `automation.autoCreatePr`, with its capability `automation.create-pr`, which
 are gone (0.43): an older client's `automation` is read past as any unknown
 field. On `session.patch` an older host's `prUrl` is still read (0.43.1,
-MAR-5698): kept, deprecated, while it is a pull request's address on
-github.com or null, and dropped with a warning otherwise, so a reader whose
-hosts don't send `pullRequests` yet still has their one word on it. The
-decoder makes nothing of it: what it means is the reader's.
+MAR-5698), and only where the patch has no `pullRequests`: a list, even an
+empty one, is the whole word and wins, and a `prUrl` beside it is dropped.
+Without a list it's kept, deprecated, while it is a pull request's address on
+github.com (a repository named `.` or `..` is none) or null, and dropped with
+a warning otherwise, so a reader whose hosts don't send `pullRequests` yet
+still has their one word on it. The decoder makes nothing of it: what it
+means is the reader's.
 
 ## A host's MCP servers and skills
 
